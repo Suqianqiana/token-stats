@@ -20,7 +20,7 @@
 | 商汤积分 | 通用积分池、Flash-Lite 专属积分池、活动固定积分（1:1 返赠）；支持 cURL 自动同步 |
 | 交互 | 无边框置顶卡片、悬浮球、位置记忆、右键菜单、深浅色 / 玻璃主题 |
 
-架构与实现细节见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
+架构与实现细节、演进历程、Git 提交规范见根目录主协作文档 [`写作进度.md`](写作进度.md)。
 
 ---
 
@@ -101,7 +101,7 @@ QT_QPA_PLATFORM=offscreen \
   ~/.workbuddy/binaries/python/envs/pyside6/Scripts/python.exe test_switch_race.py
 ```
 
-> 测试覆盖：切页 race 防护、同步数学、cURL 解析、指纹/零指纹、真实接口样例、单列渲染、窗口位置统一，共 **52 项断言**，需全过。
+> 测试覆盖：切页 race 防护、同步数学、cURL 解析、指纹/零指纹、真实接口样例、单列渲染、窗口位置统一、代理 10061 直连重试，共 **54 项断言**，需全过。
 
 ### 5.2 代码规范
 
@@ -111,13 +111,13 @@ QT_QPA_PLATFORM=offscreen \
 - **商汤同步**：优先扩展零指纹结构探测；改动 `pools[]` 字段映射务必同步更新测试 fixture。
 - **Windows 安全**：托管 Python 严禁进入交互 REPL（用 `python -c` / `python script.py` / heredoc），避免拖垮客户端。
 
-### 5.3 提交流程建议
+### 5.3 提交流程（Git · 本地仓库）
 
 1. 在 `pyside6` venv 下 `python -m py_compile card_app.py scanner.py`；
-2. 跑 `test_switch_race.py` 确认全绿；
-3. 如改动设计/用户操作，同步更新 `docs/ARCHITECTURE.md` 与本文；
-4. 弃用代码移入 `legacy/`，开发预览图放入 `docs/assets/previews/`，保持根目录整洁；
-5. 提交信息说明「改了什么 / 为什么」。
+2. 跑 `test_switch_race.py` 确认 54 项全绿；
+3. **先更新根目录《写作进度.md》**（§二 演进历程 + §八 协作者备注登记本轮）；
+4. 定点 `git add` 相关文件后提交，信息格式：`第N轮：<一句话说明>`；**勿用 `add -A`**；
+5. 仓库仅本地管理，**不 `git push`**、不添加远程；回滚用 `git log --oneline` 查哈希。
 
 ---
 
@@ -127,20 +127,19 @@ QT_QPA_PLATFORM=offscreen \
 token-stats/
 ├── card_app.py          # 主程序（UI + 商汤同步）
 ├── scanner.py           # 增量扫描聚合
-├── test_switch_race.py  # 回归测试
-├── start_card.bat       # 启动器（主入口）
+├── test_switch_race.py  # 回归测试（54 项）
+├── 写作进度.md           # ★ 主协作文档（架构/演进/Git 规范/备注区）
+├── start_card.bat       # 启动器（规范名）
 ├── 启动统计悬浮球.bat    # 启动器别名
-├── 启动统计悬浮球.vbs    # 静默启动
+├── 启动统计悬浮球.vbs    # 静默启动（日常主推）
 ├── enable_autostart.bat # 开机自启
-├── legacy/              # 已弃用旧方案（app.py / panel.html）
-└── docs/                # 文档与素材
-    ├── ARCHITECTURE.md  # 架构与开发文档
-    └── assets/previews/ # 界面预览图
+├── legacy/              # 已弃用旧方案（app.py / panel.html，不入库）
+└── docs/assets/previews/ # 界面预览图
 ```
 
-- 架构与实现细节：[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- 协作与版本管理：[`写作进度.md`](写作进度.md)
 - 外部数据/配置目录：`~/.workbuddy/plugins/data/token-usage-stats/`
 
 ---
 
-*本 README 与 `docs/ARCHITECTURE.md` 需同步维护。*
+*本 README 面向使用者速览；《写作进度.md》为主协作文档，二者需同步维护。*
