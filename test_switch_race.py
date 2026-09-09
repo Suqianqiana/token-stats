@@ -449,8 +449,8 @@ _user_theme = dict(ca.theme_state)
 frames = ca.load_pet_frames()
 check("桌宠素材加载 (6 组帧)", frames is not None and set(frames) == set(ca.PET_ANIMS),
       f"{None if frames is None else {k: len(v) for k, v in frames.items()}}")
-check("帧数符合预期 (7/6/6/6/12/9)",
-      frames and [len(frames[a]) for a in ca.PET_ANIMS] == [7, 6, 6, 6, 12, 9],
+check("帧数符合预期 (7/5/6/6/12/9, sleep_03 已移除)",
+      frames and [len(frames[a]) for a in ca.PET_ANIMS] == [7, 5, 6, 6, 12, 9],
       str([len(frames[a]) for a in ca.PET_ANIMS]))
 ball = ca.BallWindow(None)
 check("默认悬浮球形态", ball.pet is False and ball.width() == 54)

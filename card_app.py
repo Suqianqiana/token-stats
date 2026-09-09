@@ -3054,8 +3054,11 @@ class BallWindow(QWidget):
         elif st == "sleep":
             # 睡觉以静止为主: 长时间保持睡姿, 缓慢微换姿势 (帧0/1/2 为躺姿微差)
             self._seq = [0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 2, 2, 1, 1, 0, 0, 0]
-        elif st in PET_ANIMS:
-            self._seq = list(range(len(self.pet_frames[st])))
+        elif st == "drag":
+            # 拖拽: 随机保持一个被拎姿势, 不再全帧循环 (浅浅猫反馈)
+            n = len(self.pet_frames["drag"])
+            i = random.randrange(n)
+            self._seq = [i] * 10
         self._si = 0
         self._tm.start(PET_MS.get(st, 240))
         self.update()
