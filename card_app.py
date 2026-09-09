@@ -5,6 +5,7 @@ Token 审计卡片 V7 — 分层液态玻璃 + 深色模式
 """
 import json
 import os
+import random
 import sys
 import threading
 import time
@@ -15,7 +16,7 @@ import scanner  # noqa: E402
 
 from PySide6.QtCore import Qt, QRectF, QObject, Signal, QTimer, QPoint
 from PySide6.QtGui import (QColor, QFont, QPainter, QPen, QBrush, QPainterPath,
-                           QLinearGradient)
+                           QLinearGradient, QImage)
 from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QVBoxLayout,
                                QHBoxLayout, QGridLayout, QFrame, QPushButton,
                                QScrollArea, QMenu, QSizePolicy, QPlainTextEdit,
@@ -38,7 +39,7 @@ THEMES = {
 # 底板很透(桌面可见) / 卡片较实(保形体与可读) / 文字恒 255
 GLASS_ALPHA = {"light": dict(BG=110, CARD=235), "dark": dict(BG=105, CARD=225)}
 
-theme_state = {"dark": False, "glass": False, "source": "wb"}
+theme_state = {"dark": False, "glass": False, "source": "wb", "pet": False}
 SETTINGS_FILE = os.path.join(scanner.PLUGIN_DATA_DIR, "settings.json")
 
 BLUE   = QColor("#3b6fe0")
@@ -2953,17 +2954,64 @@ def load_settings():
         theme_state["dark"] = bool(d.get("dark"))
         theme_state["glass"] = bool(d.get("glass"))
         theme_state["source"] = d.get("source", "wb")
+        theme_state["pet"] = bool(d.get("pet"))
     except Exception:
         pass
 
 
-# ============================================================ 悬浮球
+# ============================================================ 桌宠形态 (DeepSeek 娘帧动画)
+PET_DIR = os.path.join(BASE_DIR, "assets", "pet")
+PET_ANIMS = ("idle", "sleep", "drag", "click", "other", "special")
+PET_W, PET_H = 118, 148          # 桌宠窗口尺寸 (帧内容底部对齐居中绘制)
+PET_SLEEP_AFTER = 60             # 无交互 N 秒后入睡
+PET_OTHER_EVERY = (40, 90)       # idle 期间随机小剧场间隔 (秒)
+
+# idle 帧含义: 0站立 1眨眼 2微笑 3扭头 4伸懒腰 5撩头 6开心 —— 排出自然待机节奏
+PET_SEQ_IDLE = [0, 0, 0, 1, 0, 0, 0, 0, 2, 0, 0, 1, 0, 0, 0, 3, 0, 0,
+                0, 1, 0, 4, 0, 0, 0, 0, 5, 0, 0, 0, 6, 0, 0, 1, 0, 0, 0, 0]
+PET_MS = {"idle": 220, "sleep": 520, "drag": 140,
+          "click": 300, "other": 300, "special": 340}
+
+
+def load_pet_frames():
+    """加载桌宠帧 {anim: [QImage,...]}; 素材缺失/损坏返回 None (回退经典悬浮球)."""
+    frames = {}
+    try:
+        for anim in PET_ANIMS:
+            od = os.path.join(PET_DIR, anim)
+            lst = []
+            for fn in sorted(os.listdir(od)):
+                if not fn.lower().endswith(".png"):
+                    continue
+                img = QImage(os.path.join(od, fn))
+                if not img.isNull():
+                    lst.append(img)
+            if not lst:
+                return None
+            frames[anim] = lst
+    except OSError:
+        return None
+    return frames or None
+
+
+# ============================================================ 悬浮球 / 桌宠
 class BallWindow(QWidget):
     def __init__(self, card):
         super().__init__()
         self.card = card   # 可能为 None, 稍后由 main 注入
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        # ---- 桌宠形态状态机 (素材缺失自动回退经典悬浮球)
+        self.pet_frames = load_pet_frames()
+        self.pet = False
+        self._state = "idle"          # idle/sleep/drag/click/other/special
+        self._seq = list(PET_SEQ_IDLE)
+        self._si = 0
+        self._idle_t = time.time()
+        self._next_other = time.time() + random.randint(*PET_OTHER_EVERY)
+        self._tm = QTimer(self)
+        self._tm.timeout.connect(self._pet_tick)
+        self._tm.start(PET_MS["idle"])
         self.resize(54, 54)
         self.hover = False
         self._moved = False
@@ -2981,10 +3029,99 @@ class BallWindow(QWidget):
                       screen.bottom() - self.height() - 10)
         self.setToolTip("Token 审计 — 单击打开面板 / 右键菜单")
         self.show()
+        if self.pet_frames is not None and theme_state.get("pet"):
+            self._pet_apply(True)   # 恢复上次桌宠形态
 
+    # ---------------- 桌宠动画 ----------------
+    def _pet_state(self, st, seq=None):
+        self._state = st
+        if seq is not None:
+            self._seq = seq
+        elif st == "idle":
+            self._seq = PET_SEQ_IDLE
+        elif st in PET_ANIMS:
+            self._seq = list(range(len(self.pet_frames[st])))
+        self._si = 0
+        self._tm.start(PET_MS.get(st, 240))
+        self.update()
+
+    def _pet_tick(self):
+        if not self.pet or self.pet_frames is None:
+            return
+        if self._state == "idle":
+            now = time.time()
+            if now - self._idle_t > PET_SLEEP_AFTER:
+                self._pet_state("sleep")
+                return
+            if now >= self._next_other:
+                self._next_other = now + random.randint(*PET_OTHER_EVERY)
+                n = len(self.pet_frames["other"])
+                i = random.randrange(n)
+                self._pet_state("other", seq=[i, (i + 1) % n, (i + 2) % n, i])
+                return
+        self._si += 1
+        if self._si >= len(self._seq):
+            if self._state in ("idle", "sleep", "drag"):
+                self._si = 0
+            else:                      # 一次性动作播完 -> 回待机
+                self._pet_state("idle")
+                return
+        self.update()
+
+    def _pet_click(self):
+        n = len(self.pet_frames["click"])
+        i = random.randrange(n)
+        self._pet_state("click", seq=[i, i, i])
+
+    def _pet_special(self):
+        n = len(self.pet_frames["special"])
+        i = random.randrange(n)
+        self._idle_t = time.time()
+        self._pet_state("special", seq=[i, (i + 1) % n, i])
+
+    def set_pet(self, on):
+        on = bool(on) and self.pet_frames is not None
+        self.pet = on
+        theme_state["pet"] = on
+        save_settings()
+        self._pet_apply(on)
+
+    def _pet_apply(self, on):
+        if on:
+            self.resize(PET_W, PET_H)
+            self._idle_t = time.time()
+            self._next_other = time.time() + random.randint(*PET_OTHER_EVERY)
+            self._pet_state("idle")
+            self.setToolTip("DeepSeek 娘 · 单击互动 / 双击打开统计 / 右键菜单")
+        else:
+            self.resize(54, 54)
+            self.setToolTip("Token 审计 — 单击打开面板 / 右键菜单")
+        self._clamp_pos()
+        self.update()
+
+    def _clamp_pos(self):
+        scr = QApplication.primaryScreen().availableGeometry()
+        x = max(scr.left(), min(self.x(), scr.right() - self.width()))
+        y = max(scr.top(), min(self.y(), scr.bottom() - self.height()))
+        self.move(x, y)
+
+    # ---------------- 绘制 ----------------
     def paintEvent(self, ev):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        if self.pet and self.pet_frames is not None:
+            anim = self._state if self._state in PET_ANIMS else "idle"
+            frames = self.pet_frames.get(anim) or self.pet_frames["idle"]
+            img = frames[self._si % len(frames)]
+            iw, ih = img.width(), img.height()
+            scale = min(138.0 / ih, (PET_W - 10.0) / iw)
+            dw, dh = iw * scale, ih * scale
+            p.drawImage(QRectF((PET_W - dw) / 2.0, PET_H - 4 - dh, dw, dh), img)
+            return
+        self._paint_ball(p)
+
+    def _paint_ball(self, p):
         w = self.width()
         R = QRectF(3, 3, w - 6, w - 6)
         dark = theme_state["dark"]
@@ -3091,6 +3228,9 @@ class BallWindow(QWidget):
         if ev.button() == Qt.LeftButton:
             self._drag = ev.globalPosition().toPoint() - self.frameGeometry().topLeft()
             self._moved = False
+            if self.pet:
+                self._idle_t = time.time()
+                self._pet_state("drag")
 
     def mouseMoveEvent(self, ev):
         if ev.buttons() & Qt.LeftButton:
@@ -3105,7 +3245,17 @@ class BallWindow(QWidget):
                 json.dump({"x": self.x(), "y": self.y()}, f)
         except Exception:
             pass
+        if self.pet:
+            self._idle_t = time.time()
+            self._pet_state("idle")
+            if not self._moved:
+                self._pet_click()     # 桌宠: 单击=互动反馈 (双击开面板)
+            return
         if not self._moved:
+            self._show_card()
+
+    def mouseDoubleClickEvent(self, ev):
+        if self.pet:
             self._show_card()
 
     def _show_card(self):
@@ -3119,8 +3269,16 @@ class BallWindow(QWidget):
 
     def contextMenuEvent(self, ev):
         menu = make_menu(self)
-        a1 = menu.addAction("📊  打开统计面板")
+        a1 = menu.addAction("📊  打开统计面板" + (" (双击桌宠也可以)" if self.pet else ""))
         a2 = menu.addAction("⟳  立即刷新统计")
+        menu.addSeparator()
+        a_pet = a_head = None
+        if self.pet_frames is not None:
+            a_pet = menu.addAction("🐳  桌宠形态 (DeepSeek 娘)")
+            a_pet.setCheckable(True)
+            a_pet.setChecked(self.pet)
+            if self.pet:
+                a_head = menu.addAction("🤗  摸摸头")
         menu.addSeparator()
         a3 = menu.addAction("✕  退出")
         chosen = menu.exec(ev.globalPos())
@@ -3131,6 +3289,10 @@ class BallWindow(QWidget):
                 self.card.show()
                 self.card.raise_()
                 self.card.refresh()
+        elif a_pet is not None and chosen == a_pet:
+            self.set_pet(not self.pet)
+        elif a_head is not None and chosen == a_head:
+            self._pet_special()
         elif chosen == a3:
             os._exit(0)
 

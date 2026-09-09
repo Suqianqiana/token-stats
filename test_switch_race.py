@@ -443,6 +443,42 @@ check("10061 后自动直连重试成功", err7 is None and st7 == 200 and data7
 check("直连重试使用空 ProxyHandler", len(_opener_calls) == 2 and len(_opener_calls[1]) == 1,
       f"calls={[len(c) for c in _opener_calls]}")
 
+# ========== 8. 桌宠形态 (DeepSeek 娘帧动画) ==========
+print("== 8. 桌宠形态 ==")
+_user_theme = dict(ca.theme_state)
+frames = ca.load_pet_frames()
+check("桌宠素材加载 (6 组帧)", frames is not None and set(frames) == set(ca.PET_ANIMS),
+      f"{None if frames is None else {k: len(v) for k, v in frames.items()}}")
+check("帧数符合预期 (7/6/6/6/12/9)",
+      frames and [len(frames[a]) for a in ca.PET_ANIMS] == [7, 6, 6, 6, 12, 9],
+      str([len(frames[a]) for a in ca.PET_ANIMS]))
+ball = ca.BallWindow(None)
+check("默认悬浮球形态", ball.pet is False and ball.width() == 54)
+ball.set_pet(True)
+check("切换桌宠形态", ball.pet is True and (ball.width(), ball.height()) == (ca.PET_W, ca.PET_H))
+check("桌宠状态机=待机", ball._state == "idle" and 0 <= ball._si < len(ball._seq))
+ball._pet_tick(); ball._pet_tick()
+check("待机 tick 推进不崩", 0 <= ball._si < len(ball._seq), f"si={ball._si}")
+pm = ball.grab()   # paintEvent 渲染 (offscreen)
+check("桌宠 paintEvent 渲染非空", not pm.isNull() and pm.width() == ca.PET_W)
+ball._idle_t = time.time() - (ca.PET_SLEEP_AFTER + 5)
+ball._pet_tick()
+check("无交互入睡", ball._state == "sleep")
+ball._pet_click()
+check("单击互动反馈", ball._state == "click" and len(ball._seq) == 3)
+ball._idle_t = time.time()
+ball._next_other = time.time() - 1
+ball._pet_state("idle"); ball._pet_tick()
+check("随机小剧场触发", ball._state == "other" and len(ball._seq) == 4)
+ball._pet_special()
+check("摸摸头 (特殊状态)", ball._state == "special" and len(ball._seq) == 3)
+ball._pet_tick(); ball._pet_tick(); ball._pet_tick(); ball._pet_tick()
+check("一次性动作播完回待机", ball._state == "idle")
+ball.set_pet(False)
+check("切回悬浮球形态", ball.pet is False and ball.width() == 54)
+ca.theme_state.clear(); ca.theme_state.update(_user_theme)
+ca.save_settings()
+
 ca.clear_sn_autosync()
 ca.clear_sn_sync()
 
