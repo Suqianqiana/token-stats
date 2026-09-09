@@ -2967,6 +2967,7 @@ PET_SLEEP_AFTER = 60             # 无交互 N 秒后入睡
 PET_OTHER_EVERY = (150, 420)     # idle 期间随机小剧场间隔 (秒, 长静止+偶发)
 PET_MS = {"idle": 240, "sleep": 720, "drag": 140,
           "click": 300, "other": 300, "special": 360}
+APP_BUILD = "v9-fix 2026-09-10 05:00"   # 右键菜单可见, 用于确认运行的是哪版代码
 
 
 def _pet_idle_seq():
@@ -3130,7 +3131,10 @@ class BallWindow(QWidget):
         if self.pet and self.pet_frames is not None:
             anim = self._state if self._state in PET_ANIMS else "idle"
             frames = self.pet_frames.get(anim) or self.pet_frames["idle"]
-            img = frames[self._si % len(frames)]
+            # 关键: 用 _seq 里的帧号取帧 (此前误写 _si % len(frames), 导致永远顺序轮播,
+            # 节奏逻辑完全失效 —— 浅浅猫两次反馈『一直循环切帧』的真正根因)
+            frame_no = self._seq[self._si % len(self._seq)]
+            img = frames[frame_no % len(frames)]
             iw, ih = img.width(), img.height()
             scale = min(138.0 / ih, (PET_W - 10.0) / iw)
             dw, dh = iw * scale, ih * scale
@@ -3286,6 +3290,9 @@ class BallWindow(QWidget):
 
     def contextMenuEvent(self, ev):
         menu = make_menu(self)
+        a_ver = menu.addAction(f"版本 {APP_BUILD}")
+        a_ver.setEnabled(False)          # 仅展示, 帮用户确认运行的是哪版代码
+        menu.addSeparator()
         a1 = menu.addAction("📊  打开统计面板" + (" (双击桌宠也可以)" if self.pet else ""))
         a2 = menu.addAction("⟳  立即刷新统计")
         menu.addSeparator()

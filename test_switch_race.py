@@ -474,6 +474,18 @@ ball._pet_special()
 check("摸摸头 (特殊状态)", ball._state == "special" and len(ball._seq) == 3)
 ball._pet_tick(); ball._pet_tick(); ball._pet_tick(); ball._pet_tick()
 check("一次性动作播完回待机", ball._state == "idle")
+# 实际展示帧必须跟随 _seq 帧号 (曾误写 _si % len(frames) 导致永远顺序轮播, 节奏全失效)
+w3 = ca.BallWindow(None)
+w3.set_pet(True)
+w3._pet_state("idle"); w3._si = 0
+shown = []
+for _ in range(90):
+    w3._pet_tick()
+    fr = w3.pet_frames["idle"]
+    shown.append(w3._seq[w3._si % len(w3._seq)] % len(fr))
+nonstatic = sum(1 for f in shown if f != 0)
+check("待机实际展示以静止为主 (取帧跟随 _seq)", len(shown) == 90 and nonstatic <= 12,
+      f"nonstatic={nonstatic}/90")
 ball.set_pet(False)
 check("切回悬浮球形态", ball.pet is False and ball.width() == 54)
 ca.theme_state.clear(); ca.theme_state.update(_user_theme)
