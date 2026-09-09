@@ -2964,15 +2964,26 @@ PET_DIR = os.path.join(BASE_DIR, "assets", "pet")
 PET_ANIMS = ("idle", "sleep", "drag", "click", "other", "special")
 PET_W, PET_H = 118, 148          # 桌宠窗口尺寸 (帧内容底部对齐居中绘制)
 PET_SLEEP_AFTER = 60             # 无交互 N 秒后入睡
-PET_OTHER_EVERY = (40, 90)       # idle 期间随机小剧场间隔 (秒)
-
-# idle 帧含义: 0站立 1眨眼 2微笑 3扭头 4伸懒腰 5撩头 6开心 —— 排出自然待机节奏
-PET_SEQ_IDLE = [0, 0, 0, 1, 0, 0, 0, 0, 2, 0, 0, 1, 0, 0, 0, 3, 0, 0,
-                0, 1, 0, 4, 0, 0, 0, 0, 5, 0, 0, 0, 6, 0, 0, 1, 0, 0, 0, 0]
-PET_MS = {"idle": 220, "sleep": 520, "drag": 140,
-          "click": 300, "other": 300, "special": 340}
+PET_OTHER_EVERY = (90, 240)      # idle 期间随机小剧场间隔 (秒, 长静止+偶发)
+PET_MS = {"idle": 240, "sleep": 720, "drag": 140,
+          "click": 300, "other": 300, "special": 360}
 
 
+def _pet_idle_seq():
+    """随机生成一段待机序列: 绝大部分时间静止站立, 低频眨眼, 更低频小动作/大动作.
+    (浅浅猫反馈: 不能一直循环切帧, 太生硬 —— 静止为主 + 偶尔一下才自然.)"""
+    seq = [0] * random.randint(16, 40)            # 静止 ~4-10s
+    seq += [1, 0]                                  # 眨一下眼
+    if random.random() < 0.45:                     # 45% 再来个小动作
+        seq += [0] * random.randint(10, 26)
+        seq += random.choice([[2, 0], [3, 0], [5, 0]])   # 微笑/扭头/撩头
+    if random.random() < 0.22:                     # 22% 大动作 (少见)
+        seq += [0] * random.randint(12, 24)
+        seq += random.choice([[4, 4, 0], [6, 0]])        # 伸懒腰/开心
+    return seq
+
+
+# idle 帧含义: 0站立 1眨眼 2微笑 3扭头 4伸懒腰 5撩头 6开心
 def load_pet_frames():
     """加载桌宠帧 {anim: [QImage,...]}; 素材缺失/损坏返回 None (回退经典悬浮球)."""
     frames = {}
@@ -3005,7 +3016,7 @@ class BallWindow(QWidget):
         self.pet_frames = load_pet_frames()
         self.pet = False
         self._state = "idle"          # idle/sleep/drag/click/other/special
-        self._seq = list(PET_SEQ_IDLE)
+        self._seq = _pet_idle_seq()
         self._si = 0
         self._idle_t = time.time()
         self._next_other = time.time() + random.randint(*PET_OTHER_EVERY)
@@ -3038,7 +3049,10 @@ class BallWindow(QWidget):
         if seq is not None:
             self._seq = seq
         elif st == "idle":
-            self._seq = PET_SEQ_IDLE
+            self._seq = _pet_idle_seq()
+        elif st == "sleep":
+            # 睡觉以静止为主: 长时间保持睡姿, 缓慢微换姿势 (帧0/1/2 为躺姿微差)
+            self._seq = [0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 2, 2, 1, 1, 0, 0, 0]
         elif st in PET_ANIMS:
             self._seq = list(range(len(self.pet_frames[st])))
         self._si = 0
@@ -3057,11 +3071,14 @@ class BallWindow(QWidget):
                 self._next_other = now + random.randint(*PET_OTHER_EVERY)
                 n = len(self.pet_frames["other"])
                 i = random.randrange(n)
-                self._pet_state("other", seq=[i, (i + 1) % n, (i + 2) % n, i])
+                self._pet_state("other", seq=[i, (i + 1) % n, i])
                 return
         self._si += 1
         if self._si >= len(self._seq):
-            if self._state in ("idle", "sleep", "drag"):
+            if self._state == "idle":       # 一段待机结束 -> 重新随机生成, 节奏自然
+                self._seq = _pet_idle_seq()
+                self._si = 0
+            elif self._state in ("sleep", "drag"):
                 self._si = 0
             else:                      # 一次性动作播完 -> 回待机
                 self._pet_state("idle")
@@ -3077,7 +3094,7 @@ class BallWindow(QWidget):
         n = len(self.pet_frames["special"])
         i = random.randrange(n)
         self._idle_t = time.time()
-        self._pet_state("special", seq=[i, (i + 1) % n, i])
+        self._pet_state("special", seq=[i, i, (i + 1) % n])
 
     def set_pet(self, on):
         on = bool(on) and self.pet_frames is not None

@@ -469,7 +469,7 @@ check("单击互动反馈", ball._state == "click" and len(ball._seq) == 3)
 ball._idle_t = time.time()
 ball._next_other = time.time() - 1
 ball._pet_state("idle"); ball._pet_tick()
-check("随机小剧场触发", ball._state == "other" and len(ball._seq) == 4)
+check("随机小剧场触发", ball._state == "other" and len(ball._seq) == 3)
 ball._pet_special()
 check("摸摸头 (特殊状态)", ball._state == "special" and len(ball._seq) == 3)
 ball._pet_tick(); ball._pet_tick(); ball._pet_tick(); ball._pet_tick()
