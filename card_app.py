@@ -2964,7 +2964,7 @@ PET_DIR = os.path.join(BASE_DIR, "assets", "pet")
 PET_ANIMS = ("idle", "sleep", "drag", "click", "other", "special")
 PET_W, PET_H = 118, 148          # 桌宠窗口尺寸 (帧内容底部对齐居中绘制)
 PET_SLEEP_AFTER = 60             # 无交互 N 秒后入睡
-PET_OTHER_EVERY = (90, 240)      # idle 期间随机小剧场间隔 (秒, 长静止+偶发)
+PET_OTHER_EVERY = (150, 420)     # idle 期间随机小剧场间隔 (秒, 长静止+偶发)
 PET_MS = {"idle": 240, "sleep": 720, "drag": 140,
           "click": 300, "other": 300, "special": 360}
 
@@ -2972,13 +2972,13 @@ PET_MS = {"idle": 240, "sleep": 720, "drag": 140,
 def _pet_idle_seq():
     """随机生成一段待机序列: 绝大部分时间静止站立, 低频眨眼, 更低频小动作/大动作.
     (浅浅猫反馈: 不能一直循环切帧, 太生硬 —— 静止为主 + 偶尔一下才自然.)"""
-    seq = [0] * random.randint(16, 40)            # 静止 ~4-10s
+    seq = [0] * random.randint(25, 70)            # 静止 ~6-17s
     seq += [1, 0]                                  # 眨一下眼
-    if random.random() < 0.45:                     # 45% 再来个小动作
-        seq += [0] * random.randint(10, 26)
+    if random.random() < 0.35:                     # 35% 再来个小动作
+        seq += [0] * random.randint(15, 40)
         seq += random.choice([[2, 0], [3, 0], [5, 0]])   # 微笑/扭头/撩头
-    if random.random() < 0.22:                     # 22% 大动作 (少见)
-        seq += [0] * random.randint(12, 24)
+    if random.random() < 0.15:                     # 15% 大动作 (少见)
+        seq += [0] * random.randint(18, 36)
         seq += random.choice([[4, 4, 0], [6, 0]])        # 伸懒腰/开心
     return seq
 
@@ -3314,7 +3314,35 @@ class BallWindow(QWidget):
             os._exit(0)
 
 
+def _kill_stale_instance():
+    """单实例治理: 启动时杀掉残留的旧实例进程.
+
+    背景: 卡片 ✕ 是隐藏不退出, 旧实例会一直驻留 —— 用户双击启动器实际看到的
+    仍是旧代码的窗口 (V17 教训 / 桌宠改节奏『没生效』根因)。启动时按 PID 文件
+    定位旧进程并结束, 保证双击启动器永远加载最新代码。仅 Windows 有效, 其他
+    平台安全降级为只写 PID。"""
+    pid_file = os.path.join(scanner.PLUGIN_DATA_DIR, "ball.pid")
+    try:
+        with open(pid_file) as f:
+            old = int(f.read().strip())
+        if old != os.getpid():
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            h = k32.OpenProcess(0x0001, False, old)   # PROCESS_TERMINATE
+            if h:
+                k32.TerminateProcess(h, 0)
+                k32.CloseHandle(h)
+    except Exception:
+        pass
+    try:
+        with open(pid_file, "w") as f:
+            f.write(str(os.getpid()))
+    except Exception:
+        pass
+
+
 def main():
+    _kill_stale_instance()
     app = QApplication(sys.argv)
     app.setApplicationName("Token 审计")
     app.setStyle("Fusion")
