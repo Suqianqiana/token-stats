@@ -918,7 +918,7 @@ class SNSyncPanel(QFrame):
                 f"✓ 自动同步 {s.get('sync_time')} · 每 5 分钟自动更新, 点⟳立即更新")
             self._status_color = "#3f9d63"
         else:
-            self.status_lbl.setText("未配置自动同步 — 余额为本地估算")
+            self.status_lbl.setText("未配置自动同步")
             self._status_color = None
         self.apply_theme()
 
@@ -926,7 +926,7 @@ class SNSyncPanel(QFrame):
         clear_sn_autosync()
         _autosync_mem.update(ts=0.0, values=None, error=None)
         self.curl_edit.clear()
-        self.err_lbl.setText("已清除同步配置 (回到本地估算)。")
+        self.err_lbl.setText("已清除同步配置。")
         self.cleared.emit()
 
     def _on_save(self):
@@ -1075,7 +1075,7 @@ class SNQuotaPage(QFrame):
         self.sync_panel.cleared.connect(self.cleared)
         v.addWidget(self.sync_panel)
 
-        self.foot_lbl = QLabel("最大额度为官方公开的公测期固定值；未配置同步时余额为本地调用记录估算，非官方实时积分，以控制台为准。")
+        self.foot_lbl = QLabel("最大额度为官方公开的公测期固定值；余额以官网控制台为准，配置自动同步后显示实时额度。")
         self.foot_lbl.setFont(QFont("Microsoft YaHei UI", 10))
         self.foot_lbl.setWordWrap(True)
         v.addWidget(self.foot_lbl)
@@ -2459,7 +2459,7 @@ class CardWindow(QWidget):
         self.btn_close.setToolTip("隐藏窗口 (Esc) — 右键可退出")
         self.src_wb.setToolTip("WorkBuddy 会话数据 (~/.workbuddy)")
         self.src_dsh.setToolTip("DSH desktop 数据 (~/.dsh)")
-        self.src_sn.setToolTip("商汤日日新积分额度 (5h/周双池 · 本地估算 + 官网同步)")
+        self.src_sn.setToolTip("商汤日日新积分额度 (5h/周双池 · 自动同步)")
         self.sn_page.apply_theme()
         self.update()
 
@@ -2602,7 +2602,7 @@ class CardWindow(QWidget):
                 elif s.get("sync_src") == "auto":
                     mode = f"自动同步 {s['sync_time']}"
                 else:
-                    mode = "本地估算"
+                    mode = "未配置自动同步"
                 self.subtitle.setText(
                     f"商汤 · 积分额度({mode}) · 窗口 {ws}–{we}"
                     f" · 已更新 {time.strftime('%H:%M:%S')}")
