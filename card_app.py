@@ -2518,20 +2518,6 @@ class CardWindow(QWidget):
         return b
 
     def _switch_range(self, btn):
-        # 商汤积分页无日期范围概念: 在商汤页点日期自动切回 WorkBuddy 并应用,
-        # 避免"点了没反应/以为卡住" (render 在 source=='sn' 时走 render_sn 忽略 range)
-        if self.source == "sn":
-            self.source = "wb"
-            theme_state["source"] = "wb"
-            for b in (self.src_wb, self.src_dsh, self.src_sn):
-                b.setChecked(b is self.src_wb)
-            save_settings()
-            try:
-                with open(scanner.STATS_FILE, "r", encoding="utf-8") as f:
-                    self.stats = json.load(f)
-            except Exception:
-                self.stats = {"source": "wb", "daily": {}, "dailySessions": {},
-                              "sessionsTotal": 0, "today": {}}
         for b in (self.btn_today, self.btn_7, self.btn_30, self.btn_all):
             b.setChecked(b is btn)
         self.range = {id(self.btn_today): "today", id(self.btn_7): "7",
@@ -2752,28 +2738,7 @@ class CardWindow(QWidget):
         self.chart.set_data(daily, rows)
         self.heat.set_data(self.stats.get("daily", {}))
 
-        # 收口窗口高度放到事件循环下一拍执行: 重建明细行后布局中间态会把
-        # minimumSize 顶高 (实测 1267), 直接在此 activate/resize 会在实机窗口
-        # 系统下触发 resize-布局震荡风暴 (日志显示 render 完成但界面卡死)。
-        # 延后一拍: 本轮 render 立即返回, 布局在空闲时稳定后再收口, 高度修复不丢。
-        QTimer.singleShot(0, self._settle_height)
-
     # ---------------- 商汤额度页 ----------------
-    def _settle_height(self):
-        """延后一拍执行的窗口高度收口 (render 尾部 QTimer.singleShot 调用).
-
-        重建明细行后布局中间态会把 minimumSize 顶高 (实测 1267); 但绝不能在
-        render() 内同步 resize/activate —— 实机窗口系统下会触发 resize 事件链
-        把 paint 饿死 (UI 卡死, offscreen 无法复现)。放到事件循环空闲时只做
-        一次收口: 清掉被顶高的 min 并回到标准高度, 高度修复仍在、不阻塞渲染.
-        """
-        if self.source == "sn":
-            return                      # 商汤页由 _fit_height 收口, 不重复干涉
-        self.layout().activate()
-        self.setMinimumHeight(0)
-        self.resize(664, 880)
-        self.layout().activate()
-
     def _fit_height(self):
         """按当前可见内容自适应窗口高度(只锁宽度, 不预留空白).
 
