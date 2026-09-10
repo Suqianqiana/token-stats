@@ -2518,6 +2518,20 @@ class CardWindow(QWidget):
         return b
 
     def _switch_range(self, btn):
+        # 商汤积分页无日期范围概念: 在商汤页点日期自动切回 WorkBuddy 并应用,
+        # 避免"点了没反应/以为卡住" (render 在 source=='sn' 时走 render_sn 忽略 range)
+        if self.source == "sn":
+            self.source = "wb"
+            theme_state["source"] = "wb"
+            for b in (self.src_wb, self.src_dsh, self.src_sn):
+                b.setChecked(b is self.src_wb)
+            save_settings()
+            try:
+                with open(scanner.STATS_FILE, "r", encoding="utf-8") as f:
+                    self.stats = json.load(f)
+            except Exception:
+                self.stats = {"source": "wb", "daily": {}, "dailySessions": {},
+                              "sessionsTotal": 0, "today": {}}
         for b in (self.btn_today, self.btn_7, self.btn_30, self.btn_all):
             b.setChecked(b is btn)
         self.range = {id(self.btn_today): "today", id(self.btn_7): "7",
@@ -2738,15 +2752,28 @@ class CardWindow(QWidget):
         self.chart.set_data(daily, rows)
         self.heat.set_data(self.stats.get("daily", {}))
 
-        # 收口窗口高度: 重建明细行后布局中间态会把 minimumSize 顶高 (实测 1267,
-        # 超过 maximumHeight 1000), 使窗口停在超高位置不再缩回——这里先让布局稳定,
-        # 再清掉被顶高的 minimumSize 并强制回到旧内容标准高度 880。
+        # 收口窗口高度放到事件循环下一拍执行: 重建明细行后布局中间态会把
+        # minimumSize 顶高 (实测 1267), 直接在此 activate/resize 会在实机窗口
+        # 系统下触发 resize-布局震荡风暴 (日志显示 render 完成但界面卡死)。
+        # 延后一拍: 本轮 render 立即返回, 布局在空闲时稳定后再收口, 高度修复不丢。
+        QTimer.singleShot(0, self._settle_height)
+
+    # ---------------- 商汤额度页 ----------------
+    def _settle_height(self):
+        """延后一拍执行的窗口高度收口 (render 尾部 QTimer.singleShot 调用).
+
+        重建明细行后布局中间态会把 minimumSize 顶高 (实测 1267); 但绝不能在
+        render() 内同步 resize/activate —— 实机窗口系统下会触发 resize 事件链
+        把 paint 饿死 (UI 卡死, offscreen 无法复现)。放到事件循环空闲时只做
+        一次收口: 清掉被顶高的 min 并回到标准高度, 高度修复仍在、不阻塞渲染.
+        """
+        if self.source == "sn":
+            return                      # 商汤页由 _fit_height 收口, 不重复干涉
         self.layout().activate()
         self.setMinimumHeight(0)
         self.resize(664, 880)
         self.layout().activate()
 
-    # ---------------- 商汤额度页 ----------------
     def _fit_height(self):
         """按当前可见内容自适应窗口高度(只锁宽度, 不预留空白).
 
@@ -3247,6 +3274,7 @@ class BallWindow(QWidget):
         menu.addSeparator()
         a1 = menu.addAction("📊  打开统计面板" + (" (双击桌宠也可以)" if self.pet else ""))
         a2 = menu.addAction("⟳  立即刷新统计")
+        a_restart = menu.addAction("🔄  一键重启")
         menu.addSeparator()
         a_pet = a_head = None
         if self.pet_frames is not None:
@@ -3269,8 +3297,29 @@ class BallWindow(QWidget):
             self.set_pet(not self.pet)
         elif a_head is not None and chosen == a_head:
             self._pet_special()
+        elif chosen == a_restart:
+            _restart_app()
         elif chosen == a3:
             os._exit(0)
+
+
+def _restart_app():
+    """一键重启: 用 pythonw 静默启动一个新实例, 并退出当前进程.
+
+    新实例启动时会经 _kill_stale_instance() 处理 PID: 它读到旧 PID(当前进程)
+    并 TerminateProcess, 因此这里先启动新实例再退出当前, 由单实例治理兜底,
+    保证只有新实例存活、加载的是最新代码。"""
+    try:
+        import subprocess
+        pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        if not os.path.exists(pythonw):
+            pythonw = sys.executable
+        script = os.path.abspath(__file__)
+        subprocess.Popen([pythonw, script], cwd=os.path.dirname(script),
+                         creationflags=0x00000008 | 0x00000200)  # DETACHED | NEW_PROCESS_GROUP
+    except Exception:
+        pass
+    QTimer.singleShot(300, os._exit, 0)   # 给新实例一点启动时间, 然后退出自己
 
 
 def _kill_stale_instance():
