@@ -917,10 +917,6 @@ class SNSyncPanel(QFrame):
             self.status_lbl.setText(
                 f"✓ 自动同步 {s.get('sync_time')} · 每 5 分钟自动更新, 点⟳立即更新")
             self._status_color = "#3f9d63"
-        elif s.get("synced"):
-            self.status_lbl.setText(
-                f"✓ 显示最后已知值 (同步于 {s.get('sync_time')}, 凭据已过期?)")
-            self._status_color = "#e0a040"
         else:
             self.status_lbl.setText("未配置自动同步 — 余额为本地估算")
             self._status_color = None
@@ -928,7 +924,6 @@ class SNSyncPanel(QFrame):
 
     def _on_clear(self):
         clear_sn_autosync()
-        clear_sn_sync()
         _autosync_mem.update(ts=0.0, values=None, error=None)
         self.curl_edit.clear()
         self.err_lbl.setText("已清除同步配置 (回到本地估算)。")
@@ -973,7 +968,7 @@ class SNSyncPanel(QFrame):
             self.saved.emit()
 
     def _do_test_and_save(self, req):
-        """同步执行: 测试接口 → 零指纹探测 → 保存配置 → 立即抓取写手动回退.
+        """同步执行: 测试接口 → 零指纹探测 → 保存配置 → 立即抓取验证.
 
         返回 (ok, msg); 在 worker 线程调用 (测试模式在主线程).
         """
@@ -992,16 +987,8 @@ class SNSyncPanel(QFrame):
                "paths": paths, "fingerprint": None, "saved_ts": now}
         if not save_sn_autosync(cfg):
             return False, "保存失败 (文件写入权限问题)。"
-        # 立即完整抓取一次 (含重置时间/活动积分), 抓到的值写入手动回退文件
+        # 保存后立即完整抓取一次 (含重置时间/活动积分) 验证配置并预热内存缓存
         vals = sn_autosync_fetch(force=True)
-        manual = load_sn_sync() or {}
-        if vals:
-            manual.update({"ts": _autosync_mem["ts"],
-                           **{k: v for k, v in vals.items()
-                              if isinstance(v, (int, float))}})
-        else:
-            manual.setdefault("ts", now)
-        save_sn_sync(manual)
         if vals:
             return True, (f"✓ 已保存并同步 {time.strftime('%H:%M')} — "
                           f"通用池周余额 {vals.get('general_w', 0):,.0f}")
@@ -1148,7 +1135,7 @@ class SNQuotaPage(QFrame):
         mg = lay.contentsMargins()
         ch += mg.top() + mg.bottom()
         self.scroll.setFixedHeight(min(ch, 680))
-        # 同步面板状态行 (自动同步/最后已知值/未配置/失败原因)
+        # 同步面板状态行 (自动同步/未配置/失败原因)
         self.sync_panel.set_status(s)
         self.apply_theme()
 
@@ -1519,48 +1506,9 @@ SN_KNOWN_QUOTA = {
 SN_POOL_WINDOW_QUOTA = 60000
 SN_POOL_WEEKLY_QUOTA = 600000
 
-# 积分手动同步文件: 用户从官网控制台「积分额度」页抄来的真实余额 (唯一可靠数据源).
-# 结构: {"ts": 同步时刻epoch, "general_w": 通用池周余额, "general_5h": 通用池5h剩余,
-#        "flash_w": Flash池周余额, "flash_5h": Flash池5h剩余, "promo": 活动积分总量|null}
-SN_SYNC_FILE = os.path.join(scanner.PLUGIN_DATA_DIR, "sn_points_sync.json")
-
-
-def load_sn_sync():
-    try:
-        with open(SN_SYNC_FILE, encoding="utf-8") as f:
-            d = json.load(f)
-        return d if isinstance(d, dict) and isinstance(d.get("ts"), (int, float)) else None
-    except Exception:
-        return None
-
-
-def save_sn_sync(d):
-    try:
-        with open(SN_SYNC_FILE, "w", encoding="utf-8") as f:
-            json.dump(d, f, ensure_ascii=False)
-        return True
-    except Exception:
-        return False
-
-
-def clear_sn_sync():
-    try:
-        if os.path.exists(SN_SYNC_FILE):
-            os.remove(SN_SYNC_FILE)
-        return True
-    except Exception:
-        # 删除失败 (权限/沙箱回收站不可用): 覆写为空对象, load_sn_sync 视为未同步
-        try:
-            with open(SN_SYNC_FILE, "w", encoding="utf-8") as f:
-                f.write("{}")
-            return True
-        except Exception:
-            return False
-
-
 # ---- 自动同步 (抓包控制台内部接口) ----
 # 官方无积分 API, 但控制台 SPA 前端必调内部接口; 用户从浏览器 F12 复制该请求的
-# cURL 粘贴进来, 工具解析后自动轮询。凭据仅存本机, 过期(401/403)后回退手动同步。
+# cURL 粘贴进来, 工具解析后自动轮询。凭据仅存本机, 过期(401/403)后回退本地估算。
 SN_AUTOSYNC_FILE = os.path.join(scanner.PLUGIN_DATA_DIR, "sn_autosync.json")
 SN_AUTOSYNC_TTL = 300          # 抓取频控 (秒), 避免高频请求触发风控
 _autosync_mem = {"ts": 0.0, "values": None, "error": None}   # 进程内频控缓存
@@ -1857,7 +1805,7 @@ def sn_autosync_fetch(force=False):
     """调用抓包接口拿积分余额; 返回 {general_w, general_5h, flash_w, flash_5h, promo} 或 None.
 
     带进程内频控 (SN_AUTOSYNC_TTL); 失败把错误写入 _autosync_mem['error'] 供 UI 提示,
-    并回退让调用方使用手动同步。
+    并回退让调用方使用本地估算。
     """
     cfg = load_sn_autosync()
     if not cfg:
@@ -2133,9 +2081,8 @@ def load_sn_stats(force=False):
     canon_win_since = collections.defaultdict(int)  # 同步时刻之后且仍在当前窗口内
     sync = None
     sync_src = None
-    # 自动同步优先: 抓包接口实时值 (频控 5min); 失败/未配置回退手动同步文件
+    # 唯一同步来源: 抓包接口实时值 (频控 5min); 失败/未配置 → 无同步值, 本地估算
     auto_vals = sn_autosync_fetch(force=force)
-    manual = load_sn_sync()
     if auto_vals:
         sync = {"ts": _autosync_mem["ts"],
                 "general_w": auto_vals.get("general_w"),
@@ -2146,14 +2093,10 @@ def load_sn_stats(force=False):
                 "general_resetw": auto_vals.get("general_resetw"),
                 "flash_reset5": auto_vals.get("flash_reset5"),
                 "flash_resetw": auto_vals.get("flash_resetw"),
-                "promo": auto_vals.get("promo") if "promo" in auto_vals
-                else (manual or {}).get("promo"),
+                "promo": auto_vals.get("promo") if "promo" in auto_vals else None,
                 "promo_exp_ts": auto_vals.get("promo_exp_ts"),
                 "promo_exp_bal": auto_vals.get("promo_exp_bal")}
         sync_src = "auto"
-    elif manual:
-        sync = manual
-        sync_src = "manual"
     sync_ts = sync["ts"] if sync else None
     cands_low = {c.lower() for c in candidates}
     if candidates:
@@ -2190,7 +2133,7 @@ def load_sn_stats(force=False):
         acc[pk][1] += canon_used.get(c, 0) + canon_dsh.get(c, 0)
         acc_since[pk] += canon_since.get(c, 0)
 
-    # 3.5) 手动同步修正: 官网控制台余额为基准, 同步时刻之后用本地调用数往下扣
+    # 3.5) 同步值修正: 官网控制台余额为基准, 同步时刻之后用本地调用数往下扣
     # (官方无积分 API, 这是让"余额"贴近真实的唯一途径; 同步后调用 ≈1 积分/次, 下界估算)
     sync_time_str = None
     if sync:
@@ -2214,7 +2157,7 @@ def load_sn_stats(force=False):
                 # 同步发生在此前窗口 → 官网 5h 剩余已随窗口滚动失效, 保持本地估算
 
     # 3.6) 自动同步精确模式: 接口返回的就是官方实时值 — remaining 直接透传,
-    # 不做"上限-已用"浮点往返, 也不掺本地估算 (那只是手动同步无法实时时的折中)
+    # 不做"上限-已用"浮点往返, 也不掺本地估算 (那只是同步不可用时的折中)
     exact = {}   # pid -> {"w5": 剩余, "w7": 剩余} (None 表示该字段未配置, 回退估算)
     if sync_src == "auto" and sync:
         for pid, pfx in (("general", "general"), ("flash_lite", "flash")):
@@ -2292,7 +2235,7 @@ def load_sn_stats(force=False):
         "pools": pools,
         "synced": sync is not None,
         "sync_time": sync_time_str,
-        "sync_src": sync_src,                      # 'auto' 抓包接口 / 'manual' 手动
+        "sync_src": sync_src,                      # 'auto' 抓包接口 / None 无同步
         "autosync_error": _autosync_mem["error"],  # 自动同步失败原因 (供 UI 提示)
     }
 
@@ -2658,8 +2601,6 @@ class CardWindow(QWidget):
                     mode = f"自动同步失败({s['autosync_error']})"
                 elif s.get("sync_src") == "auto":
                     mode = f"自动同步 {s['sync_time']}"
-                elif s.get("synced"):
-                    mode = f"已同步 {s['sync_time']}"
                 else:
                     mode = "本地估算"
                 self.subtitle.setText(
@@ -2796,6 +2737,14 @@ class CardWindow(QWidget):
 
         self.chart.set_data(daily, rows)
         self.heat.set_data(self.stats.get("daily", {}))
+
+        # 收口窗口高度: 重建明细行后布局中间态会把 minimumSize 顶高 (实测 1267,
+        # 超过 maximumHeight 1000), 使窗口停在超高位置不再缩回——这里先让布局稳定,
+        # 再清掉被顶高的 minimumSize 并强制回到旧内容标准高度 880。
+        self.layout().activate()
+        self.setMinimumHeight(0)
+        self.resize(664, 880)
+        self.layout().activate()
 
     # ---------------- 商汤额度页 ----------------
     def _fit_height(self):

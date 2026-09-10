@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""offscreen 验证: 切页 race 防护 + 商汤积分手动同步 + 事件缓存."""
+"""offscreen 验证: 切页 race 防护 + 商汤积分自动同步 + 事件缓存."""
 import os, sys, time, json
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -11,9 +11,8 @@ from PySide6.QtWidgets import QApplication
 app = QApplication.instance() or QApplication([])
 PASS = 0
 
-# ---- 备份用户真实同步配置 (测试过程会读写/清除这些文件, 结束后恢复) ----
+# ---- 备份用户真实自动同步配置 (测试过程会读写/清除这些文件, 结束后恢复) ----
 _user_autosync = ca.load_sn_autosync()
-_user_sync = ca.load_sn_sync()
 
 
 def check(name, cond, detail=""):
@@ -79,10 +78,9 @@ ca.CardWindow._kick_pending(w)    # singleShot(0, self.refresh) → 命中 patch
 app.processEvents()
 check("kick 后 pending 清位", w._pending_refresh is False)
 
-# ========== 2. 积分手动同步数学 ==========
-print("== 2. 同步修正数学 ==")
-ca.clear_sn_sync()
-ca.clear_sn_autosync()   # 隔离: 用户真实 autosync 配置会覆盖 mock 手动值
+# ========== 2. 自动同步精确值 + 未配置字段回退估算 ==========
+print("== 2. 自动同步精确值 ==")
+ca.clear_sn_autosync()   # 隔离: 用户真实 autosync 配置会覆盖 mock 值
 
 ws, we = ca.sn_window_bounds()
 sync_ts = ws + (we - ws) * 0.5      # 窗口中点: 永远在当前窗口内, 断言与时钟无关
@@ -99,21 +97,25 @@ for t, m, n in MOCK_EVENTS:
 orig_events = ca._sn_events_all
 ca._sn_events_all = lambda: {"fake.jsonl": events}
 
-ca.save_sn_sync({"ts": sync_ts, "general_w": 590000, "general_5h": 55000,
-                 "flash_w": None, "flash_5h": None,
-                 "promo": 100, "promo_expire": "9月30日"})
+# 自动同步: 用内存缓存注入 mock 值 (不碰网络; 测试后恢复真实 fetch)
+_orig_fetch = ca.sn_autosync_fetch
+ca._autosync_mem.update(ts=sync_ts,
+                        values={"general_w": 590000.0, "general_5h": 55000.0,
+                                "promo": 100.0}, error=None)
+ca.sn_autosync_fetch = lambda force=False: ca._autosync_mem["values"]
+
 s = ca.load_sn_stats()
 g = next(p for p in s["pools"] if p["id"] == "general")
 f = next(p for p in s["pools"] if p["id"] == "flash_lite")
 pr = next(p for p in s["pools"] if p["id"] == "promo")
 
+check("sync_src=auto", s.get("sync_src") == "auto")
 check("synced 标记", s.get("synced") is True and g.get("synced") is True)
-check("通用周余额 = 600000-590000+同步后2次", g["weekly_remaining"] == 589998.0,
+check("通用周余额精确透传 (auto 值)", g["weekly_remaining"] == 590000.0,
       f"got {g['weekly_remaining']}")
-check("通用 5h 剩余 = 60000-55000+同步后窗口内2次", g["window_remaining"] == 54998,
+check("通用 5h 精确透传 (auto 值)", g["window_remaining"] == 55000.0,
       f"got {g['window_remaining']}")
-# Flash 池未填同步值 → 保持本地估算: WB 事件被 mock(无窗口内 flash 调用),
-# 但本地真实 DSH 账本今日可能有 flash 调用, 需一并计入
+# Flash 池未配置同步路径 → 本地估算: mock 事件无 flash, 但 DSH 账本今日不可控
 dsh = ca.load_dsh_stats()
 today = time.strftime("%Y-%m-%d")
 _flash = {"sensenova-6.8-flash-lite", "sensenova-6.7-flash-lite"}
@@ -122,35 +124,16 @@ if dsh and "error" not in dsh:
     for m, b in dsh.get("daily", {}).get(today, {}).items():
         if ca.sn_canonical(m) in _flash:
             dsh_flash += b.get("requests", 0)
-check("Flash 池未填 → 本地估算(=DSH今日flash调用)",
+check("Flash 池未配置 → 本地估算(=DSH今日flash)",
       f["weekly_remaining"] == 600000 - dsh_flash and f["window_remaining"] == 60000,
       f"got w={f['weekly_remaining']} expect {600000 - dsh_flash}")
-check("活动积分用同步值", pr["total_balance"] == 100 and pr["nearest_expire"] == "9月30日")
+check("活动积分用同步值", pr["total_balance"] == 100.0, str(pr)[:80])
 check("sync_time 已生成", bool(s.get("sync_time")))
+ca.sn_autosync_fetch = _orig_fetch
+ca._autosync_mem.update(ts=0.0, values=None, error=None)
 
-# 窗口已翻滚: 同步发生在上一个窗口 → 5h 回退本地估算, 周修正仍生效
-ca.save_sn_sync({"ts": ws - 7200, "general_w": 590000, "general_5h": 55000})
-s2 = ca.load_sn_stats()
-g2 = next(p for p in s2["pools"] if p["id"] == "general")
-check("翻滚后 5h 回退本地估算", g2["window_remaining"] == 60000 - 5,
-      f"got {g2['window_remaining']}")
-check("翻滚后周修正仍生效 (余额=600000-(10000+9))",
-      g2["weekly_remaining"] == 600000 - 10000 - 9,
-      f"got {g2['weekly_remaining']}")
-
-# ========== 3. 手动回退数据层 (文件级; 手动 UI 已移除) ==========
-print("== 3. 手动回退数据层 ==")
-ca.save_sn_sync({"ts": time.time(), "general_5h": 55000, "general_w": 590000,
-                 "promo": 100})
-d = ca.load_sn_sync()
-check("手动回退值读写", d["general_5h"] == 55000 and d["general_w"] == 590000.0)
-check("load_sn_sync 容错损坏文件", (open(ca.SN_SYNC_FILE, "w").write("{broken"),
-                                    ca.load_sn_sync() is None)[1])
-ca.clear_sn_sync()
-check("清除同步", ca.load_sn_sync() is None)
-
-# ========== 4. cURL 解析 + 指纹识别 + 自动同步 ==========
-print("== 4. cURL 自动同步 ==")
+# ========== 3. cURL 解析 + 指纹识别 + 自动同步 ==========
+print("== 3. cURL 自动同步 ==")
 CURL_BASH = ("curl 'https://api.example.com/console/points?x=1' \\\n"
              "  -H 'Cookie: SESSION=abc123' \\\n"
              "  -H 'User-Agent: Mozilla/5.0' \\\n"
@@ -181,7 +164,6 @@ check("按路径取值-缺失容错", ca._get_path(SAMPLE_JSON, "data.nope.deep"
 
 # mock HTTP: 自动抓取 → load_sn_stats 优先用 auto 值
 ca.clear_sn_autosync()
-ca.clear_sn_sync()
 _orig_http = ca._http_json
 
 
@@ -212,20 +194,20 @@ check("load_sn_stats 优先 auto (周=接口值)",
 check("load_sn_stats auto flash 5h", f3["window_remaining"] == 59123,
       f"got {f3['window_remaining']}")
 
-# 接口失败 (凭据过期) → 回退手动
+# 接口失败 (凭据过期) → 无手动回退, 纯本地估算 + 错误提示
 def fail_http(req):
     return 401, None, "HTTP 401"
 
 
 ca._http_json = fail_http
 ca._autosync_mem.update(ts=0.0, values=None, error=None)
-# ts 取窗口结束后 → after 全 False → 纯"基准"修正, 不掺 mock 事件扣减
-ca.save_sn_sync({"ts": we + 60, "general_w": 590000})
+# mock 事件仍生效 (第2节设置, 未还原): 窗口内至少 5 次 deepseek 计入 general 已用;
+# DSH 账本今日调用不可控 → 周余额用范围断言 (严格 < 上限, 且已扣掉窗口内计数)
 s4 = ca.load_sn_stats()
 g4 = next(p for p in s4["pools"] if p["id"] == "general")
-check("接口 401 → 回退手动同步值",
-      s4.get("sync_src") == "manual" and bool(s4.get("autosync_error"))
-      and g4["weekly_remaining"] == 590000,
+check("接口 401 → 无同步值(本地估算) + 错误提示",
+      s4.get("sync_src") is None and bool(s4.get("autosync_error"))
+      and 0 <= g4["weekly_remaining"] < 600000,
       f"src={s4.get('sync_src')} err={s4.get('autosync_error')} w={g4['weekly_remaining']}")
 
 # 频控: TTL 内不重复请求
@@ -253,7 +235,6 @@ check("非商汤结构 → 友好报错", "识别失败" in panel.err_lbl.text()
       panel.err_lbl.text()[:40])
 ca._http_json = _orig_http
 ca.clear_sn_autosync()
-ca.clear_sn_sync()
 
 # ========== 5. 商汤真实接口结构 (浅浅猫抓包样例, 数字全是字符串) ==========
 print("== 5. 商汤真实接口样例 ==")
@@ -325,7 +306,6 @@ check("到期显示=日期+金额", "9月27日" in str(pr5["nearest_expire"])
       str(pr5["nearest_expire"]))
 ca._http_json = _orig_http
 ca.clear_sn_autosync()
-ca.clear_sn_sync()
 
 # ========== 6. 零指纹结构探测 + 手动刷新绕过频控 ==========
 print("== 6. 零指纹 + 强制刷新 ==")
@@ -348,8 +328,8 @@ mem = ca._autosync_mem
 check("保存后内存含完整值(promo/reset)", bool(mem["values"])
       and "promo" in mem["values"] and "general_reset5" in mem["values"],
       str(mem["values"])[:160])
-check("手动文件含活动积分", ca.load_sn_sync().get("promo") == 1085450.2836,
-      str(ca.load_sn_sync())[:120])
+check("活动积分入自动同步缓存", mem["values"]["promo"] == 1085450.2836,
+      str(mem["values"])[:120])
 calls = {"n": 0}
 
 
@@ -492,13 +472,10 @@ ca.theme_state.clear(); ca.theme_state.update(_user_theme)
 ca.save_settings()
 
 ca.clear_sn_autosync()
-ca.clear_sn_sync()
 
-# ---- 恢复用户真实同步配置 (测试前备份的) ----
+# ---- 恢复用户真实自动同步配置 (测试前备份的) ----
 if _user_autosync:
     ca.save_sn_autosync(_user_autosync)
-if _user_sync:
-    ca.save_sn_sync(_user_sync)
 
 ca._sn_events_all = orig_events
 print(f"\nALL {PASS} CHECKS PASSED")
