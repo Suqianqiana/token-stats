@@ -2588,6 +2588,10 @@ class CardWindow(QWidget):
             return
         if src == self.source:
             self.stats = s
+            if src == "sn":
+                # 商汤刷新完成也同步缓存: 否则切走再切回会用过期 _sn_cache,
+                # 先渲染旧页面再刷新变新页 (切页闪旧问题根因)
+                self._sn_cache = s
             self.render()
             if src == "dsh":
                 self.subtitle.setText(
