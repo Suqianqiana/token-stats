@@ -278,11 +278,19 @@ for name, (px0, py0, px1, py1), expect in PANELS:
                 if int(yy.mean()) > leg_y:                         # 腿部区 -> 不碰
                     continue
                 drop |= m
+            if drop.any():
+                print(f"      [{name}_{i+1:02d}] 删腔总像素 {int(drop.sum())}")
             if not drop.any() or float(drop.sum()) > 0.25 * max(1.0, float(sil.sum())):
                 break
             sil = sil & ~drop
         for d in attach[i]:                       # 贴上邻近装饰件
-            dm = ndimage.binary_fill_holes(d["mask"])
+            dm = d["mask"]
+            # 实体装饰(鲸鱼/星星/爱心: 描边密实, 填充率>=0.16) -> 填洞保住内部图案;
+            # 圈状描边(呆毛圈: 细环, 填充率低) -> 只贴描边本身, 圈内背景保持透明。
+            ys_d, xs_d = np.where(dm)
+            bbox = max(1, (ys_d.max() - ys_d.min() + 1) * (xs_d.max() - xs_d.min() + 1))
+            if float(dm.sum()) / bbox >= 0.16:
+                dm = ndimage.binary_fill_holes(dm)
             sil |= dm
         # 注意: 不再向轮廓外扩任何像素 —— 实测描边外侧那层"过渡像素"(mn 160~250)
         # 正是深底上看得见的白晕/毛刺来源, 一律不收。
