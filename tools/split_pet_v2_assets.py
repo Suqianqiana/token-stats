@@ -261,7 +261,7 @@ for name, (px0, py0, px1, py1), expect in PANELS:
             if not pn:
                 break
             psz = np.bincount(pl.ravel())
-            cand = [j for j in range(1, pn + 1) if psz[j] >= 30
+            cand = [j for j in range(1, pn + 1) if psz[j] >= 18
                     and float((f & (pl == j)).sum()) / psz[j] < 0.02
                     and float(A[pl == j].min(axis=1).mean()) >= 210
                     and float(b_r[pl == j].mean()) >= -2
@@ -276,6 +276,12 @@ for name, (px0, py0, px1, py1), expect in PANELS:
                     continue
                 yy, _xx = np.where(m)
                 if int(yy.mean()) > leg_y:                         # 腿部区 -> 不碰
+                    continue
+                # 护栏: 被**实心深色**包围的小亮块 = 眼睛高光/饰品反光 -> 保留
+                #   (发丝间隙四周是细发丝, ring 内 ink_core 占比低; 眼睛高光四周是
+                #    大片实心深色眼珠, 占比高 -> 从而把两者分开)
+                ring = ndimage.binary_dilation(m, structure=S8, iterations=3) & f
+                if float((ring & ink_core).sum()) / max(1, int(ring.sum())) >= 0.15:
                     continue
                 drop |= m
             if drop.any():
@@ -371,6 +377,17 @@ for name, (px0, py0, px1, py1), expect in PANELS:
                 mj = al == j
                 if not (mj & near_m).any():
                     a2[mj] = 0
+        # ---- 边缘去背景污染 (color decontamination) —— 治"锯齿毛刺"
+        #   抗锯齿恢复了, 但这些半透明边缘像素的颜色仍是"描边 ↔ 浅色底"的混合(偏白),
+        #   压在深色桌面上就形成一圈灰白毛刺。修法: 把边缘像素的颜色替换为
+        #   **最近的实心角色像素**颜色 —— alpha(抗锯齿) 完全保留, 颜色变成角色本身的
+        #   深色描边色, 深底上过渡自然、不再有白边。
+        solid = a2 >= 250
+        if solid.any() and (~solid).any():
+            _d, idx_near = ndimage.distance_transform_edt(~solid, return_indices=True)
+            near_rgb = rgb[idx_near[0], idx_near[1]]
+            soft_edge = (a2 > 0) & ~solid
+            rgb[soft_edge] = near_rgb[soft_edge]
         out = Image.fromarray(np.dstack([rgb, a2]), "RGBA")
         bb = out.getbbox()
         if bb:
