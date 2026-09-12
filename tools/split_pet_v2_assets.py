@@ -261,7 +261,8 @@ for name, (px0, py0, px1, py1), expect in PANELS:
             cand = [j for j in range(1, pn + 1) if psz[j] >= 30
                     and float((f & (pl == j)).sum()) / psz[j] < 0.02
                     and float(A[pl == j].min(axis=1).mean()) >= 210
-                    and float(b_r[pl == j].mean()) >= -2]
+                    and float(b_r[pl == j].mean()) >= -2
+                    and float(sat_all[pl == j].mean()) <= 32]
             biggest = max(cand, key=lambda j: psz[j]) if cand else None
             drop = np.zeros_like(sil)
             for j in cand:
@@ -286,7 +287,7 @@ for name, (px0, py0, px1, py1), expect in PANELS:
             edge = sil & ~inner
             if not edge.any():
                 break
-            light_edge = edge & (mn_all >= 170) & (sat_all <= 35)
+            light_edge = edge & (mn_all >= 225) & (sat_all <= 25)
             if not light_edge.any():
                 break
             sil = sil & ~light_edge
@@ -311,6 +312,23 @@ for name, (px0, py0, px1, py1), expect in PANELS:
         a2 = ndimage.median_filter(a2, size=3)
         far = ndimage.distance_transform_edt(m) >= 2.0
         a2[far] = 255
+        # ---- 关键补刀 (浅浅猫反馈"发丝间残留灰粉色"): 近似底色的像素若 alpha 不满 250,
+        #   在洋红底/深底上会显示为灰粉色半透明残留 -> 直接归 0 全透明。
+        #   衣物白/围裙内部 alpha=255(上一行 far 保证) 不受影响, 只损失 <1px 边界。
+        smn = rgb.min(axis=2).astype(np.int16)
+        ssat = (rgb.max(axis=2).astype(np.int16) - smn)
+        bg_like = (smn >= 232) & (ssat <= 22)
+        a2[(a2 > 0) & (a2 < 250) & bg_like] = 0
+        # 再把紧贴透明区的"近似底色"不透明像素削掉 (最多 2 圈)
+        for _ in range(2):
+            objm = a2 > 0
+            edge = objm & ~ndimage.binary_erosion(objm, structure=S8, iterations=1)
+            if not edge.any():
+                break
+            kill = edge & (smn >= 228) & (ssat <= 24)
+            if not kill.any():
+                break
+            a2[kill] = 0
         # 清掉与主体不相连的透明度碎屑 (毛刺残留)
         av = a2 > 40
         al, an = ndimage.label(av, structure=S8)

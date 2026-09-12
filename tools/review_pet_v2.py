@@ -37,7 +37,7 @@ for g, _, _ in GROUPS:
         box = W.get(f"{g}/{fn[:-4]}", {}).get("box", [0, 0, 0, 0])
         src = im.crop((box[0], box[2], box[1] + 1, box[3] + 1))
         dk = Image.new("RGBA", f.size, (30, 34, 42, 255)); dk.alpha_composite(f)
-        lt = Image.new("RGBA", f.size, (244, 246, 250, 255)); lt.alpha_composite(f)
+        lt = Image.new("RGBA", f.size, (255, 0, 255, 255)); lt.alpha_composite(f)   # 洋红底: 残留一望即知
         data[f"{g}/{fn[:-4]}"] = dict(name=fn[:-4], g=g, w=f.width, h=f.height,
                                       src=jpg(src, H), dark=jpg(dk, H), light=jpg(lt, H))
         tot += 1
@@ -76,7 +76,7 @@ background:#0b0d11;border-radius:8px;padding:8px}
 .shots .cell{border-radius:6px;display:flex;align-items:flex-end;justify-content:center;overflow:hidden}
 .shots .cell img{height:200px;display:block}
 .shots figcaption{font-size:10.5px;color:var(--tx3)}
-.c1{background:#2c313a}.c2{background:#1e222a}.c3{background:#f2f4f8}
+.c1{background:#2c313a}.c2{background:#1e222a}.c3{background:#ff00ff}
 </style></head><body><div class="wrap">
 <h1>桌宠 v2 素材检视（当前在用）</h1>
 <div class="sub">按角色轮廓分割 · __TOT__ 帧（idle 4 / sleep 2 / drag 3 / click 2 / special 2）</div>
@@ -85,12 +85,12 @@ background:#0b0d11;border-radius:8px;padding:8px}
 <div class="seg">
 <button data-b="1" class="on">灰蓝</button>
 <button data-b="2">深黑</button>
-<button data-b="3">浅白</button>
+<button data-b="3">洋红(查残留)</button>
 </div>
 <span class="lbl">检查要点：① 发丝间隙是否还有残留底色 ② 白描边外缘是否毛糙 ③ 围裙/衣领白是否完整 ④ 装饰件是否齐全</span>
 </div>
 <div class="note">每帧三图：<b>原图区域</b>（素材排版里的原位）· <b>抠图结果·深底</b> · <b>抠图结果·浅底</b>。
-切换「结果底色」便于分别检查<b>残留</b>（深底显形）与<b>白边/内部白</b>（浅底显形）。</div>
+切到「洋红(查残留)」：<b>洋红 = 已透明</b>，凡是仍显示白/浅色处就是没扣掉的残留，一眼可见。</div>
 <div id="host"></div>
 </div>
 <script>
@@ -105,7 +105,7 @@ GROUPS.forEach(function(gm){
  keys.forEach(function(k){var d=DATA[k];
   out.push('<div class="card"><div class="hd"><span class="nm">'+d.name+'</span>'+
    '<span class="sz">'+d.w+'×'+d.h+'</span></div><div class="shots">'+
-   cell('c1',d.src,'原图区域')+cell('c2',d.dark,'结果·深底')+cell('c3',d.light,'结果·浅底')+
+   cell('c1',d.src,'原图区域')+cell('c2',d.dark,'结果·深底')+cell('c3',d.light,'结果·洋红底(查残留)')+
    '</div></div>');});
  out.push('</div>');
 });
