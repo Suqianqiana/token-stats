@@ -312,27 +312,31 @@ for name, (px0, py0, px1, py1), expect in PANELS:
         a2 = ndimage.median_filter(a2, size=3)
         far = ndimage.distance_transform_edt(m) >= 2.0
         a2[far] = 255
-        # ---- 关键补刀 (浅浅猫反馈"发丝间残留灰粉色"): 近似底色 + alpha 不满 250 的像素
-        #   若其 3x3 邻域里 >=5 个是透明, 说明它是"细缝里的半透明残料" -> 归零。
-        #   细缝(1~2px)满足; 白袜子/腿等细结构的主体像素邻域多为不透明 -> 不会被误删。
+        # ---- 分区域补刀 (浅浅猫建议): 上半=发丝区用宽松规则清细缝半透明残料;
+        #   下半(腿/白袜/鞋) 完全不做清零, 避免误伤浅色细结构。
+        #   上半区: 近似底色 + alpha<250 的**小块**(<=400px, 细缝残料) -> 归零;
+        #   同色的大块 = 头发的浅色填充/发梢淡出 (面积大) -> 保留, 避免头发被掏空。
+        Hh = a2.shape[0]
+        split_y = int(Hh * 0.68)
         smn = rgb.min(axis=2).astype(np.int16)
         ssat = (rgb.max(axis=2).astype(np.int16) - smn)
         bg_like = (smn >= 232) & (ssat <= 22)
-        transp = (a2 == 0).astype(np.uint8)
-        nb = np.zeros_like(transp, np.int16)
-        for dy in (-1, 0, 1):
-            for dx in (-1, 0, 1):
-                if dy == 0 and dx == 0:
-                    continue
-                nb += np.roll(np.roll(transp, dy, axis=0), dx, axis=1)
-        a2[(a2 > 0) & (a2 < 250) & bg_like & (nb >= 5)] = 0
-        # 再把紧贴透明区的"近似底色"不透明像素削掉 (最多 2 圈)
+        upper = np.zeros_like(a2, bool)
+        upper[:split_y + 1, :] = True
+        cand = (a2 > 0) & (a2 < 250) & bg_like & upper
+        cl, cn = ndimage.label(cand, structure=S8)
+        if cn:
+            csz = np.bincount(cl.ravel())
+            for j in range(1, cn + 1):
+                if csz[j] <= 400:
+                    a2[cl == j] = 0
+        # 再只在上半区把紧贴透明区的"近似底色"不透明像素削掉 (最多 2 圈)
         for _ in range(2):
             objm = a2 > 0
             edge = objm & ~ndimage.binary_erosion(objm, structure=S8, iterations=1)
             if not edge.any():
                 break
-            kill = edge & (smn >= 228) & (ssat <= 24)
+            kill = edge & (smn >= 228) & (ssat <= 24) & upper
             if not kill.any():
                 break
             a2[kill] = 0
