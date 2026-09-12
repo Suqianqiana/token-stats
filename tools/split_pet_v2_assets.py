@@ -245,13 +245,16 @@ for name, (px0, py0, px1, py1), expect in PANELS:
                     rch[ny, nx] = True; dq2.append((ny, nx))
         sil = ndimage.binary_fill_holes(f)
         sil[wy0:wy1 + 1, wx0:wx1 + 1] &= ~rch          # 白描边/背景/缝里的白料 -> 透明
-        # ---- 发丝间隙的封闭腔清除 (最终判据: 深度)
-        #   实测: 两侧发丝围成的背景区/呆毛圈 = **浅腔** (到外轮廓距离中位 5~22px);
-        #   围裙(47~48) 皮肤(64~70) 衣物(67~80) = **深腔** -> 天然被保护, 不再依赖面积/颜色猜测。
-        #   另加: 偏暖(B-R<-2)=皮肤 -> 保留; 腔内含描边=衣物纹路 -> 保留; 帧内最大腔=围裙 -> 保留。
+        # ---- 发丝间隙的封闭腔清除 (只在"顶部/两侧发丝区"生效, 且必须远离腿部区)
+        #   判据: 浅腔(到外轮廓距离中位<=28) + 亮 + 偏蓝不偏暖 + 腔内无描边 + 非帧内最大腔(围裙)
+        #   腿/白袜/鞋 = 位于画面下部 30% 的腔 -> 一律跳过 (避免"腿被扣没")
         ink_core = ndimage.binary_erosion(f, structure=S8, iterations=2)
         b_r = A[..., 2] - A[..., 0]
         dist_out = ndimage.distance_transform_edt(sil)
+        _ys0, _ = np.where(sil)
+        leg_guard = int(_ys0.max() - (sil.shape[0] if False else 0))  # 占位, 下面按 bbox 计算
+        y_top, y_bot = int(_ys0.min()), int(_ys0.max())
+        leg_y = y_bot - int((y_bot - y_top) * 0.30)     # 下方 30% 视为腿部区
         for _ in range(2):
             pockets = sil & ~f
             pl, pn = ndimage.label(pockets, structure=S8)
@@ -270,6 +273,9 @@ for name, (px0, py0, px1, py1), expect in PANELS:
                 if j == biggest:                                   # 围裙 = 帧内最大腔
                     continue
                 if float(np.median(dist_out[m])) > 28:             # 深腔 -> 衣物/身体内部
+                    continue
+                yy, _xx = np.where(m)
+                if int(yy.mean()) > leg_y:                         # 腿部区 -> 不碰
                     continue
                 drop |= m
             if not drop.any() or float(drop.sum()) > 0.25 * max(1.0, float(sil.sum())):
@@ -312,31 +318,22 @@ for name, (px0, py0, px1, py1), expect in PANELS:
         a2 = ndimage.median_filter(a2, size=3)
         far = ndimage.distance_transform_edt(m) >= 2.0
         a2[far] = 255
-        # ---- 分区域补刀 (浅浅猫建议): 上半=发丝区用宽松规则清细缝半透明残料;
-        #   下半(腿/白袜/鞋) 完全不做清零, 避免误伤浅色细结构。
-        #   上半区: 近似底色 + alpha<250 的**小块**(<=400px, 细缝残料) -> 归零;
-        #   同色的大块 = 头发的浅色填充/发梢淡出 (面积大) -> 保留, 避免头发被掏空。
-        Hh = a2.shape[0]
-        split_y = int(Hh * 0.68)
+        # ---- 反解"细缝半透明残料" (不再按颜色清零, 避免误删白袜/腿):
+        #   把 alpha 做对比拉伸 —— 中间值推向两端。
+        #   细缝残料(alpha 偏中) -> 全透明; 细结构如白袜/腿(alpha 偏中) -> 全不透明。
+        af = a2.astype(np.float32) / 255.0
+        af = np.clip((af - 0.45) * 2.8 + 0.5, 0.0, 1.0)
+        af[far] = 1.0
+        a2 = (af * 255).astype(np.uint8)
+        # 只在紧贴透明区的最外 1 圈, 把"近似底色"的不透明像素削掉 (统一处理, 不分区域)
         smn = rgb.min(axis=2).astype(np.int16)
         ssat = (rgb.max(axis=2).astype(np.int16) - smn)
-        bg_like = (smn >= 232) & (ssat <= 22)
-        upper = np.zeros_like(a2, bool)
-        upper[:split_y + 1, :] = True
-        cand = (a2 > 0) & (a2 < 250) & bg_like & upper
-        cl, cn = ndimage.label(cand, structure=S8)
-        if cn:
-            csz = np.bincount(cl.ravel())
-            for j in range(1, cn + 1):
-                if csz[j] <= 400:
-                    a2[cl == j] = 0
-        # 再只在上半区把紧贴透明区的"近似底色"不透明像素削掉 (最多 2 圈)
         for _ in range(2):
             objm = a2 > 0
             edge = objm & ~ndimage.binary_erosion(objm, structure=S8, iterations=1)
             if not edge.any():
                 break
-            kill = edge & (smn >= 228) & (ssat <= 24) & upper
+            kill = edge & (smn >= 228) & (ssat <= 24)
             if not kill.any():
                 break
             a2[kill] = 0
