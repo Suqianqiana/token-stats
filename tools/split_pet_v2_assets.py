@@ -277,12 +277,13 @@ for name, (px0, py0, px1, py1), expect in PANELS:
                 yy, _xx = np.where(m)
                 if int(yy.mean()) > leg_y:                         # 腿部区 -> 不碰
                     continue
-                # 护栏: 被**实心深色**包围的小亮块 = 眼睛高光/饰品反光 -> 保留
-                #   (发丝间隙四周是细发丝, ring 内 ink_core 占比低; 眼睛高光四周是
-                #    大片实心深色眼珠, 占比高 -> 从而把两者分开)
-                ring = ndimage.binary_dilation(m, structure=S8, iterations=3) & f
-                if float((ring & ink_core).sum()) / max(1, int(ring.sum())) >= 0.15:
-                    continue
+                # 护栏: 只有**小腔**(<120px, 眼睛高光/饰品反光这种尺度) 才做"实心深色包围"
+                #   保护; 发丝缝/呆毛圈通常 >=120px, 不受此护栏影响 (上一版护栏过宽,
+                #   把 idle 组的发丝缝一起保住了 -> 回归)。
+                if psz[j] < 120:
+                    ring = ndimage.binary_dilation(m, structure=S8, iterations=3) & f
+                    if float((ring & ink_core).sum()) / max(1, int(ring.sum())) >= 0.30:
+                        continue
                 drop |= m
             if drop.any():
                 print(f"      [{name}_{i+1:02d}] 删腔总像素 {int(drop.sum())}")
@@ -330,20 +331,20 @@ for name, (px0, py0, px1, py1), expect in PANELS:
         #   呆毛与头发围成的圈、被发丝包住的缝 —— 又重新填回不透明,
         #   使前面所有腔清除工作全部被抵消, 表现为"每帧都有圈扣不掉"。
         #   改为只用掩码 m 自身兜底内部: m 里保留 -> 不透明; m 里已删 -> 保持透明。
-        big_sil = ndimage.gaussian_filter(big_sil, 1.0)            # 亚像素: 边缘天然渐变
+        big_sil = ndimage.gaussian_filter(big_sil, 1.2)             # 亚像素: 边缘天然渐变
         ink4 = (big_rgb.min(axis=2) < 200) & (big_sil > 0.30)      # 上采样后的深色描边
         # 深色描边处拉满(描边保持清晰); 其余按掩码的平滑值 -> 得到真亚像素抗锯齿边
         soft4 = np.maximum(big_sil, ink4.astype(np.float32) * 0.9)
         soft4 = ndimage.gaussian_filter(soft4, 0.7)
-        soft = np.clip((soft4 - 0.40) / 0.40, 0.0, 1.0)
+        soft = np.clip((soft4 - 0.30) / 0.45, 0.0, 1.0)
         a2 = (np.clip(ndimage.zoom(soft, 1.0 / up, order=1), 0, 1) * 255).astype(np.uint8)
-        a2 = ndimage.median_filter(a2, size=3)
-        far = ndimage.distance_transform_edt(m) >= 2.0
+        far = ndimage.distance_transform_edt(m) >= 1.6
         a2[far] = 255
-        # ---- 细缝半透明残料清除 (不再做全图对比拉伸 —— 那会把抗锯齿边一起二值化,
-        #   表现为"边缘硬切/毛刺"): 只对【近似底色 且 3x3 邻域里 >=5 个透明】的
-        #   中低 alpha 像素归零 —— 细缝(1~2px)满足; 轮廓边缘只有 3~4 个透明邻居, 不满足,
-        #   因此亚像素抗锯齿被完整保留。白袜/腿等细结构邻域多为不透明, 也安全。
+        # ---- 细缝半透明残料清除 (不做全图对比拉伸 —— 那会把抗锯齿边一起二值化):
+        #   只对【近似底色 且 3x3 邻域里 >=6 个透明】的中低 alpha 像素归零。
+        #   细缝(1~2px 宽)的透明邻居有 6~8 个 -> 清掉;
+        #   轮廓边缘的透明邻居只有 3~5 个 -> **不满足**, 亚像素抗锯齿完整保留。
+        #   白袜/腿等细结构邻域多为不透明, 同样安全。
         smn = rgb.min(axis=2).astype(np.int16)
         ssat = (rgb.max(axis=2).astype(np.int16) - smn)
         transp = (a2 == 0).astype(np.uint8)
@@ -353,17 +354,11 @@ for name, (px0, py0, px1, py1), expect in PANELS:
                 if dy == 0 and dx == 0:
                     continue
                 nb_trans += np.roll(np.roll(transp, dy, axis=0), dx, axis=1)
-        a2[(a2 > 0) & (a2 < 250) & (smn >= 232) & (ssat <= 22) & (nb_trans >= 5)] = 0
-        # 只在紧贴透明区的最外 1 圈, 把"近似底色"的不透明像素削掉 (统一处理, 不分区域)
-        for _ in range(2):
-            objm = a2 > 0
-            edge = objm & ~ndimage.binary_erosion(objm, structure=S8, iterations=1)
-            if not edge.any():
-                break
-            kill = edge & (smn >= 228) & (ssat <= 24)
-            if not kill.any():
-                break
-            a2[kill] = 0
+        a2[(a2 > 0) & (a2 < 250) & (smn >= 230) & (ssat <= 24) & (nb_trans >= 6)] = 0
+        # ★ 第24轮: 删掉了原"逐像素按颜色削浅色边"两步 (kill = edge & smn>=228 ...)。
+        #   那两步是**逐像素**按颜色删的, 会把平滑的轮廓削成台阶状 ——
+        #   这正是深底上"锯齿/毛刺"的真正来源。浅色边缘改由下面的
+        #   "颜色去污染"处理(只换颜色, 不动 alpha), 轮廓平滑性得以保持。
         # 清掉与主体不相连的透明度碎屑 (毛刺残留)
         av = a2 > 40
         al, an = ndimage.label(av, structure=S8)
@@ -377,17 +372,26 @@ for name, (px0, py0, px1, py1), expect in PANELS:
                 mj = al == j
                 if not (mj & near_m).any():
                     a2[mj] = 0
-        # ---- 边缘去背景污染 (color decontamination) —— 治"锯齿毛刺"
-        #   抗锯齿恢复了, 但这些半透明边缘像素的颜色仍是"描边 ↔ 浅色底"的混合(偏白),
-        #   压在深色桌面上就形成一圈灰白毛刺。修法: 把边缘像素的颜色替换为
-        #   **最近的实心角色像素**颜色 —— alpha(抗锯齿) 完全保留, 颜色变成角色本身的
-        #   深色描边色, 深底上过渡自然、不再有白边。
-        solid = a2 >= 250
-        if solid.any() and (~solid).any():
-            _d, idx_near = ndimage.distance_transform_edt(~solid, return_indices=True)
-            near_rgb = rgb[idx_near[0], idx_near[1]]
-            soft_edge = (a2 > 0) & ~solid
-            rgb[soft_edge] = near_rgb[soft_edge]
+        # ---- 边缘去背景污染 (color decontamination 加强版) —— 治"边缘白点/毛刺"
+        #   两类被污染像素:
+        #   ① 抗锯齿半透明边(0<alpha<250): 颜色是"描边↔浅色底"混合, 偏白;
+        #   ② **删腔后露出的边缘**(alpha=255, 落在 far 内所以之前被跳过): 颜色仍是
+        #      原图的浅色背景色 —— 深底上就是一圈白点/毛刺(用户反馈的正是这个)。
+        #   统一修法: 把"贴近透明区(<=2.5px) 且 颜色接近底色"的像素, 颜色替换为
+        #   **最近的实心角色色**(非底色的实心像素); alpha 完全不动。
+        #   远离透明区的浅色(围裙/白袜主体)不受影响; 围裙自身的白由"最近实心色"
+        #   仍是它自己 -> 保持不变。
+        bg_like = (rgb.min(axis=2) >= 226) & ((rgb.max(axis=2).astype(np.int16)
+                                               - rgb.min(axis=2).astype(np.int16)) <= 28)
+        core = (a2 >= 250) & ~bg_like                      # 真角色色(实心且非底色)
+        if core.any():
+            _, idx_core = ndimage.distance_transform_edt(~core, return_indices=True)
+            near_core = rgb[idx_core[0], idx_core[1]]
+            d_trans = ndimage.distance_transform_edt(a2 > 0)   # 到透明区的距离
+            near_trans = (a2 > 0) & (d_trans <= 2.5)
+            fix = (a2 < 250) | (bg_like & near_trans)       # 半透明边 + 贴透明区的浅色
+            fix &= (a2 > 0)
+            rgb[fix] = near_core[fix]
         out = Image.fromarray(np.dstack([rgb, a2]), "RGBA")
         bb = out.getbbox()
         if bb:
