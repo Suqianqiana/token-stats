@@ -318,24 +318,37 @@ for name, (px0, py0, px1, py1), expect in PANELS:
         big_rgb = np.dstack([ndimage.zoom(rgb[..., c].astype(np.float32), up, order=1)
                              for c in range(3)])
         big_sil = ndimage.zoom(m.astype(np.float32), up, order=1)
-        ink4 = (big_rgb.min(axis=2) < 200) & (big_sil > 0.25)      # 上采样后的深色描边
-        ink4 = ndimage.binary_fill_holes(ink4) | (big_sil > 0.85)  # 保内部 (围裙等)
-        soft4 = ndimage.gaussian_filter(big_sil * 0.35 + ink4.astype(np.float32) * 0.65, 0.9)
-        soft = np.clip((soft4 - 0.42) / 0.30, 0.0, 1.0)
+        # ★ 关键修复 (第22轮): 这里原本是
+        #       ink4 = ndimage.binary_fill_holes(ink4) | (big_sil > 0.85)
+        #   binary_fill_holes 会把"已被腔判据正确删掉的封闭浅色区"——
+        #   呆毛与头发围成的圈、被发丝包住的缝 —— 又重新填回不透明,
+        #   使前面所有腔清除工作全部被抵消, 表现为"每帧都有圈扣不掉"。
+        #   改为只用掩码 m 自身兜底内部: m 里保留 -> 不透明; m 里已删 -> 保持透明。
+        big_sil = ndimage.gaussian_filter(big_sil, 1.0)            # 亚像素: 边缘天然渐变
+        ink4 = (big_rgb.min(axis=2) < 200) & (big_sil > 0.30)      # 上采样后的深色描边
+        # 深色描边处拉满(描边保持清晰); 其余按掩码的平滑值 -> 得到真亚像素抗锯齿边
+        soft4 = np.maximum(big_sil, ink4.astype(np.float32) * 0.9)
+        soft4 = ndimage.gaussian_filter(soft4, 0.7)
+        soft = np.clip((soft4 - 0.40) / 0.40, 0.0, 1.0)
         a2 = (np.clip(ndimage.zoom(soft, 1.0 / up, order=1), 0, 1) * 255).astype(np.uint8)
         a2 = ndimage.median_filter(a2, size=3)
         far = ndimage.distance_transform_edt(m) >= 2.0
         a2[far] = 255
-        # ---- 反解"细缝半透明残料" (不再按颜色清零, 避免误删白袜/腿):
-        #   把 alpha 做对比拉伸 —— 中间值推向两端。
-        #   细缝残料(alpha 偏中) -> 全透明; 细结构如白袜/腿(alpha 偏中) -> 全不透明。
-        af = a2.astype(np.float32) / 255.0
-        af = np.clip((af - 0.45) * 2.8 + 0.5, 0.0, 1.0)
-        af[far] = 1.0
-        a2 = (af * 255).astype(np.uint8)
-        # 只在紧贴透明区的最外 1 圈, 把"近似底色"的不透明像素削掉 (统一处理, 不分区域)
+        # ---- 细缝半透明残料清除 (不再做全图对比拉伸 —— 那会把抗锯齿边一起二值化,
+        #   表现为"边缘硬切/毛刺"): 只对【近似底色 且 3x3 邻域里 >=5 个透明】的
+        #   中低 alpha 像素归零 —— 细缝(1~2px)满足; 轮廓边缘只有 3~4 个透明邻居, 不满足,
+        #   因此亚像素抗锯齿被完整保留。白袜/腿等细结构邻域多为不透明, 也安全。
         smn = rgb.min(axis=2).astype(np.int16)
         ssat = (rgb.max(axis=2).astype(np.int16) - smn)
+        transp = (a2 == 0).astype(np.uint8)
+        nb_trans = np.zeros_like(transp, np.int16)
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dy == 0 and dx == 0:
+                    continue
+                nb_trans += np.roll(np.roll(transp, dy, axis=0), dx, axis=1)
+        a2[(a2 > 0) & (a2 < 250) & (smn >= 232) & (ssat <= 22) & (nb_trans >= 5)] = 0
+        # 只在紧贴透明区的最外 1 圈, 把"近似底色"的不透明像素削掉 (统一处理, 不分区域)
         for _ in range(2):
             objm = a2 > 0
             edge = objm & ~ndimage.binary_erosion(objm, structure=S8, iterations=1)
