@@ -312,13 +312,20 @@ for name, (px0, py0, px1, py1), expect in PANELS:
         a2 = ndimage.median_filter(a2, size=3)
         far = ndimage.distance_transform_edt(m) >= 2.0
         a2[far] = 255
-        # ---- 关键补刀 (浅浅猫反馈"发丝间残留灰粉色"): 近似底色的像素若 alpha 不满 250,
-        #   在洋红底/深底上会显示为灰粉色半透明残留 -> 直接归 0 全透明。
-        #   衣物白/围裙内部 alpha=255(上一行 far 保证) 不受影响, 只损失 <1px 边界。
+        # ---- 关键补刀 (浅浅猫反馈"发丝间残留灰粉色"): 近似底色 + alpha 不满 250 的像素
+        #   若其 3x3 邻域里 >=5 个是透明, 说明它是"细缝里的半透明残料" -> 归零。
+        #   细缝(1~2px)满足; 白袜子/腿等细结构的主体像素邻域多为不透明 -> 不会被误删。
         smn = rgb.min(axis=2).astype(np.int16)
         ssat = (rgb.max(axis=2).astype(np.int16) - smn)
         bg_like = (smn >= 232) & (ssat <= 22)
-        a2[(a2 > 0) & (a2 < 250) & bg_like] = 0
+        transp = (a2 == 0).astype(np.uint8)
+        nb = np.zeros_like(transp, np.int16)
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dy == 0 and dx == 0:
+                    continue
+                nb += np.roll(np.roll(transp, dy, axis=0), dx, axis=1)
+        a2[(a2 > 0) & (a2 < 250) & bg_like & (nb >= 5)] = 0
         # 再把紧贴透明区的"近似底色"不透明像素削掉 (最多 2 圈)
         for _ in range(2):
             objm = a2 > 0
