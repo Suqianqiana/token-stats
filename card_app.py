@@ -39,7 +39,7 @@ THEMES = {
 # 底板很透(桌面可见) / 卡片较实(保形体与可读) / 文字恒 255
 GLASS_ALPHA = {"light": dict(BG=110, CARD=235), "dark": dict(BG=105, CARD=225)}
 
-theme_state = {"dark": False, "glass": False, "source": "wb", "pet": False}
+theme_state = {"dark": False, "glass": False, "source": "wb", "pet": False, "pet_theme": "v2"}
 SETTINGS_FILE = os.path.join(scanner.PLUGIN_DATA_DIR, "settings.json")
 
 BLUE   = QColor("#3b6fe0")
@@ -2900,42 +2900,56 @@ def load_settings():
         theme_state["glass"] = bool(d.get("glass"))
         theme_state["source"] = d.get("source", "wb")
         theme_state["pet"] = bool(d.get("pet"))
+        theme_state["pet_theme"] = d.get("pet_theme", "v2")
     except Exception:
         pass
 
 
 # ============================================================ 桌宠形态 (DeepSeek 娘帧动画)
-PET_DIR = os.path.join(BASE_DIR, "assets", "pet")
+# 素材双版本: v1=经典(单图拆帧 44 帧, 6 组) / v2=新版高清(按角色轮廓分割 13 帧, 5 组)
+PET_THEMES = {
+    "v1": {"name": "经典素材 (旧版)", "dir": os.path.join(BASE_DIR, "assets", "pet")},
+    "v2": {"name": "新版素材 (高清)", "dir": os.path.join(BASE_DIR, "assets", "pet_v2")},
+}
 PET_ANIMS = ("idle", "sleep", "drag", "click", "other", "special")
 PET_W, PET_H = 118, 148          # 桌宠窗口尺寸 (帧内容底部对齐居中绘制)
 PET_SLEEP_AFTER = 60             # 无交互 N 秒后入睡
 PET_OTHER_EVERY = (150, 420)     # idle 期间随机小剧场间隔 (秒, 长静止+偶发)
 PET_MS = {"idle": 240, "sleep": 720, "drag": 140,
           "click": 300, "other": 300, "special": 360}
-APP_BUILD = "v9-fix 2026-09-10 05:00"   # 右键菜单可见, 用于确认运行的是哪版代码
+APP_BUILD = "v10 2026-09-12 13:45"   # 右键菜单可见, 用于确认运行的是哪版代码
 
 
-def _pet_idle_seq():
-    """随机生成一段待机序列: 绝大部分时间静止站立, 低频眨眼, 更低频小动作/大动作.
-    (浅浅猫反馈: 不能一直循环切帧, 太生硬 —— 静止为主 + 偶尔一下才自然.)"""
+def _pet_idle_seq(n):
+    """随机生成一段待机序列: 绝大部分时间静止站立, 低频小动作.
+    (浅浅猫反馈: 不能一直循环切帧, 太生硬 —— 静止为主 + 偶尔一下才自然.)
+    n = 当前素材 idle 组帧数; 序列帧号保证不越界, 两种素材版本通用."""
+    n = max(1, int(n))
     seq = [0] * random.randint(25, 70)            # 静止 ~6-17s
-    seq += [1, 0]                                  # 眨一下眼
-    if random.random() < 0.35:                     # 35% 再来个小动作
+    if n >= 2:
+        seq += [1, 0]                              # 眨一下眼
+    if n >= 3 and random.random() < 0.40:          # 40% 再来个小动作
         seq += [0] * random.randint(15, 40)
-        seq += random.choice([[2, 0], [3, 0], [5, 0]])   # 微笑/扭头/撩头
-    if random.random() < 0.15:                     # 15% 大动作 (少见)
+        seq += random.choice([[k, 0] for k in range(2, n)])
+    if n >= 4 and random.random() < 0.18:          # 18% 大动作 (少见)
         seq += [0] * random.randint(18, 36)
-        seq += random.choice([[4, 4, 0], [6, 0]])        # 伸懒腰/开心
-    return seq
+        seq += random.choice([[k, k, 0] for k in range(2, n)])
+    return [f % n for f in seq]
 
 
-# idle 帧含义: 0站立 1眨眼 2微笑 3扭头 4伸懒腰 5撩头 6开心
-def load_pet_frames():
-    """加载桌宠帧 {anim: [QImage,...]}; 素材缺失/损坏返回 None (回退经典悬浮球)."""
+def load_pet_frames(theme=None):
+    """加载指定版本桌宠帧 {anim: [QImage,...]}; 缺关键组返回 None (回退经典悬浮球).
+    组缺失时跳过 (v2 素材没有 other 组), 运行态按 dict 实际键取用."""
+    theme = theme or theme_state.get("pet_theme", "v2")
+    if theme not in PET_THEMES:
+        theme = "v2"
     frames = {}
     try:
+        od_root = PET_THEMES[theme]["dir"]
         for anim in PET_ANIMS:
-            od = os.path.join(PET_DIR, anim)
+            od = os.path.join(od_root, anim)
+            if not os.path.isdir(od):
+                continue
             lst = []
             for fn in sorted(os.listdir(od)):
                 if not fn.lower().endswith(".png"):
@@ -2943,11 +2957,13 @@ def load_pet_frames():
                 img = QImage(os.path.join(od, fn))
                 if not img.isNull():
                     lst.append(img)
-            if not lst:
-                return None
-            frames[anim] = lst
+            if lst:
+                frames[anim] = lst
     except OSError:
         return None
+    for need in ("idle", "sleep", "drag", "click"):
+        if need not in frames:
+            return None
     return frames or None
 
 
@@ -2959,10 +2975,17 @@ class BallWindow(QWidget):
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
         # ---- 桌宠形态状态机 (素材缺失自动回退经典悬浮球)
-        self.pet_frames = load_pet_frames()
+        if theme_state.get("pet_theme") not in PET_THEMES:
+            theme_state["pet_theme"] = "v2"
+        self.pet_theme = theme_state["pet_theme"]
+        self.pet_frames = load_pet_frames(self.pet_theme)
+        if self.pet_frames is None and self.pet_theme != "v1":
+            self.pet_theme = "v1"                     # 所选版本素材坏了 -> 回退经典
+            self.pet_frames = load_pet_frames("v1")
         self.pet = False
         self._state = "idle"          # idle/sleep/drag/click/other/special
-        self._seq = _pet_idle_seq()
+        n_idle = len(self.pet_frames["idle"]) if self.pet_frames else 1
+        self._seq = _pet_idle_seq(n_idle)
         self._si = 0
         self._idle_t = time.time()
         self._next_other = time.time() + random.randint(*PET_OTHER_EVERY)
@@ -2990,19 +3013,26 @@ class BallWindow(QWidget):
             self._pet_apply(True)   # 恢复上次桌宠形态
 
     # ---------------- 桌宠动画 ----------------
+    def _frames_of(self, st):
+        """取某组帧; 组不存在时回退 idle (v2 素材没有 other 组)."""
+        fr = self.pet_frames or {}
+        return fr.get(st) or fr.get("idle") or []
+
     def _pet_state(self, st, seq=None):
         self._state = st
         if seq is not None:
             self._seq = seq
         elif st == "idle":
-            self._seq = _pet_idle_seq()
+            self._seq = _pet_idle_seq(len(self._frames_of("idle")))
         elif st == "sleep":
-            # 睡觉以静止为主: 长时间保持睡姿, 缓慢微换姿势 (帧0/1/2 为躺姿微差)
-            self._seq = [0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 2, 2, 1, 1, 0, 0, 0]
+            # 睡觉以静止为主: 长时间保持睡姿, 缓慢微换姿势
+            n = max(1, len(self._frames_of("sleep")))
+            self._seq = [i % n for i in
+                         (0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 2 % n, 2 % n, 1, 1, 0, 0, 0)]
         elif st == "drag":
             # 拖拽: 随机保持一个被拎姿势, 不再全帧循环 (浅浅猫反馈)
-            n = len(self.pet_frames["drag"])
-            i = random.randrange(n)
+            fr = self._frames_of("drag")
+            i = random.randrange(len(fr)) if fr else 0
             self._seq = [i] * 10
         self._si = 0
         self._tm.start(PET_MS.get(st, 240))
@@ -3016,7 +3046,7 @@ class BallWindow(QWidget):
             if now - self._idle_t > PET_SLEEP_AFTER:
                 self._pet_state("sleep")
                 return
-            if now >= self._next_other:
+            if now >= self._next_other and "other" in self.pet_frames:
                 self._next_other = now + random.randint(*PET_OTHER_EVERY)
                 n = len(self.pet_frames["other"])
                 i = random.randrange(n)
@@ -3025,7 +3055,7 @@ class BallWindow(QWidget):
         self._si += 1
         if self._si >= len(self._seq):
             if self._state == "idle":       # 一段待机结束 -> 重新随机生成, 节奏自然
-                self._seq = _pet_idle_seq()
+                self._seq = _pet_idle_seq(len(self._frames_of("idle")))
                 self._si = 0
             elif self._state in ("sleep", "drag"):
                 self._si = 0
@@ -3035,15 +3065,32 @@ class BallWindow(QWidget):
         self.update()
 
     def _pet_click(self):
-        n = len(self.pet_frames["click"])
-        i = random.randrange(n)
+        fr = self._frames_of("click")
+        i = random.randrange(len(fr)) if fr else 0
         self._pet_state("click", seq=[i, i, i])
 
     def _pet_special(self):
-        n = len(self.pet_frames["special"])
-        i = random.randrange(n)
+        fr = self._frames_of("special")
+        if not fr:
+            return
+        i = random.randrange(len(fr))
         self._idle_t = time.time()
-        self._pet_state("special", seq=[i, i, (i + 1) % n])
+        self._pet_state("special", seq=[i, i, (i + 1) % len(fr)])
+
+    def set_pet_theme(self, theme):
+        """切换素材版本 (右键菜单), 保持桌宠开关状态."""
+        if theme not in PET_THEMES:
+            return
+        fr = load_pet_frames(theme)
+        if fr is None:
+            return
+        self.pet_theme = theme
+        theme_state["pet_theme"] = theme
+        self.pet_frames = fr
+        save_settings()
+        if self.pet:
+            self._pet_apply(True)
+        self.update()
 
     def set_pet(self, on):
         on = bool(on) and self.pet_frames is not None
@@ -3077,8 +3124,9 @@ class BallWindow(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
         if self.pet and self.pet_frames is not None:
-            anim = self._state if self._state in PET_ANIMS else "idle"
-            frames = self.pet_frames.get(anim) or self.pet_frames["idle"]
+            frames = self.pet_frames.get(self._state) or self.pet_frames.get("idle") or []
+            if not frames:
+                return
             # 关键: 用 _seq 里的帧号取帧 (此前误写 _si % len(frames), 导致永远顺序轮播,
             # 节奏逻辑完全失效 —— 浅浅猫两次反馈『一直循环切帧』的真正根因)
             frame_no = self._seq[self._si % len(self._seq)]
@@ -3245,17 +3293,26 @@ class BallWindow(QWidget):
         a2 = menu.addAction("⟳  立即刷新统计")
         a_restart = menu.addAction("🔄  一键重启")
         menu.addSeparator()
-        a_pet = a_head = None
+        a_pet = a_head = a_theme_menu = None
         if self.pet_frames is not None:
             a_pet = menu.addAction("🐳  桌宠形态 (DeepSeek 娘)")
             a_pet.setCheckable(True)
             a_pet.setChecked(self.pet)
             if self.pet:
+                # 素材版本子菜单 (v1 旧版 / v2 新版高清)
+                a_theme_menu = menu.addMenu("🎨  素材版本")
+                for key in ("v2", "v1"):
+                    act = a_theme_menu.addAction(PET_THEMES[key]["name"])
+                    act.setCheckable(True)
+                    act.setChecked(self.pet_theme == key)
+                    act.setData(key)
                 a_head = menu.addAction("🤗  摸摸头")
         menu.addSeparator()
         a3 = menu.addAction("✕  退出")
         chosen = menu.exec(ev.globalPos())
-        if chosen == a1:
+        if chosen is not None and chosen.data() in PET_THEMES:
+            self.set_pet_theme(chosen.data())       # 🎨 素材版本切换
+        elif chosen == a1:
             self._show_card()
         elif chosen == a2:
             if self.card is not None:

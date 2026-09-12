@@ -423,15 +423,31 @@ check("10061 后自动直连重试成功", err7 is None and st7 == 200 and data7
 check("直连重试使用空 ProxyHandler", len(_opener_calls) == 2 and len(_opener_calls[1]) == 1,
       f"calls={[len(c) for c in _opener_calls]}")
 
-# ========== 8. 桌宠形态 (DeepSeek 娘帧动画) ==========
+# ========== 8. 桌宠形态 (DeepSeek 娘帧动画, 双素材版本) ==========
 print("== 8. 桌宠形态 ==")
 _user_theme = dict(ca.theme_state)
-frames = ca.load_pet_frames()
-check("桌宠素材加载 (6 组帧)", frames is not None and set(frames) == set(ca.PET_ANIMS),
-      f"{None if frames is None else {k: len(v) for k, v in frames.items()}}")
-check("帧数符合预期 (idle7/sleep2/drag6/click5/other12/special9)",
-      frames and [len(frames[a]) for a in ca.PET_ANIMS] == [7, 2, 6, 5, 12, 9],
-      str([len(frames[a]) for a in ca.PET_ANIMS]))
+# v1 经典素材: 6 组 (idle7/sleep2/drag6/click5/other12/special9)
+fr1 = ca.load_pet_frames("v1")
+check("v1 素材加载 (6 组)", fr1 is not None and set(fr1) == set(ca.PET_ANIMS),
+      f"{None if fr1 is None else {k: len(v) for k, v in fr1.items()}}")
+check("v1 帧数符合预期 (idle7/sleep2/drag6/click5/other12/special9)",
+      fr1 and [len(fr1[a]) for a in ca.PET_ANIMS] == [7, 2, 6, 5, 12, 9],
+      str([len(fr1[a]) for a in ca.PET_ANIMS]) if fr1 else "-")
+# v2 新版高清素材: 5 组 (idle4/sleep2/drag3/click2/special2, 无 other)
+fr2 = ca.load_pet_frames("v2")
+exp2 = {"idle": 4, "sleep": 2, "drag": 3, "click": 2, "special": 2}
+check("v2 素材加载 (5 组, 无 other)", fr2 is not None and set(fr2) == set(exp2),
+      f"{None if fr2 is None else {k: len(v) for k, v in fr2.items()}}")
+check("v2 帧数符合预期 (idle4/sleep2/drag3/click2/special2)",
+      fr2 and all(len(fr2[k]) == v for k, v in exp2.items()),
+      str({k: len(fr2[k]) for k in exp2}) if fr2 else "-")
+# 待机序列生成器: 两种帧数都不越界且静止为主
+for n in (4, 7, 1):
+    s = ca._pet_idle_seq(n)
+    check(f"待机序列 n={n} 帧号不越界且静止为主",
+          s and all(0 <= f < n for f in s) and sum(1 for f in s if f != 0) <= len(s) * 0.2,
+          f"len={len(s)} nonstatic={sum(1 for f in s if f != 0)}")
+ca.theme_state["pet_theme"] = "v1"      # 本节先测 v1, 后面再切 v2
 ball = ca.BallWindow(None)
 check("默认悬浮球形态", ball.pet is False and ball.width() == 54)
 ball.set_pet(True)
@@ -449,11 +465,27 @@ check("单击互动反馈", ball._state == "click" and len(ball._seq) == 3)
 ball._idle_t = time.time()
 ball._next_other = time.time() - 1
 ball._pet_state("idle"); ball._pet_tick()
-check("随机小剧场触发", ball._state == "other" and len(ball._seq) == 3)
+check("v1 小剧场触发", ball._state == "other" and len(ball._seq) == 3)
 ball._pet_special()
 check("摸摸头 (特殊状态)", ball._state == "special" and len(ball._seq) == 3)
 ball._pet_tick(); ball._pet_tick(); ball._pet_tick(); ball._pet_tick()
 check("一次性动作播完回待机", ball._state == "idle")
+# 切到 v2 新素材: 无 other 组也不崩, 小剧场直接跳过
+ball.set_pet_theme("v2")
+check("切换 v2 素材", ball.pet_theme == "v2" and {k: len(v) for k, v in ball.pet_frames.items()} == {k: len(v) for k, v in fr2.items()})
+ball._next_other = time.time() - 1
+ball._pet_state("idle"); ball._pet_tick()
+check("v2 无 other 组 -> 跳过小剧场不崩", ball._state == "idle")
+ball._pet_click()
+check("v2 单击互动", ball._state == "click" and len(ball._seq) == 3)
+ball._pet_special()
+check("v2 摸摸头", ball._state == "special" and len(ball._seq) == 3)
+ball._pet_tick(); ball._pet_tick(); ball._pet_tick(); ball._pet_tick()
+check("v2 动作播完回待机", ball._state == "idle")
+pm2 = ball.grab()
+check("v2 渲染非空", not pm2.isNull() and pm2.width() == ca.PET_W)
+ball.set_pet_theme("v1")
+check("切回 v1 素材", ball.pet_theme == "v1" and {k: len(v) for k, v in ball.pet_frames.items()} == {k: len(v) for k, v in fr1.items()})
 # 实际展示帧必须跟随 _seq 帧号 (曾误写 _si % len(frames) 导致永远顺序轮播, 节奏全失效)
 w3 = ca.BallWindow(None)
 w3.set_pet(True)
