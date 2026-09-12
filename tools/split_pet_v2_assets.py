@@ -9,6 +9,7 @@ import numpy as np
 from PIL import Image
 from scipy import ndimage
 import os, shutil, json
+from collections import deque
 
 SRC = r"C:\Users\a3564\.workbuddy\clipboard-images\clipboard-2026-09-12T05-18-41-142Z-4fa99baf.jpg"
 BASE = r"C:\Users\a3564\WorkBuddy\2026-08-25-04-20-35\token-stats"
@@ -190,43 +191,122 @@ for name, (px0, py0, px1, py1), expect in PANELS:
 
     od = os.path.join(OUT, name)
     os.makedirs(od, exist_ok=True)
+    mn_all = A.min(axis=2)
+    sat_all = A.max(axis=2) - mn_all
+    # bg_like = 淡蓝白系像素 (亮 + 低饱和 + 偏蓝): 面板底色/背景缝隙/阴影腔; 皮肤(暖)/头发(深蓝) 不属
+    bg_like = ((mn_all >= 195) & (sat_all <= 38) & ((A[..., 2] - A[..., 0]) >= 2))
+    reach = np.zeros(A.shape[:2], bool)      # 从帧边界对 bg_like 泛洪 = 与外部背景连通区
+    dq = deque()
+    hA, wA = A.shape[:2]
+    for x in np.where(bg_like[0, :] | bg_like[hA - 1, :])[0]:
+        if not reach[0, x]:
+            reach[0, x] = True; dq.append((0, x))
+        if not reach[hA - 1, x]:
+            reach[hA - 1, x] = True; dq.append((hA - 1, x))
+    for y in np.where(bg_like[:, 0] | bg_like[:, wA - 1])[0]:
+        if not reach[y, 0]:
+            reach[y, 0] = True; dq.append((y, 0))
+        if not reach[y, wA - 1]:
+            reach[y, wA - 1] = True; dq.append((y, wA - 1))
+    while dq:
+        y, x = dq.popleft()
+        for ny, nx in ((y-1, x), (y+1, x), (y, x-1), (y, x+1),
+                       (y-1, x-1), (y-1, x+1), (y+1, x-1), (y+1, x+1)):
+            if 0 <= ny < hA and 0 <= nx < wA and not reach[ny, nx] and bg_like[ny, nx]:
+                reach[ny, nx] = True; dq.append((ny, nx))
     for i, f in enumerate(frames):
+        # ---- 去掉贴纸白描边 (浅浅猫指定): 白描边与面板底色同为白色且相连,
+        #   从帧窗口边界对『浅色像素』泛洪 -> 面板底色 + 白描边 + 流进发丝缝的白料 一次全透明;
+        #   深色描边挡住泛洪 -> 角色主体 (含围裙等内部白) 完整保留。
+        #   passable 排除描边外扩 1px, 防止 JPEG 断点让泛洪漏进衣服内部。
+        ys0, xs0 = np.where(f)
+        wx0 = max(0, int(xs0.min()) - 6); wx1 = min(A.shape[1] - 1, int(xs0.max()) + 6)
+        wy0 = max(0, int(ys0.min()) - 6); wy1 = min(A.shape[0] - 1, int(ys0.max()) + 6)
+        sub = A[wy0:wy1 + 1, wx0:wx1 + 1]
+        smn = sub.min(axis=2); ssat = sub.max(axis=2) - smn
+        light = (smn >= 222) & (ssat <= 30)
+        blocked = ndimage.binary_dilation(f[wy0:wy1 + 1, wx0:wx1 + 1], structure=S8, iterations=1)
+        passable = light & ~blocked
+        hh, ww = passable.shape
+        rch = np.zeros((hh, ww), bool)
+        dq2 = deque()
+        for x in range(ww):
+            for y in (0, hh - 1):
+                if passable[y, x] and not rch[y, x]:
+                    rch[y, x] = True; dq2.append((y, x))
+        for y in range(hh):
+            for x in (0, ww - 1):
+                if passable[y, x] and not rch[y, x]:
+                    rch[y, x] = True; dq2.append((y, x))
+        while dq2:
+            y, x = dq2.popleft()
+            for ny, nx in ((y-1, x), (y+1, x), (y, x-1), (y, x+1)):
+                if 0 <= ny < hh and 0 <= nx < ww and not rch[ny, nx] and passable[ny, nx]:
+                    rch[ny, nx] = True; dq2.append((ny, nx))
         sil = ndimage.binary_fill_holes(f)
-        # ---- 发丝间隙清除: 小封闭腔 且 颜色≈面板背景 且 贴近轮廓外侧 -> 透明
-        pockets = sil & ~f
-        pl, pn = ndimage.label(pockets, structure=S8)
-        d_out = ndimage.distance_transform_edt(sil)
-        if pn:
+        sil[wy0:wy1 + 1, wx0:wx1 + 1] &= ~rch          # 白描边/背景/缝里的白料 -> 透明
+        # ---- 发丝间隙的封闭腔清除 (最终判据: 深度)
+        #   实测: 两侧发丝围成的背景区/呆毛圈 = **浅腔** (到外轮廓距离中位 5~22px);
+        #   围裙(47~48) 皮肤(64~70) 衣物(67~80) = **深腔** -> 天然被保护, 不再依赖面积/颜色猜测。
+        #   另加: 偏暖(B-R<-2)=皮肤 -> 保留; 腔内含描边=衣物纹路 -> 保留; 帧内最大腔=围裙 -> 保留。
+        ink_core = ndimage.binary_erosion(f, structure=S8, iterations=2)
+        b_r = A[..., 2] - A[..., 0]
+        dist_out = ndimage.distance_transform_edt(sil)
+        for _ in range(2):
+            pockets = sil & ~f
+            pl, pn = ndimage.label(pockets, structure=S8)
+            if not pn:
+                break
             psz = np.bincount(pl.ravel())
+            cand = [j for j in range(1, pn + 1) if psz[j] >= 30
+                    and float((f & (pl == j)).sum()) / psz[j] < 0.02
+                    and float(A[pl == j].min(axis=1).mean()) >= 210
+                    and float(b_r[pl == j].mean()) >= -2]
+            biggest = max(cand, key=lambda j: psz[j]) if cand else None
             drop = np.zeros_like(sil)
-            reg = A[py0:py1 + 1, px0:px1 + 1]
-            for j in range(1, pn + 1):
+            for j in cand:
                 m = pl == j
-                if psz[j] > 900:
+                if j == biggest:                                   # 围裙 = 帧内最大腔
                     continue
-                px = A[m]
-                bg_like = float((np.abs(px - bg).max(axis=1) <= 10).mean())
-                if bg_like >= 0.55 and float(d_out[m].max()) <= 6.0:
-                    drop |= m
+                if float(np.median(dist_out[m])) > 28:             # 深腔 -> 衣物/身体内部
+                    continue
+                drop |= m
+            if not drop.any() or float(drop.sum()) > 0.25 * max(1.0, float(sil.sum())):
+                break
             sil = sil & ~drop
         for d in attach[i]:                       # 贴上邻近装饰件
             dm = ndimage.binary_fill_holes(d["mask"])
             sil |= dm
-        # 轮廓外扩 1px 收进抗锯齿像素 (只收"非背景"的)
-        ring = ndimage.binary_dilation(sil, structure=S8, iterations=1) & not_bg
-        sil = sil | ring
+        # 注意: 不再向轮廓外扩任何像素 —— 实测描边外侧那层"过渡像素"(mn 160~250)
+        # 正是深底上看得见的白晕/毛刺来源, 一律不收。
+        # 再把最外圈的『浅色且低饱和(近似底色)』边界像素选择性削掉 —— 深色描边与
+        # 发丝本体(偏蓝, 饱和度高) 一律不动, 避免把左侧头发外缘削坏。
+        for _ in range(2):
+            inner = ndimage.binary_erosion(sil, structure=S8, iterations=1)
+            edge = sil & ~inner
+            if not edge.any():
+                break
+            light_edge = edge & (mn_all >= 170) & (sat_all <= 35)
+            if not light_edge.any():
+                break
+            sil = sil & ~light_edge
         ys, xs = np.where(sil)
         bx0, bx1 = max(0, int(xs.min()) - 1), min(A.shape[1] - 1, int(xs.max()) + 1)
         by0, by1 = max(0, int(ys.min()) - 1), min(A.shape[0] - 1, int(ys.max()) + 1)
         m = sil[by0:by1 + 1, bx0:bx1 + 1]
         rgb = A[by0:by1 + 1, bx0:bx1 + 1].astype(np.uint8)
-        # ---- 边缘平滑: 形态学去毛刺 -> 4 倍超采样 + 高斯 -> 中值滤波 -> 柔和抗锯齿边
+        # ---- 边缘抗锯齿: 4 倍上采样后用『上采样图的亮度』重新判定描边边界
+        #   (比"模糊二值掩码"更准: 直接利用原图的灰度过渡, 得到真亚像素轮廓)
         m = ndimage.binary_opening(m, structure=S8, iterations=1)
         m = ndimage.binary_closing(m, structure=S8, iterations=1)
         up = 4
-        big = ndimage.zoom(m.astype(np.float32), up, order=1)
-        big = ndimage.gaussian_filter(big, 1.3)
-        soft = np.clip((big - 0.32) / 0.34, 0.0, 1.0)
+        big_rgb = np.dstack([ndimage.zoom(rgb[..., c].astype(np.float32), up, order=1)
+                             for c in range(3)])
+        big_sil = ndimage.zoom(m.astype(np.float32), up, order=1)
+        ink4 = (big_rgb.min(axis=2) < 200) & (big_sil > 0.25)      # 上采样后的深色描边
+        ink4 = ndimage.binary_fill_holes(ink4) | (big_sil > 0.85)  # 保内部 (围裙等)
+        soft4 = ndimage.gaussian_filter(big_sil * 0.35 + ink4.astype(np.float32) * 0.65, 0.9)
+        soft = np.clip((soft4 - 0.42) / 0.30, 0.0, 1.0)
         a2 = (np.clip(ndimage.zoom(soft, 1.0 / up, order=1), 0, 1) * 255).astype(np.uint8)
         a2 = ndimage.median_filter(a2, size=3)
         far = ndimage.distance_transform_edt(m) >= 2.0
