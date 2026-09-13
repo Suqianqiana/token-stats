@@ -3186,7 +3186,10 @@ class BallWindow(QWidget):
         menu.addSeparator()
 
         a_pet = a_head = a_theme_menu = None
-        if self.pet_frames is not None:
+        # 显示条件用「素材目录存在」而非「已加载」: 懒加载后未开启桌宠时
+        # pet_frames 为 None, 若按旧条件判断会导致桌宠开关从菜单消失
+        _pet_dir = (PET_THEMES.get(self.pet_theme) or {}).get("dir")
+        if _pet_dir and os.path.isdir(_pet_dir):
             a_pet = menu.addAction("🐳  桌宠形态 (DeepSeek 娘)")
             a_pet.setCheckable(True)
             a_pet.setChecked(self.pet)
