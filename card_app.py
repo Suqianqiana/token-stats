@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-Token 审计卡片 V8.4 — iOS 27 Liquid Glass 光学渲染引擎 + 现代横版仪表盘
-核心架构: 
-  - 990x610 黄金比例横版视窗 + 左侧轻量侧边栏
-  - iOS 27 物理光学双层折射与菲涅尔镜面高光 (Pure QPainter Optics)
-  - 光随鼠动流体光斑 (Dynamic Specular Cursor Glow)
-  - 商汤双额度对称仪表 + 赠送积分双行排版 + 每日柱状图鼠标锚点缩放
+Token 审计卡片 V8.6 — iOS 27 流光溢彩液态玻璃 (Chromatic Iridescent Glass)
+核心升级:
+  - 彻底去除鼠标光斑，重构纯净物理级光学渲染管线
+  - iOS 27 晶体边缘色散（天蓝冰青 → 纯白高光 → 浅紫罗兰 → 柔和霞粉）流光溢彩
+  - 支持多档位「玻璃通透度调节」(晶透水滴 / 标准液态 / 柔和微透)，支持右键切换与记忆
+  - 继承 V8.5 双档位自适应度量衡 (标准 990x610 / 舒适大窗口 1180x730)
+  - 商汤双额度对称仪表 + 赠送积分双行排版 + 每日用量图表鼠标锚点滚轮缩放
 """
 import json
 import os
@@ -19,13 +20,74 @@ sys.path.insert(0, BASE_DIR)
 import scanner  # noqa: E402
 
 from PySide6.QtCore import (Qt, QRectF, QObject, Signal, QTimer, QPoint, QRect,
-                            QPointF, QEvent)
+                            QPointF)
 from PySide6.QtGui import (QColor, QFont, QPainter, QPen, QBrush, QPainterPath,
-                           QLinearGradient, QRadialGradient, QImage, QGuiApplication)
+                           QLinearGradient, QImage, QGuiApplication)
 from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QVBoxLayout,
                                QHBoxLayout, QGridLayout, QFrame, QPushButton,
                                QScrollArea, QMenu, QSizePolicy, QPlainTextEdit,
                                QStackedWidget)
+
+# ============================================================ 窗口尺寸度量衡规范
+SIZE_METRICS = {
+    "default": {
+        "name": "标准模式 (990×610)",
+        "win_w": 990, "win_h": 610, "sidebar_w": 190,
+        "stat_h": 72, "stat_val_pt": 13.5, "stat_lbl_pt": 8.5, "stat_hint_pt": 8.5,
+        "row_h": 28, "name_w": 108, "total_w": 68, "pct_w": 38, "hit_w": 44, "req_w": 48,
+        "row_pt": 8.8, "row_head_pt": 8.5,
+        "chart_min_h": 130, "heat_min_h": 105, "heat_cell": 10.0, "heat_gap": 2.5,
+        "today_h": 28, "today_pt": 11.0,
+        "nav_btn_h": 38, "nav_btn_pt": 9.5,
+        "title_pt": 12.0, "subtitle_pt": 9.0, "opt_btn_h": 28, "opt_btn_pt": 11.0, "refresh_h": 34,
+        "sn_prog_h": 6, "sn_input_h": 42, "sn_title_pt": 10.5, "sn_sub_pt": 8.8, "sn_date_pt": 8.0,
+        "promo_val_pt": 12.0,
+    },
+    "large": {
+        "name": "舒适大窗口 (1180×730)",
+        "win_w": 1180, "win_h": 730, "sidebar_w": 226,
+        "stat_h": 88, "stat_val_pt": 17.0, "stat_lbl_pt": 10.0, "stat_hint_pt": 9.5,
+        "row_h": 35, "name_w": 136, "total_w": 84, "pct_w": 46, "hit_w": 52, "req_w": 56,
+        "row_pt": 10.2, "row_head_pt": 9.5,
+        "chart_min_h": 165, "heat_min_h": 130, "heat_cell": 12.0, "heat_gap": 3.0,
+        "today_h": 35, "today_pt": 12.5,
+        "nav_btn_h": 44, "nav_btn_pt": 11.0,
+        "title_pt": 14.0, "subtitle_pt": 10.5, "opt_btn_h": 32, "opt_btn_pt": 12.0, "refresh_h": 38,
+        "sn_prog_h": 8, "sn_input_h": 50, "sn_title_pt": 12.0, "sn_sub_pt": 10.2, "sn_date_pt": 9.2,
+        "promo_val_pt": 14.5,
+    }
+}
+
+# ============================================================ 液态玻璃通透度预设
+GLASS_PRESETS = {
+    "crystal": {
+        "name": "晶透水滴 (高通透)",
+        "desc": "极高透明度，显露桌面背景",
+        "bg_alpha_dark": (105, 70, 50),
+        "bg_alpha_light": (125, 75, 55),
+        "pod_alpha_dark": (180, 155),
+        "pod_alpha_light": (195, 175),
+        "rim_alpha_mult": 1.25,
+    },
+    "balanced": {
+        "name": "标准液态 (均衡推荐)",
+        "desc": "通透与可读性黄金平衡",
+        "bg_alpha_dark": (145, 110, 95),
+        "bg_alpha_light": (165, 115, 95),
+        "pod_alpha_dark": (220, 195),
+        "pod_alpha_light": (235, 215),
+        "rim_alpha_mult": 1.0,
+    },
+    "frosted": {
+        "name": "柔和微透 (沉浸防眩)",
+        "desc": "微透磨砂，抗复杂背景干扰",
+        "bg_alpha_dark": (195, 160, 140),
+        "bg_alpha_light": (210, 160, 140),
+        "pod_alpha_dark": (245, 230),
+        "pod_alpha_light": (248, 238),
+        "rim_alpha_mult": 0.85,
+    }
+}
 
 # ============================================================ 主题系统
 THEMES = {
@@ -46,7 +108,8 @@ THEMES = {
 GLASS_ALPHA = {"light": dict(BG=125, CARD=238, SIDEBAR=140),
                "dark": dict(BG=115, CARD=228, SIDEBAR=130)}
 
-theme_state = {"dark": False, "glass": False, "source": "wb", "pet": False, "pet_theme": "v2"}
+theme_state = {"dark": False, "glass": False, "source": "wb", "pet": False,
+               "pet_theme": "v2", "window_size": "default", "glass_transparency": "balanced"}
 SETTINGS_FILE = os.path.join(scanner.PLUGIN_DATA_DIR, "settings.json")
 
 BLUE   = QColor("#3b6fe0")
@@ -62,6 +125,16 @@ GRAY   = QColor("#8a929e")
 MODEL_COLORS = [BLUE, GREEN, RED, PURPLE, YELLOW, CYAN, PINK, ORANGE, GRAY,
                 QColor("#5b7ee5"), QColor("#6fbf8f"), QColor("#c96f6f"),
                 QColor("#a58cff"), QColor("#7fbf7f")]
+
+
+def curr_metric():
+    sz = theme_state.get("window_size", "default")
+    return SIZE_METRICS.get(sz, SIZE_METRICS["default"])
+
+
+def curr_glass_preset():
+    tr = theme_state.get("glass_transparency", "balanced")
+    return GLASS_PRESETS.get(tr, GLASS_PRESETS["balanced"])
 
 
 def refresh_palette():
@@ -157,27 +230,33 @@ def fmt_full(n):
     return f"{int(n):,}"
 
 
-# ============================================================ iOS 27 液态玻璃光学基底
+# ============================================================ iOS 27 流光溢彩光学渲染器
+def create_iridescent_gradient(x1, y1, x2, y2, dark=False, mult=1.0):
+    """创建模拟菲涅尔光学色散的流光渐变 (天蓝冰青 → 纯白峰值 → 浅紫罗兰 → 柔霞粉)"""
+    grad = QLinearGradient(x1, y1, x2, y2)
+    m = max(0.2, min(1.8, mult))
+    if dark:
+        grad.setColorAt(0.00, QColor(90, 200, 250, int(75 * m)))
+        grad.setColorAt(0.24, QColor(120, 180, 255, int(110 * m)))
+        grad.setColorAt(0.48, QColor(255, 255, 255, int(190 * m)))   # 镜面受光峰值
+        grad.setColorAt(0.72, QColor(192, 132, 252, int(115 * m)))
+        grad.setColorAt(0.88, QColor(244, 114, 182, int(85 * m)))
+        grad.setColorAt(1.00, QColor(255, 255, 255, int(70 * m)))
+    else:
+        grad.setColorAt(0.00, QColor(110, 210, 255, int(130 * m)))
+        grad.setColorAt(0.25, QColor(160, 205, 255, int(170 * m)))
+        grad.setColorAt(0.50, QColor(255, 255, 255, int(255 * m)))   # 极高亮反射光
+        grad.setColorAt(0.75, QColor(216, 180, 254, int(180 * m)))
+        grad.setColorAt(0.90, QColor(251, 182, 206, int(140 * m)))
+        grad.setColorAt(1.00, QColor(255, 255, 255, int(130 * m)))
+    return grad
+
+
 class LiquidGlassFrame(QFrame):
-    """iOS 27 物理级液态玻璃主底板 (微折射双层渐变 + 菲涅尔镜面边缘 + 光随鼠动光斑)"""
+    """iOS 27 物理级液态玻璃底板 (纯光学微折射 + 边缘流光溢彩，无鼠标光斑干扰)"""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMouseTracking(True)
-        self._glow_pos = None
-        QApplication.instance().installEventFilter(self)
-
-    def eventFilter(self, obj, ev):
-        if ev.type() == QEvent.MouseMove:
-            if self.isVisible() and theme_state.get("glass", False):
-                gp = ev.globalPosition().toPoint()
-                lp = self.mapFromGlobal(gp)
-                if self.rect().contains(lp):
-                    self._glow_pos = QPointF(lp)
-                    self.update()
-                elif self._glow_pos is not None:
-                    self._glow_pos = None
-                    self.update()
-        return super().eventFilter(obj, ev)
+        self.sep_x = float(curr_metric()["sidebar_w"])
 
     def paintEvent(self, ev):
         p = QPainter(self)
@@ -191,72 +270,46 @@ class LiquidGlassFrame(QFrame):
         glass = theme_state["glass"]
 
         if glass:
-            # 1. 深度微折射双层对角渐变底板 (Subsurface Fluid Tint)
+            gp = curr_glass_preset()
+            a_top, a_mid, a_bot = gp["bg_alpha_dark"] if dark else gp["bg_alpha_light"]
+            mult = gp["rim_alpha_mult"]
+
+            # 1. 深度微折射对角渐变底板 (透射率随通透度设置动态演进)
             bg_grad = QLinearGradient(0, 0, w, h)
             if dark:
-                bg_grad.setColorAt(0.0, QColor(38, 43, 56, 175))
-                bg_grad.setColorAt(0.42, QColor(22, 25, 32, 145))
-                bg_grad.setColorAt(1.0, QColor(14, 16, 22, 135))
+                bg_grad.setColorAt(0.0, QColor(36, 42, 54, a_top))
+                bg_grad.setColorAt(0.45, QColor(20, 24, 32, a_mid))
+                bg_grad.setColorAt(1.0, QColor(14, 16, 22, a_bot))
             else:
-                bg_grad.setColorAt(0.0, QColor(255, 255, 255, 195))
-                bg_grad.setColorAt(0.45, QColor(242, 246, 253, 140))
-                bg_grad.setColorAt(1.0, QColor(225, 234, 248, 125))
+                bg_grad.setColorAt(0.0, QColor(255, 255, 255, a_top))
+                bg_grad.setColorAt(0.45, QColor(240, 245, 252, a_mid))
+                bg_grad.setColorAt(1.0, QColor(220, 232, 248, a_bot))
             p.setPen(Qt.NoPen)
             p.setBrush(QBrush(bg_grad))
             p.drawPath(path)
 
-            # 2. 动态光随鼠动流体高光斑 (Dynamic Specular Cursor Glow)
-            if self._glow_pos is not None:
-                p.save()
-                p.setClipPath(path)
-                glow_r = 230.0
-                glow = QRadialGradient(self._glow_pos, glow_r, self._glow_pos)
-                if dark:
-                    glow.setColorAt(0.0, QColor(255, 255, 255, 35))
-                    glow.setColorAt(0.35, QColor(145, 185, 255, 15))
-                    glow.setColorAt(1.0, QColor(255, 255, 255, 0))
-                else:
-                    glow.setColorAt(0.0, QColor(255, 255, 255, 65))
-                    glow.setColorAt(0.35, QColor(160, 205, 255, 22))
-                    glow.setColorAt(1.0, QColor(255, 255, 255, 0))
-                p.setBrush(QBrush(glow))
-                p.drawEllipse(self._glow_pos, glow_r, glow_r)
-                p.restore()
-
-            # 3. 侧边栏玻璃分型槽线 (1px Frosted Trench Line)
-            sep_x = 190.0
+            # 2. 侧边栏玻璃分型微光线
+            sep_x = self.sep_x
             sep_grad = QLinearGradient(sep_x, 0, sep_x, h)
             if dark:
-                sep_grad.setColorAt(0.0, QColor(255, 255, 255, 55))
-                sep_grad.setColorAt(0.5, QColor(255, 255, 255, 18))
-                sep_grad.setColorAt(1.0, QColor(255, 255, 255, 35))
+                sep_grad.setColorAt(0.0, QColor(255, 255, 255, int(45 * mult)))
+                sep_grad.setColorAt(0.5, QColor(255, 255, 255, int(15 * mult)))
+                sep_grad.setColorAt(1.0, QColor(255, 255, 255, int(30 * mult)))
             else:
-                sep_grad.setColorAt(0.0, QColor(255, 255, 255, 140))
-                sep_grad.setColorAt(0.5, QColor(205, 215, 230, 95))
-                sep_grad.setColorAt(1.0, QColor(255, 255, 255, 90))
+                sep_grad.setColorAt(0.0, QColor(255, 255, 255, int(130 * mult)))
+                sep_grad.setColorAt(0.5, QColor(200, 215, 230, int(80 * mult)))
+                sep_grad.setColorAt(1.0, QColor(255, 255, 255, int(90 * mult)))
             p.setPen(QPen(QBrush(sep_grad), 1.0))
             p.drawLine(QPointF(sep_x, 1.0), QPointF(sep_x, h - 1.0))
 
-            # 4. 双层菲涅尔高光边缘 (Fresnel Specular Bevel Rim)
-            rim_grad = QLinearGradient(0, 0, 0, h)
-            if dark:
-                rim_grad.setColorAt(0.0, QColor(255, 255, 255, 120))
-                rim_grad.setColorAt(0.4, QColor(255, 255, 255, 28))
-                rim_grad.setColorAt(1.0, QColor(255, 255, 255, 65))
-            else:
-                rim_grad.setColorAt(0.0, QColor(255, 255, 255, 240))
-                rim_grad.setColorAt(0.4, QColor(190, 202, 220, 100))
-                rim_grad.setColorAt(1.0, QColor(255, 255, 255, 150))
+            # 3. 菲涅尔曲面色散流光溢彩轮廓 (iOS 27 Prismatic Bevel)
+            rim_grad = create_iridescent_gradient(0, 0, w, h, dark=dark, mult=mult)
             p.setBrush(Qt.NoBrush)
-            p.setPen(QPen(QBrush(rim_grad), 1.2))
+            p.setPen(QPen(QBrush(rim_grad), 1.25))
             p.drawPath(path)
 
-            # 5. 顶部镜面折射光弧 (Top Specular Bevel Arc)
-            arc_grad = QLinearGradient(16, 1.2, w - 16, 1.2)
-            arc_grad.setColorAt(0.0, QColor(255, 255, 255, 0))
-            arc_grad.setColorAt(0.3, QColor(255, 255, 255, 100 if dark else 180))
-            arc_grad.setColorAt(0.7, QColor(255, 255, 255, 100 if dark else 180))
-            arc_grad.setColorAt(1.0, QColor(255, 255, 255, 0))
+            # 4. 顶部镜面反光弧
+            arc_grad = create_iridescent_gradient(16, 1.2, w - 16, 1.2, dark=dark, mult=mult * 1.2)
             p.setPen(QPen(QBrush(arc_grad), 1.0))
             p.drawLine(QPointF(16, 1.2), QPointF(w - 16, 1.2))
         else:
@@ -266,7 +319,7 @@ class LiquidGlassFrame(QFrame):
 
 
 class GlassPodFrame(QFrame):
-    """iOS 27 悬浮透镜子卡片 (Frosted Glass Pod: 高透固化率背板 + 1px 镜面切角)"""
+    """iOS 27 悬浮透镜子卡片 (Frosted Glass Pod: 动态通透底板 + 晶体切角微色散)"""
     def __init__(self, radius=10, parent=None):
         super().__init__(parent)
         self.radius = radius
@@ -284,38 +337,30 @@ class GlassPodFrame(QFrame):
         glass = theme_state["glass"]
 
         if glass:
-            # 微阶微梯度背板，防止背景过度透光影响文字辨识
+            gp = curr_glass_preset()
+            a_top, a_bot = gp["pod_alpha_dark"] if dark else gp["pod_alpha_light"]
+            mult = gp["rim_alpha_mult"]
+
+            # 梯度微透背板 (兼顾桌面透视感与文字极高对比度)
             grad = QLinearGradient(0, 0, 0, h)
             if dark:
-                grad.setColorAt(0.0, QColor(36, 40, 50, 236))
-                grad.setColorAt(1.0, QColor(25, 28, 35, 222))
+                grad.setColorAt(0.0, QColor(36, 40, 52, a_top))
+                grad.setColorAt(1.0, QColor(24, 27, 34, a_bot))
             else:
-                grad.setColorAt(0.0, QColor(255, 255, 255, 246))
-                grad.setColorAt(1.0, QColor(246, 249, 254, 232))
+                grad.setColorAt(0.0, QColor(255, 255, 255, a_top))
+                grad.setColorAt(1.0, QColor(245, 248, 253, a_bot))
             p.setPen(Qt.NoPen)
             p.setBrush(QBrush(grad))
             p.drawPath(path)
 
-            # 菲涅尔切角外边框
-            rim = QLinearGradient(0, 0, 0, h)
-            if dark:
-                rim.setColorAt(0.0, QColor(255, 255, 255, 80))
-                rim.setColorAt(0.5, QColor(255, 255, 255, 20))
-                rim.setColorAt(1.0, QColor(255, 255, 255, 42))
-            else:
-                rim.setColorAt(0.0, QColor(255, 255, 255, 220))
-                rim.setColorAt(0.5, QColor(210, 218, 230, 100))
-                rim.setColorAt(1.0, QColor(255, 255, 255, 140))
+            # 菲涅尔切角外边框 (带微色散)
+            rim = create_iridescent_gradient(0, 0, w, h, dark=dark, mult=mult * 0.75)
             p.setBrush(Qt.NoBrush)
             p.setPen(QPen(QBrush(rim), 1.0))
             p.drawPath(path)
 
-            # 顶部 1px 镜面切角微反光线
-            top_hl = QLinearGradient(r, 1.2, w - r, 1.2)
-            top_hl.setColorAt(0.0, QColor(255, 255, 255, 0))
-            top_hl.setColorAt(0.3, QColor(255, 255, 255, 85 if dark else 150))
-            top_hl.setColorAt(0.7, QColor(255, 255, 255, 85 if dark else 150))
-            top_hl.setColorAt(1.0, QColor(255, 255, 255, 0))
+            # 顶部 1px 镜面切角高光线
+            top_hl = create_iridescent_gradient(r, 1.2, w - r, 1.2, dark=dark, mult=mult * 0.95)
             p.setPen(QPen(QBrush(top_hl), 1.0))
             p.drawLine(QPointF(r, 1.2), QPointF(w - r, 1.2))
         else:
@@ -339,7 +384,8 @@ class CardHeader(QWidget):
         p.setBrush(self.accent)
         p.drawRoundedRect(QRectF(0, 9, 16, 3), 1.5, 1.5)
         p.setPen(TEXT)
-        f = QFont("Microsoft YaHei UI", 9)
+        m = curr_metric()
+        f = QFont("Microsoft YaHei UI", m["row_head_pt"])
         f.setBold(True)
         p.setFont(f)
         p.drawText(QRectF(22, 0, self.width() - 24, self.height()),
@@ -356,10 +402,10 @@ class ChartTip(QWidget):
             cls._instance = ChartTip()
         return cls._instance
 
-    ROW_H = 19
+    ROW_H = 20
     PAD = 12
     GAP = 12
-    VAL_MIN = 60
+    VAL_MIN = 64
 
     def __init__(self):
         super().__init__(None, Qt.ToolTip | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
@@ -378,7 +424,8 @@ class ChartTip(QWidget):
         self.rows = norm
 
         p = QPainter(self)
-        f = QFont("Microsoft YaHei UI", 9)
+        m = curr_metric()
+        f = QFont("Microsoft YaHei UI", m["row_head_pt"])
         p.setFont(f)
         fm = p.fontMetrics()
         lab_w = max((fm.horizontalAdvance(lb) for _, lb, _ in norm), default=0)
@@ -418,14 +465,14 @@ class ChartTip(QWidget):
         p.setPen(Qt.NoPen)
         p.setBrush(self.accent)
         p.drawRoundedRect(QRectF(6, 8, 3, 14), 1.5, 1.5)
-        f = QFont("Microsoft YaHei UI", 9)
-        f.setBold(True)
+        m = curr_metric()
+        f = QFont("Microsoft YaHei UI", m["row_head_pt"], QFont.Bold)
         p.setFont(f)
         p.setPen(TEXT)
         p.drawText(QRectF(self.PAD, 6, self.width() - self.PAD - 6, 18),
                    Qt.AlignLeft | Qt.AlignVCenter, self.title_text)
 
-        f2 = QFont("Microsoft YaHei UI", 8.5)
+        f2 = QFont("Microsoft YaHei UI", m["row_pt"])
         p.setFont(f2)
         y = 28
         for color, lb, vl in self.rows:
@@ -439,8 +486,7 @@ class ChartTip(QWidget):
                               self._value_right - self.GAP - self._label_x, self.ROW_H),
                        Qt.AlignLeft | Qt.AlignVCenter, lb)
             if vl:
-                fv = QFont("Consolas", 8.5)
-                fv.setBold(True)
+                fv = QFont("Consolas", m["row_pt"], QFont.Bold)
                 p.setFont(fv)
                 p.setPen(TEXT if color is not None else TEXT2)
                 p.drawText(QRectF(self._value_right - 300, y, 300, self.ROW_H),
@@ -449,7 +495,7 @@ class ChartTip(QWidget):
             y += self.ROW_H
 
 
-# ============================================================ 汇总指标卡
+# ============================================================ 汇总指标卡 (上下分层自适应)
 class StatCard(GlassPodFrame):
     def __init__(self, label, accent, parent=None):
         super().__init__(radius=10, parent=parent)
@@ -457,7 +503,12 @@ class StatCard(GlassPodFrame):
         self.accent = accent
         self.value_text = "—"
         self.hint_text = ""
-        self.setFixedHeight(72)
+        self.apply_size()
+
+    def apply_size(self):
+        m = curr_metric()
+        self.setFixedHeight(m["stat_h"])
+        self.update()
 
     def set_value(self, value, hint=""):
         self.value_text = value
@@ -474,34 +525,29 @@ class StatCard(GlassPodFrame):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
+        m = curr_metric()
 
         p.setPen(Qt.NoPen)
         p.setBrush(self.accent)
-        p.drawRoundedRect(QRectF(12, 11, 16, 3), 1.5, 1.5)
+        p.drawRoundedRect(QRectF(14, 11, 16, 3), 1.5, 1.5)
 
         p.setPen(TEXT2)
-        p.setFont(QFont("Microsoft YaHei UI", 8.5))
-        p.drawText(QRectF(12, 16, w - 24, 16), Qt.AlignLeft | Qt.AlignVCenter, self.label_text)
+        p.setFont(QFont("Microsoft YaHei UI", m["stat_lbl_pt"]))
+        p.drawText(QRectF(14, 16, w - 28, 18), Qt.AlignLeft | Qt.AlignVCenter, self.label_text)
 
         if self.hint_text:
             p.setPen(TEXT3)
-            p.setFont(QFont("Consolas", 8.5))
-            p.drawText(QRectF(12, 16, w - 24, 16), Qt.AlignRight | Qt.AlignVCenter, self.hint_text)
+            p.setFont(QFont("Consolas", m["stat_hint_pt"]))
+            p.drawText(QRectF(14, 16, w - 28, 18), Qt.AlignRight | Qt.AlignVCenter, self.hint_text)
 
         p.setPen(TEXT)
-        f = QFont("Microsoft YaHei UI", 13.5)
-        f.setBold(True)
+        f = QFont("Microsoft YaHei UI", m["stat_val_pt"], QFont.Bold)
         p.setFont(f)
-        p.drawText(QRectF(12, 36, w - 24, 28), Qt.AlignLeft | Qt.AlignVCenter, self.value_text)
+        val_y = 38 if theme_state.get("window_size") != "large" else 43
+        p.drawText(QRectF(14, val_y, w - 28, 36), Qt.AlignLeft | Qt.AlignVCenter, self.value_text)
 
 
 # ============================================================ 模型明细表
-ROW_H = 28
-NAME_W = 108
-TOTAL_W = 68
-PCT_W = 38
-HIT_W = 44
-REQ_W = 48
 PAD = 6
 
 
@@ -509,19 +555,32 @@ class TableHeader(QWidget):
     def __init__(self, req_label="请求", parent=None):
         super().__init__(parent)
         self.req_label = req_label
-        self.setFixedHeight(24)
+        self.apply_size()
+
+    def apply_size(self):
+        m = curr_metric()
+        self.setFixedHeight(m["row_h"] - 4)
+        self.update()
 
     def paintEvent(self, ev):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
-        p.setFont(QFont("Microsoft YaHei UI", 8.5))
+        m = curr_metric()
+        p.setFont(QFont("Microsoft YaHei UI", m["row_head_pt"]))
+
+        name_w = m["name_w"]
+        total_w = m["total_w"]
+        pct_w = m["pct_w"]
+        hit_w = m["hit_w"]
+        req_w = m["req_w"]
+
         cols = [
-            (PAD, NAME_W, "模型", Qt.AlignLeft | Qt.AlignVCenter),
-            (w - PAD - REQ_W - HIT_W - PCT_W - TOTAL_W, TOTAL_W, "Tokens", Qt.AlignRight | Qt.AlignVCenter),
-            (w - PAD - REQ_W - HIT_W - PCT_W, PCT_W, "占比", Qt.AlignRight | Qt.AlignVCenter),
-            (w - PAD - REQ_W - HIT_W, HIT_W, "缓存率", Qt.AlignRight | Qt.AlignVCenter),
-            (w - PAD - REQ_W, REQ_W, self.req_label, Qt.AlignRight | Qt.AlignVCenter),
+            (PAD, name_w, "模型", Qt.AlignLeft | Qt.AlignVCenter),
+            (w - PAD - req_w - hit_w - pct_w - total_w, total_w, "Tokens", Qt.AlignRight | Qt.AlignVCenter),
+            (w - PAD - req_w - hit_w - pct_w, pct_w, "占比", Qt.AlignRight | Qt.AlignVCenter),
+            (w - PAD - req_w - hit_w, hit_w, "缓存率", Qt.AlignRight | Qt.AlignVCenter),
+            (w - PAD - req_w, req_w, self.req_label, Qt.AlignRight | Qt.AlignVCenter),
         ]
         for x, cw, text, align in cols:
             p.setPen(TEXT3)
@@ -548,7 +607,12 @@ class ModelRow(QWidget):
         self.setMouseTracking(True)
         if zebra:
             self.setStyleSheet(f"background:{qrgba(ZEBRA)};")
-        self.setFixedHeight(ROW_H)
+        self.apply_size()
+
+    def apply_size(self):
+        m = curr_metric()
+        self.setFixedHeight(m["row_h"])
+        self.update()
 
     def enterEvent(self, ev):
         self.setStyleSheet(f"background:{qrgba(HOVER)};")
@@ -574,20 +638,27 @@ class ModelRow(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
         cy = h / 2
+        m = curr_metric()
 
         p.setPen(Qt.NoPen)
         p.setBrush(self.color)
         p.drawEllipse(QRectF(PAD, cy - 3.5, 7, 7))
 
         p.setPen(TEXT)
-        p.setFont(QFont("Consolas", 8.8))
-        name_rect = QRectF(PAD + 11, 0, NAME_W - 14, h)
+        p.setFont(QFont("Consolas", m["row_pt"]))
+        name_w = m["name_w"]
+        total_w = m["total_w"]
+        pct_w = m["pct_w"]
+        hit_w = m["hit_w"]
+        req_w = m["req_w"]
+
+        name_rect = QRectF(PAD + 11, 0, name_w - 14, h)
         fm = p.fontMetrics()
         elided = fm.elidedText(self.name, Qt.ElideRight, int(name_rect.width()))
         p.drawText(name_rect, Qt.AlignVCenter | Qt.AlignLeft, elided)
 
-        bar_right = w - PAD - REQ_W - HIT_W - PCT_W - TOTAL_W - 8
-        bar_left = PAD + NAME_W
+        bar_right = w - PAD - req_w - hit_w - pct_w - total_w - 8
+        bar_left = PAD + name_w
         bw = bar_right - bar_left
         if bw > 12:
             track = QPainterPath()
@@ -604,23 +675,22 @@ class ModelRow(QWidget):
             p.setBrush(QBrush(grad))
             p.drawPath(fillp)
 
-        def right_text(text, col_w, x_right, color, bold=False, size=8.8):
+        def right_text(text, col_w, x_right, color, bold=False):
             p.setPen(color)
-            f = QFont("Consolas", size)
-            f.setBold(bold)
+            f = QFont("Consolas", m["row_pt"], QFont.Bold if bold else QFont.Normal)
             p.setFont(f)
             p.drawText(QRectF(x_right - col_w, 0, col_w, h),
                        Qt.AlignVCenter | Qt.AlignRight, text)
 
-        x1 = w - PAD - REQ_W - HIT_W - PCT_W
-        right_text(fmt_full(self.total), TOTAL_W, x1, TEXT, bold=True)
-        right_text(f"{self.pct:.1f}%", PCT_W, x1 + PCT_W, TEXT2)
-        right_text(f"{self.hit_rate:.0f}%", HIT_W, x1 + PCT_W + HIT_W,
+        x1 = w - PAD - req_w - hit_w - pct_w
+        right_text(fmt_full(self.total), total_w, x1, TEXT, bold=True)
+        right_text(f"{self.pct:.1f}%", pct_w, x1 + pct_w, TEXT2)
+        right_text(f"{self.hit_rate:.0f}%", hit_w, x1 + pct_w + hit_w,
                    GREEN if self.hit_rate >= 80 else TEXT2)
-        right_text(f"{self.requests:,}", REQ_W, x1 + PCT_W + HIT_W + REQ_W, TEXT2)
+        right_text(f"{self.requests:,}", req_w, x1 + pct_w + hit_w + req_w, TEXT2)
 
 
-# ============================================================ 柱状图组件 (支持鼠标锚点滚轮横向缩放 & 拖动平移)
+# ============================================================ 柱状图组件 (支持滚轮缩放 & 拖动平移)
 class StackedBarChart(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -632,7 +702,12 @@ class StackedBarChart(QWidget):
         self._drag_start_x = None
         self._drag_start_view = 0.0
         self.setMouseTracking(True)
-        self.setMinimumHeight(130)
+        self.apply_size()
+
+    def apply_size(self):
+        m = curr_metric()
+        self.setMinimumHeight(m["chart_min_h"])
+        self.update()
 
     def set_data(self, daily, models_rank):
         top = [m for m, _ in models_rank[:8]]
@@ -671,7 +746,10 @@ class StackedBarChart(QWidget):
 
     def _geom(self):
         w, h = self.width(), self.height()
-        return w, h, 38, 8, 4, 16
+        is_lg = theme_state.get("window_size") == "large"
+        padL = 44 if is_lg else 38
+        padB = 20 if is_lg else 16
+        return w, h, padL, 8, 4, padB
 
     def wheelEvent(self, ev):
         if not self.all_data or len(self.all_data) <= 5:
@@ -712,8 +790,9 @@ class StackedBarChart(QWidget):
             p.drawText(self.rect(), Qt.AlignCenter, "暂无数据")
             return
 
+        is_lg = theme_state.get("window_size") == "large"
         maxV = max((sum(v for _, _, v in d["parts"]) for d in self.data), default=1) or 1
-        p.setFont(QFont("Consolas", 7.5))
+        p.setFont(QFont("Consolas", 8.5 if is_lg else 7.5))
         for k in range(3):
             y = padT + ih - ih * k / 2
             p.setPen(QPen(BORDER, 1))
@@ -721,12 +800,12 @@ class StackedBarChart(QWidget):
             p.setPen(TEXT3)
             v = maxV * k / 2
             label = f"{v/1e8:.1f}亿" if v >= 1e8 else (f"{v/1e4:.0f}万" if v >= 1e4 else f"{v:.0f}")
-            p.drawText(QRectF(0, y - 7, padL - 4, 14), Qt.AlignRight | Qt.AlignVCenter, label)
+            p.drawText(QRectF(0, y - 8, padL - 4, 16), Qt.AlignRight | Qt.AlignVCenter, label)
 
         n = len(self.data)
         slot = iw / n
-        bw = max(2.5, min(14.0, slot * 0.6))
-        p.setFont(QFont("Consolas", 7))
+        bw = max(3.0, min(16.0, slot * 0.6))
+        p.setFont(QFont("Consolas", 8.0 if is_lg else 7.0))
         step = max(1, n // 7)
         for i, d in enumerate(self.data):
             cx = padL + slot * i + slot / 2
@@ -739,7 +818,7 @@ class StackedBarChart(QWidget):
                 y_cur -= hh
             if i % step == 0 or i == n - 1:
                 p.setPen(TEXT3)
-                p.drawText(QRectF(cx - 20, h - padB + 1, 40, 13),
+                p.drawText(QRectF(cx - 24, h - padB + 1, 48, 14),
                            Qt.AlignCenter, d["date"][5:].replace("-", "/"))
 
     def mousePressEvent(self, ev):
@@ -791,8 +870,13 @@ class HeatMap(QWidget):
         super().__init__(parent)
         self.daily = {}
         self.setMouseTracking(True)
-        self.setMinimumHeight(105)
         self._cells = []
+        self.apply_size()
+
+    def apply_size(self):
+        m = curr_metric()
+        self.setMinimumHeight(m["heat_min_h"])
+        self.update()
 
     def set_data(self, daily):
         self.daily = {d: a for d, a in daily.items() if d != "unknown"}
@@ -802,7 +886,8 @@ class HeatMap(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
-        cell, gap = 10.0, 2.5
+        m = curr_metric()
+        cell, gap = m["heat_cell"], m["heat_gap"]
         unit = cell + gap
         self._cells = []
         if not self.daily:
@@ -834,14 +919,15 @@ class HeatMap(QWidget):
         fit_m = max(2, int((w - 20) / (7 * unit + 10)))
         recent_m = sorted(months.keys())[-fit_m:]
 
-        x = 6
-        top = 20
-        p.setFont(QFont("Microsoft YaHei UI", 8))
+        x = 8
+        top = 22
+        is_lg = theme_state.get("window_size") == "large"
+        p.setFont(QFont("Microsoft YaHei UI", 9.0 if is_lg else 8.0))
         import datetime as _dt
         for ym in recent_m:
             dlist = months[ym]
             p.setPen(TEXT2)
-            p.drawText(QRectF(x, 1, 7 * unit, 14), Qt.AlignLeft | Qt.AlignVCenter, f"{int(ym[5:7])}月")
+            p.drawText(QRectF(x, 1, 7 * unit, 16), Qt.AlignLeft | Qt.AlignVCenter, f"{int(ym[5:7])}月")
             first = _dt.date(int(ym[:4]), int(ym[5:7]), 1)
             first_wd = first.weekday()
             for d in dlist:
@@ -856,16 +942,16 @@ class HeatMap(QWidget):
                 self._cells.append((cx, cy, cell, cell, d, tot))
                 p.setPen(Qt.NoPen)
                 p.setBrush(LV[level(tot)])
-                p.drawRoundedRect(QRectF(cx, cy, cell, cell), 2, 2)
-            x += 7 * unit + 10
+                p.drawRoundedRect(QRectF(cx, cy, cell, cell), 2.5, 2.5)
+            x += 7 * unit + 12
 
         p.setPen(TEXT3)
-        p.setFont(QFont("Microsoft YaHei UI", 7.5))
-        p.drawText(QRectF(6, h - 13, 60, 12), Qt.AlignLeft | Qt.AlignVCenter, "少 → 多")
+        p.setFont(QFont("Microsoft YaHei UI", 8.5 if is_lg else 7.5))
+        p.drawText(QRectF(8, h - 15, 64, 14), Qt.AlignLeft | Qt.AlignVCenter, "少 → 多")
         for i, c in enumerate(LV):
             p.setPen(Qt.NoPen)
             p.setBrush(c)
-            p.drawRoundedRect(QRectF(55 + i * (cell + 2), h - 12, cell - 2, cell - 2), 1.5, 1.5)
+            p.drawRoundedRect(QRectF(64 + i * (cell + 2), h - 14, cell - 1, cell - 1), 1.5, 1.5)
 
     def mouseMoveEvent(self, ev):
         pos = ev.position()
@@ -1444,7 +1530,6 @@ def load_sn_stats(force=False):
         acc[pk][1] += canon_used.get(c, 0) + canon_dsh.get(c, 0)
         acc_since[pk] += canon_since.get(c, 0)
 
-    # 同步时刻后，增量扣除本地新增调用数
     sync_time_str = None
     if sync:
         try: sync_time_str = time.strftime("%H:%M", time.localtime(sync["ts"]))
@@ -1536,7 +1621,12 @@ class SNProgressBar(QWidget):
         super().__init__(parent)
         self.ratio = ratio
         self.color = color
-        self.setFixedHeight(6)
+        self.apply_size()
+
+    def apply_size(self):
+        m = curr_metric()
+        self.setFixedHeight(m["sn_prog_h"])
+        self.update()
 
     def set_ratio(self, r):
         self.ratio = max(0.0, min(1.0, r))
@@ -1562,7 +1652,7 @@ class SNProgressBar(QWidget):
 
 
 class SNPoolCard(GlassPodFrame):
-    """商汤积分池卡片: 周周期与 5h 窗口额度对称呈现，通栏舒展无遮挡"""
+    """商汤积分池卡片: 周周期与 5h 窗口额度对称呈现，通栏舒展"""
     def __init__(self, pool, parent=None):
         super().__init__(radius=12, parent=parent)
         self.pool = pool
@@ -1575,7 +1665,7 @@ class SNPoolCard(GlassPodFrame):
         v.setContentsMargins(16, 13, 16, 13)
         v.setSpacing(9)
 
-        # 1. 顶栏: 胶囊徽标 + 池名称 (左) | 适用模型说明 (右)
+        # 1. 顶栏
         top = QHBoxLayout()
         top.setSpacing(8)
 
@@ -1584,29 +1674,25 @@ class SNPoolCard(GlassPodFrame):
         top.addWidget(self.tag_badge)
 
         self.name_lbl = QLabel(self.pool["name"])
-        self.name_lbl.setFont(QFont("Microsoft YaHei UI", 10.5, QFont.Bold))
         top.addWidget(self.name_lbl)
         top.addStretch(1)
 
         self.scope_lbl = QLabel(self.pool.get("scope", ""))
-        self.scope_lbl.setFont(QFont("Microsoft YaHei UI", 8.5))
         top.addWidget(self.scope_lbl)
         v.addLayout(top)
 
-        # 2. 周周期额度展示块 (结构与 5h 完全对称)
+        # 2. 周周期额度
         week_box = QVBoxLayout()
         week_box.setSpacing(3)
 
         w_top = QHBoxLayout()
         self.week_title = QLabel("周周期额度")
-        self.week_title.setFont(QFont("Microsoft YaHei UI", 8.5))
         w_top.addWidget(self.week_title)
         w_top.addStretch(1)
 
         wt_week = self.pool.get("weekly_total", 0)
         r_week = self.pool["weekly_remaining"] / wt_week if wt_week else 0
         self.week_val_lbl = QLabel(f"{self.pool['weekly_remaining']:,.0f} / {wt_week:,} ({r_week * 100:.1f}%)")
-        self.week_val_lbl.setFont(QFont("Consolas", 8.8, QFont.Bold))
         w_top.addWidget(self.week_val_lbl)
         week_box.addLayout(w_top)
 
@@ -1617,26 +1703,23 @@ class SNPoolCard(GlassPodFrame):
         w_bot.addStretch(1)
         nr = self.pool.get("next_weekly_reset", "—")
         self.week_reset_lbl = QLabel(f"周额度重置于: {nr}")
-        self.week_reset_lbl.setFont(QFont("Microsoft YaHei UI", 8))
         w_bot.addWidget(self.week_reset_lbl)
         week_box.addLayout(w_bot)
 
         v.addLayout(week_box)
 
-        # 3. 5h 滑动窗口额度展示块
+        # 3. 5h 滑动窗口额度
         win_box = QVBoxLayout()
         win_box.setSpacing(3)
 
         win_top = QHBoxLayout()
         self.window_title = QLabel("5h 窗口额度")
-        self.window_title.setFont(QFont("Microsoft YaHei UI", 8.5))
         win_top.addWidget(self.window_title)
         win_top.addStretch(1)
 
         wt_win = self.pool.get("window_total", 0)
         r_win = self.pool["window_remaining"] / wt_win if wt_win else 0
         self.window_val_lbl = QLabel(f"{self.pool['window_remaining']:,.0f} / {wt_win:,} ({r_win * 100:.1f}%)")
-        self.window_val_lbl.setFont(QFont("Consolas", 8.8, QFont.Bold))
         win_top.addWidget(self.window_val_lbl)
         win_box.addLayout(win_top)
 
@@ -1646,11 +1729,24 @@ class SNPoolCard(GlassPodFrame):
         win_bot = QHBoxLayout()
         win_bot.addStretch(1)
         self.window_reset_lbl = QLabel(f"5h窗口重置于: {self.pool.get('window_reset', '—')}")
-        self.window_reset_lbl.setFont(QFont("Microsoft YaHei UI", 8))
         win_bot.addWidget(self.window_reset_lbl)
         win_box.addLayout(win_bot)
 
         v.addLayout(win_box)
+
+    def apply_size(self):
+        m = curr_metric()
+        self.name_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_title_pt"], QFont.Bold))
+        self.scope_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
+        self.week_title.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
+        self.window_title.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
+        self.week_val_lbl.setFont(QFont("Consolas", m["sn_sub_pt"], QFont.Bold))
+        self.window_val_lbl.setFont(QFont("Consolas", m["sn_sub_pt"], QFont.Bold))
+        self.week_reset_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_date_pt"]))
+        self.window_reset_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_date_pt"]))
+        self.bar_week.apply_size()
+        self.bar_win.apply_size()
+        self.update()
 
     def apply_theme(self):
         dark = theme_state["dark"]
@@ -1676,13 +1772,14 @@ class SNPoolCard(GlassPodFrame):
         for lbl in (self.week_reset_lbl, self.window_reset_lbl):
             lbl.setStyleSheet(f"color:{qname(TEXT2)};")
 
+        self.apply_size()
         self.bar_week.update()
         self.bar_win.update()
         self.update()
 
 
 class SNSyncPanel(GlassPodFrame):
-    """纯净极简同步面板: 去除本地估算标签"""
+    """纯净极简同步面板"""
     saved = Signal()
     cleared = Signal()
     save_finished = Signal(bool, str)
@@ -1706,45 +1803,49 @@ class SNSyncPanel(GlassPodFrame):
         head.setSpacing(8)
 
         self.title_lbl = QLabel("控制台 cURL 自动同步")
-        self.title_lbl.setFont(QFont("Microsoft YaHei UI", 9.5, QFont.Bold))
         head.addWidget(self.title_lbl)
 
         self.status_lbl = QLabel("")
-        self.status_lbl.setFont(QFont("Microsoft YaHei UI", 8.5, QFont.Bold))
         head.addWidget(self.status_lbl)
 
         head.addStretch(1)
 
         self.guide_lbl = QLabel("F12 复制「积分额度」请求的 cURL 粘贴于此 (每 5 分钟自动更新)")
-        self.guide_lbl.setFont(QFont("Microsoft YaHei UI", 8.5))
         head.addWidget(self.guide_lbl)
         v.addLayout(head)
 
         self.curl_edit = QPlainTextEdit()
         self.curl_edit.setPlaceholderText('粘贴 cURL 命令 (curl "https://platform.sensenova.cn/lite/console/...")')
-        self.curl_edit.setFixedHeight(42)
         v.addWidget(self.curl_edit)
 
         row = QHBoxLayout()
         row.setSpacing(8)
 
         self.err_lbl = QLabel("")
-        self.err_lbl.setFont(QFont("Microsoft YaHei UI", 8.5))
         row.addWidget(self.err_lbl, 1)
 
         self.btn_clear = QPushButton("清除凭据")
         self.btn_clear.setCursor(Qt.PointingHandCursor)
-        self.btn_clear.setFixedHeight(28)
         self.btn_clear.clicked.connect(self._on_clear)
         row.addWidget(self.btn_clear)
 
         self.btn_save = QPushButton("保存并同步")
         self.btn_save.setCursor(Qt.PointingHandCursor)
-        self.btn_save.setFixedHeight(28)
         self.btn_save.clicked.connect(self._on_save)
         row.addWidget(self.btn_save)
 
         v.addLayout(row)
+
+    def apply_size(self):
+        m = curr_metric()
+        self.title_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_title_pt"], QFont.Bold))
+        self.status_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"], QFont.Bold))
+        self.guide_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
+        self.err_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
+        self.curl_edit.setFixedHeight(m["sn_input_h"])
+        self.btn_clear.setFixedHeight(m["opt_btn_h"])
+        self.btn_save.setFixedHeight(m["opt_btn_h"])
+        self.update()
 
     def set_status(self, s):
         if s.get("autosync_error"):
@@ -1815,11 +1916,12 @@ class SNSyncPanel(GlassPodFrame):
         dark = theme_state["dark"]
         border = qrgba(BORDER)
         text, text2, text3 = qname(TEXT), qname(TEXT2), qname(TEXT3)
+        m = curr_metric()
 
         self.setStyleSheet(
             "#sn_sync_panel { background:transparent; border:none; }"
             f"QPlainTextEdit {{ background:{qrgba(TRACK)}; color:{text}; border:1px solid {border};"
-            f" border-radius:6px; padding:5px 8px; font-family:Consolas, monospace; font-size:10.5px; }}"
+            f" border-radius:6px; padding:6px 8px; font-family:Consolas, monospace; font-size:{m['row_pt']}pt; }}"
             f"QPlainTextEdit:focus {{ border:1px solid #3b6fe0; }}"
         )
         self.title_lbl.setStyleSheet(f"color:{text};")
@@ -1843,12 +1945,13 @@ class SNSyncPanel(GlassPodFrame):
 
         self.btn_clear.setStyleSheet(
             f"QPushButton{{ background:transparent; color:{text2}; border:1px solid {border};"
-            f" border-radius:6px; padding:3px 12px; font-size:11px; }}"
+            f" border-radius:6px; padding:3px 12px; font-size:{m['sn_sub_pt']}pt; }}"
             f"QPushButton:hover{{ background:{qrgba(HOVER)}; color:{text}; }}")
         self.btn_save.setStyleSheet(
             "QPushButton{ background:#3b6fe0; color:white; border:none; border-radius:6px;"
-            " padding:4px 16px; font-size:11px; font-weight:600; }"
+            f" padding:4px 16px; font-size:{m['sn_sub_pt']}pt; font-weight:600; }}"
             "QPushButton:hover{ background:#2f5ec4; }")
+        self.apply_size()
         self.update()
 
 
@@ -1874,47 +1977,39 @@ class SNQuotaPage(QWidget):
         # 2. 活动固定积分优雅双行卡片
         self.promo_card = GlassPodFrame(radius=10)
         self.promo_card.setObjectName("sn_promo_card")
-        self.promo_bar = self.promo_card   # 兼容别名: 回归测试引用 promo_bar
+        self.promo_bar = self.promo_card
         pv = QVBoxLayout(self.promo_card)
         pv.setContentsMargins(16, 9, 16, 9)
         pv.setSpacing(6)
 
-        # 第一行: 图标与标题 (左) | 规则说明 (右)
         row1 = QHBoxLayout()
         row1.setSpacing(6)
         self.promo_icon = QLabel("🎁")
         row1.addWidget(self.promo_icon)
 
         self.promo_title = QLabel("活动固定积分")
-        self.promo_title.setFont(QFont("Microsoft YaHei UI", 9.5, QFont.Bold))
         row1.addWidget(self.promo_title)
 
         self.promo_rule = QLabel("Flash-Lite 1:1 消费返赠 · 30天有效")
-        self.promo_rule.setFont(QFont("Microsoft YaHei UI", 8.5))
         row1.addWidget(self.promo_rule)
         row1.addStretch(1)
         pv.addLayout(row1)
 
-        # 第二行: 可用总额大字 (左) | 最近到期信息 (右)
         row2 = QHBoxLayout()
         row2.setSpacing(8)
 
         self.promo_val_tag = QLabel("可用总额:")
-        self.promo_val_tag.setFont(QFont("Microsoft YaHei UI", 8.5))
         row2.addWidget(self.promo_val_tag)
 
         self.promo_val = QLabel("0.00")
-        self.promo_val.setFont(QFont("Consolas", 12, QFont.Bold))
         row2.addWidget(self.promo_val)
 
         row2.addStretch(1)
 
         self.promo_exp_tag = QLabel("最近到期:")
-        self.promo_exp_tag.setFont(QFont("Microsoft YaHei UI", 8.5))
         row2.addWidget(self.promo_exp_tag)
 
         self.promo_exp = QLabel("—")
-        self.promo_exp.setFont(QFont("Consolas", 9.5, QFont.Bold))
         row2.addWidget(self.promo_exp)
 
         pv.addLayout(row2)
@@ -1928,11 +2023,27 @@ class SNQuotaPage(QWidget):
 
         # 4. 底部微型注释
         self.foot_lbl = QLabel("注: 上限为官方公开的公测期固定额度 (60,000/5h · 600,000/周)；数据均以控制台实际调用与配额为准。")
-        self.foot_lbl.setFont(QFont("Microsoft YaHei UI", 8))
         self.foot_lbl.setStyleSheet(f"color:{qname(TEXT3)};")
         v.addWidget(self.foot_lbl)
 
         v.addStretch(1)
+
+    def apply_size(self):
+        m = curr_metric()
+        self.promo_title.setFont(QFont("Microsoft YaHei UI", m["sn_title_pt"], QFont.Bold))
+        self.promo_rule.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
+        self.promo_val_tag.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
+        self.promo_val.setFont(QFont("Consolas", m["promo_val_pt"], QFont.Bold))
+        self.promo_exp_tag.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
+        self.promo_exp.setFont(QFont("Consolas", m["sn_sub_pt"], QFont.Bold))
+        self.foot_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_date_pt"]))
+
+        for i in range(self.pools_layout.count()):
+            w = self.pools_layout.itemAt(i).widget()
+            if isinstance(w, SNPoolCard):
+                w.apply_size()
+        self.sync_panel.apply_size()
+        self.update()
 
     def render(self, s):
         while self.pools_layout.count():
@@ -1976,6 +2087,7 @@ class SNQuotaPage(QWidget):
                 w.apply_theme()
 
         self.sync_panel.apply_theme()
+        self.apply_size()
         self.promo_card.update()
 
 
@@ -1985,8 +2097,12 @@ class NavButton(QPushButton):
         super().__init__(f"  {icon_str}  {text}", parent)
         self.setCheckable(True)
         self.setCursor(Qt.PointingHandCursor)
-        self.setFixedHeight(38)
-        self.setFont(QFont("Microsoft YaHei UI", 9.5))
+        self.apply_size()
+
+    def apply_size(self):
+        m = curr_metric()
+        self.setFixedHeight(m["nav_btn_h"])
+        self.setFont(QFont("Microsoft YaHei UI", m["nav_btn_pt"]))
 
 
 # ============================================================ 刷新信号桥
@@ -1994,14 +2110,12 @@ class RefreshBridge(QObject):
     done = Signal(str, object)
 
 
-# ============================================================ 主窗口 (横版现代设计)
+# ============================================================ 主窗口 (双尺寸自适应架构)
 class CardWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.resize(990, 610)
-        self.setFixedSize(990, 610)
 
         self._drag = None
         self._scanning = False
@@ -2015,6 +2129,7 @@ class CardWindow(QWidget):
         self.bridge.done.connect(self._on_scan_done)
 
         self._build_ui()
+        self.apply_size_mode(theme_state.get("window_size", "default"), save=False)
         self.apply_styles()
 
     def _build_ui(self):
@@ -2033,7 +2148,6 @@ class CardWindow(QWidget):
         # ---- 1. 左侧菜单栏 (Sidebar)
         self.sidebar = QFrame()
         self.sidebar.setObjectName("sidebar")
-        self.sidebar.setFixedWidth(190)
         side_lay = QVBoxLayout(self.sidebar)
         side_lay.setContentsMargins(14, 16, 14, 16)
         side_lay.setSpacing(8)
@@ -2043,17 +2157,15 @@ class CardWindow(QWidget):
         self.dot_logo.setStyleSheet("color:#3b6fe0; font-size:14px;")
         brand.addWidget(self.dot_logo)
         self.app_title = QLabel("Token 审计")
-        self.app_title.setFont(QFont("Microsoft YaHei UI", 12, QFont.Bold))
         brand.addWidget(self.app_title)
         brand.addStretch(1)
         side_lay.addLayout(brand)
 
         side_lay.addSpacing(12)
 
-        src_head = QLabel("数据源")
-        src_head.setFont(QFont("Microsoft YaHei UI", 8.5))
-        src_head.setStyleSheet(f"color:{qname(TEXT3)}; padding-left:4px;")
-        side_lay.addWidget(src_head)
+        self.src_head = QLabel("数据源")
+        self.src_head.setStyleSheet(f"color:{qname(TEXT3)}; padding-left:4px;")
+        side_lay.addWidget(self.src_head)
 
         self.btn_nav_wb = NavButton("WorkBuddy", "📘")
         self.btn_nav_dsh = NavButton("DSH 本地", "🗄️")
@@ -2070,15 +2182,12 @@ class CardWindow(QWidget):
         side_lay.addStretch(1)
 
         self.btn_refresh = QPushButton("⟳  刷新数据")
-        self.btn_refresh.setFixedHeight(34)
         self.btn_refresh.setCursor(Qt.PointingHandCursor)
-        self.btn_refresh.setFont(QFont("Microsoft YaHei UI", 9))
         self.btn_refresh.clicked.connect(lambda: self.refresh(force=True))
         side_lay.addWidget(self.btn_refresh)
 
         bar_opts = QHBoxLayout()
         self.btn_theme_toggle = QPushButton("🌙 暗色" if not theme_state["dark"] else "☀️ 亮色")
-        self.btn_theme_toggle.setFixedHeight(28)
         self.btn_theme_toggle.setCursor(Qt.PointingHandCursor)
         self.btn_theme_toggle.clicked.connect(lambda: self.set_dark(not theme_state["dark"]))
         bar_opts.addWidget(self.btn_theme_toggle)
@@ -2086,7 +2195,6 @@ class CardWindow(QWidget):
         self.btn_glass_toggle = QPushButton("液态玻璃")
         self.btn_glass_toggle.setCheckable(True)
         self.btn_glass_toggle.setChecked(theme_state["glass"])
-        self.btn_glass_toggle.setFixedHeight(28)
         self.btn_glass_toggle.setCursor(Qt.PointingHandCursor)
         self.btn_glass_toggle.clicked.connect(lambda: self.set_glass(not theme_state["glass"]))
         bar_opts.addWidget(self.btn_glass_toggle)
@@ -2103,7 +2211,6 @@ class CardWindow(QWidget):
 
         top_bar = QHBoxLayout()
         self.subtitle = QLabel("加载中…")
-        self.subtitle.setFont(QFont("Microsoft YaHei UI", 9))
         top_bar.addWidget(self.subtitle, 1)
 
         self.range_box = QWidget()
@@ -2153,13 +2260,11 @@ class CardWindow(QWidget):
         dash_lay.addLayout(stat_grid)
 
         self.today_bar = QLabel("")
-        self.today_bar.setFixedHeight(28)
         dash_lay.addWidget(self.today_bar)
 
         body_split = QHBoxLayout()
         body_split.setSpacing(10)
 
-        # 左栏: 模型排行榜 (悬浮透镜卡片)
         self.table_card = GlassPodFrame(radius=10)
         self.table_card.setObjectName("table_card")
         tv = QVBoxLayout(self.table_card)
@@ -2177,7 +2282,6 @@ class CardWindow(QWidget):
         tv.addWidget(self.model_area)
         body_split.addWidget(self.table_card, 56)
 
-        # 右栏: 图表区
         charts_col = QVBoxLayout()
         charts_col.setSpacing(10)
 
@@ -2214,6 +2318,63 @@ class CardWindow(QWidget):
 
         work_lay.addWidget(self.stack, 1)
         main_layout.addWidget(self.workspace, 1)
+
+    # ---------------- 动态尺寸适配器 ----------------
+    def apply_size_mode(self, mode_name, save=True):
+        if mode_name not in SIZE_METRICS:
+            mode_name = "default"
+        theme_state["window_size"] = mode_name
+        if save:
+            save_settings()
+
+        m = SIZE_METRICS[mode_name]
+        self.setFixedSize(m["win_w"], m["win_h"])
+        self.resize(m["win_w"], m["win_h"])
+
+        self.sidebar.setFixedWidth(m["sidebar_w"])
+        self.card.sep_x = float(m["sidebar_w"])
+
+        self.app_title.setFont(QFont("Microsoft YaHei UI", m["title_pt"], QFont.Bold))
+        self.subtitle.setFont(QFont("Microsoft YaHei UI", m["subtitle_pt"]))
+        self.src_head.setFont(QFont("Microsoft YaHei UI", m["sn_date_pt"]))
+
+        for b in (self.btn_nav_wb, self.btn_nav_dsh, self.btn_nav_sn):
+            b.apply_size()
+
+        self.btn_refresh.setFixedHeight(m["refresh_h"])
+        self.btn_refresh.setFont(QFont("Microsoft YaHei UI", m["nav_btn_pt"], QFont.Bold))
+
+        self.btn_theme_toggle.setFixedHeight(m["opt_btn_h"])
+        self.btn_glass_toggle.setFixedHeight(m["opt_btn_h"])
+
+        for c in (self.card_total, self.card_cache, self.card_io, self.card_sess):
+            c.apply_size()
+
+        self.today_bar.setFixedHeight(m["today_h"])
+        self.chart.apply_size()
+        self.heat.apply_size()
+        self.sn_page.apply_size()
+
+        if self.isVisible():
+            screen = QGuiApplication.screenAt(self.geometry().center()) or QApplication.primaryScreen()
+            scr = screen.availableGeometry()
+            x = max(scr.left() + 8, min(self.x(), scr.right() - self.width() - 8))
+            y = max(scr.top() + 8, min(self.y(), scr.bottom() - self.height() - 8))
+            self.move(x, y)
+
+        self.render()
+        self.card.update()
+
+    def set_glass_transparency(self, level, save=True):
+        if level not in GLASS_PRESETS:
+            level = "balanced"
+        theme_state["glass_transparency"] = level
+        if save:
+            save_settings()
+        self.card.update()
+        for w in self.findChildren(GlassPodFrame):
+            w.update()
+        self.update()
 
     # ---------------- 多显示器感知与智能吸附展开 ----------------
     def popup_from(self, pet_geometry: QRect):
@@ -2257,8 +2418,8 @@ class CardWindow(QWidget):
     def apply_styles(self):
         dark = theme_state["dark"]
         glass = theme_state["glass"]
+        m = curr_metric()
 
-        # 主框架与子透镜卡片背景交由 QPainter 处理，去除 QSS 扁平覆盖
         self.card.setStyleSheet("#main_card { background:transparent; border:none; }")
         self.sidebar.setStyleSheet(
             f"#sidebar {{ background:{'transparent' if glass else qrgba(SIDEBAR)};"
@@ -2268,7 +2429,6 @@ class CardWindow(QWidget):
         self.app_title.setStyleSheet(f"color:{qname(TEXT)};")
         self.subtitle.setStyleSheet(f"color:{qname(TEXT3)};")
 
-        # 今日快报微磨砂横条
         if glass:
             tb_bg = "rgba(255, 255, 255, 0.08)" if dark else "rgba(255, 255, 255, 0.45)"
             tb_border = "rgba(255, 255, 255, 0.18)" if dark else "rgba(255, 255, 255, 0.70)"
@@ -2277,7 +2437,7 @@ class CardWindow(QWidget):
             tb_border = qrgba(BORDER)
         self.today_bar.setStyleSheet(
             f"background:{tb_bg}; border:1px solid {tb_border}; border-radius:6px;"
-            f" padding:4px 10px; color:{qname(TEXT2)}; font-size:11px;")
+            f" padding:4px 10px; color:{qname(TEXT2)}; font-size:{m['today_pt']}pt;")
 
         for w in (self.table_card, self.chart_card, self.heat_card):
             w.setStyleSheet("background:transparent; border:none;")
@@ -2294,7 +2454,7 @@ class CardWindow(QWidget):
 
         btn_opt_style = (
             f"QPushButton{{ background:{qrgba(TRACK)}; color:{qname(TEXT2)}; border:none; border-radius:6px;"
-            f" font-size:11px; }}"
+            f" font-size:{m['sn_sub_pt']}pt; }}"
             f"QPushButton:hover{{ background:{qrgba(HOVER)}; color:{qname(TEXT)}; }}"
             "QPushButton:checked{ background:#3b6fe0; color:white; }")
         self.btn_theme_toggle.setStyleSheet(btn_opt_style)
@@ -2305,7 +2465,7 @@ class CardWindow(QWidget):
         for b in (self.btn_today, self.btn_7, self.btn_30, self.btn_all):
             b.setStyleSheet(
                 f"QPushButton{{ background:{qrgba(TRACK)}; color:{qname(TEXT2)}; border:none;"
-                f" border-radius:6px; padding:4px 9px; font-size:11px; }}"
+                f" border-radius:6px; padding:4px 9px; font-size:{m['sn_sub_pt']}pt; }}"
                 f"QPushButton:checked{{ background:#3b6fe0; color:white; font-weight:600; }}"
                 f"QPushButton:hover{{ color:{qname(TEXT)}; }}"
                 "QPushButton:checked:hover{ color:white; }")
@@ -2542,9 +2702,24 @@ class CardWindow(QWidget):
         act_hide = menu.addAction("⌫  隐藏窗口 (Esc)")
         act_dark = menu.addAction(("◉ " if theme_state["dark"] else "○ ") + "深色模式")
         act_blur = menu.addAction(("◉ " if theme_state["glass"] else "○ ") + "液态玻璃 (iOS 27)")
+
+        # 玻璃通透度调节菜单
+        tr_menu = menu.addMenu("🔮  玻璃通透度")
+        cur_tr = theme_state.get("glass_transparency", "balanced")
+        act_tr_c = tr_menu.addAction(("● " if cur_tr == "crystal" else "○ ") + "💎 晶透水滴 (高通透)")
+        act_tr_b = tr_menu.addAction(("● " if cur_tr == "balanced" else "○ ") + "💧 标准液态 (默认)")
+        act_tr_f = tr_menu.addAction(("● " if cur_tr == "frosted" else "○ ") + "🌫️ 柔和微透 (沉浸)")
+
+        # 窗口尺寸切换菜单
+        sz_menu = menu.addMenu("📐  窗口尺寸")
+        cur_sz = theme_state.get("window_size", "default")
+        act_sz_def = sz_menu.addAction(("● " if cur_sz != "large" else "○ ") + "标准尺寸 (990×610)")
+        act_sz_lg = sz_menu.addAction(("● " if cur_sz == "large" else "○ ") + "舒适大窗口 (1180×730)")
+
         act_auto = menu.addAction(("◉ " if autostart_enabled() else "○ ") + "开机自启动")
         menu.addSeparator()
         act_quit = menu.addAction("✕  退出程序")
+
         chosen = menu.exec(ev.globalPos())
         if chosen == act_hide:
             self.hide()
@@ -2552,6 +2727,16 @@ class CardWindow(QWidget):
             self.set_dark(not theme_state["dark"])
         elif chosen == act_blur:
             self.set_glass(not theme_state["glass"])
+        elif chosen == act_tr_c:
+            self.set_glass_transparency("crystal")
+        elif chosen == act_tr_b:
+            self.set_glass_transparency("balanced")
+        elif chosen == act_tr_f:
+            self.set_glass_transparency("frosted")
+        elif chosen == act_sz_def:
+            self.apply_size_mode("default")
+        elif chosen == act_sz_lg:
+            self.apply_size_mode("large")
         elif chosen == act_auto:
             new_state = not autostart_enabled()
             set_autostart(new_state)
@@ -2635,6 +2820,8 @@ def load_settings():
         theme_state["source"] = d.get("source", "wb")
         theme_state["pet"] = bool(d.get("pet"))
         theme_state["pet_theme"] = d.get("pet_theme", "v2")
+        theme_state["window_size"] = d.get("window_size", "default")
+        theme_state["glass_transparency"] = d.get("glass_transparency", "balanced")
     except Exception:
         pass
 
@@ -2649,7 +2836,7 @@ PET_W, PET_H = 118, 148
 PET_SLEEP_AFTER = 60
 PET_OTHER_EVERY = (150, 420)
 PET_MS = {"idle": 240, "sleep": 1500, "drag": 140, "click": 300, "other": 300, "special": 360}
-APP_BUILD = "v8.4-liquid-glass"
+APP_BUILD = "v8.6-liquid-iridescent"
 
 
 def _pet_idle_seq(n):
@@ -2730,8 +2917,6 @@ class BallWindow(QWidget):
         self.setToolTip("Token 审计 — 单击/双击打开统计面板 / 右键菜单")
         self.show()
         if self.pet_frames is not None and theme_state.get("pet"):
-            # 桌宠模式启动: 必须同步 self.pet=True, 否则窗口被拉大但 paintEvent
-            # 仍按悬浮球绘制且动画定时器不推进 (表现为"很大的旧悬浮窗球")
             self.pet = True
             self._pet_apply(True)
 
@@ -2845,7 +3030,14 @@ class BallWindow(QWidget):
         w = self.width()
         R = QRectF(3, 3, w - 6, w - 6)
         dark = theme_state["dark"]
-        p.setPen(QPen(QColor(255, 255, 255, 50) if dark else QColor(15, 17, 22, 50), 1.2))
+        glass = theme_state["glass"]
+
+        if glass:
+            # 悬浮球也同步呈现流光溢彩光学色散光环
+            rim = create_iridescent_gradient(0, 0, w, w, dark=dark, mult=1.1)
+            p.setPen(QPen(QBrush(rim), 1.5))
+        else:
+            p.setPen(QPen(QColor(255, 255, 255, 50) if dark else QColor(15, 17, 22, 50), 1.2))
         p.drawEllipse(R.adjusted(0.6, 0.6, -0.6, -0.6))
 
         grad = QLinearGradient(0, 3, 0, w - 3)
@@ -2933,6 +3125,21 @@ class BallWindow(QWidget):
         a2 = menu.addAction("⟳  立即刷新数据")
         a_restart = menu.addAction("🔄  一键重启")
         menu.addSeparator()
+
+        # 悬浮球右键调节通透度
+        tr_menu = menu.addMenu("🔮  玻璃通透度")
+        cur_tr = theme_state.get("glass_transparency", "balanced")
+        act_tr_c = tr_menu.addAction(("● " if cur_tr == "crystal" else "○ ") + "💎 晶透水滴 (高通透)")
+        act_tr_b = tr_menu.addAction(("● " if cur_tr == "balanced" else "○ ") + "💧 标准液态 (默认)")
+        act_tr_f = tr_menu.addAction(("● " if cur_tr == "frosted" else "○ ") + "🌫️ 柔和微透 (沉浸)")
+
+        # 悬浮球快捷切换窗口尺寸
+        sz_menu = menu.addMenu("📐  窗口尺寸")
+        cur_sz = theme_state.get("window_size", "default")
+        act_sz_def = sz_menu.addAction(("● " if cur_sz != "large" else "○ ") + "标准尺寸 (990×610)")
+        act_sz_lg = sz_menu.addAction(("● " if cur_sz == "large" else "○ ") + "舒适大窗口 (1180×730)")
+        menu.addSeparator()
+
         a_pet = a_head = a_theme_menu = None
         if self.pet_frames is not None:
             a_pet = menu.addAction("🐳  桌宠形态 (DeepSeek 娘)")
@@ -2958,6 +3165,21 @@ class BallWindow(QWidget):
             if self.card:
                 self.card.popup_from(self.frameGeometry())
                 self.card.refresh()
+        elif chosen == act_tr_c:
+            if self.card:
+                self.card.set_glass_transparency("crystal")
+        elif chosen == act_tr_b:
+            if self.card:
+                self.card.set_glass_transparency("balanced")
+        elif chosen == act_tr_f:
+            if self.card:
+                self.card.set_glass_transparency("frosted")
+        elif chosen == act_sz_def:
+            if self.card:
+                self.card.apply_size_mode("default")
+        elif chosen == act_sz_lg:
+            if self.card:
+                self.card.apply_size_mode("large")
         elif a_pet is not None and chosen == a_pet:
             self.set_pet(not self.pet)
         elif a_head is not None and chosen == a_head:
