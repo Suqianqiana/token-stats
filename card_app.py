@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-Token 审计卡片 V8.2 (终审稳定版)
-架构: 横版现代化仪表盘 (990x610) + 左侧导航栏 + 桌宠智能位置吸附
+Token 审计卡片 V8.4 — iOS 27 Liquid Glass 光学渲染引擎 + 现代横版仪表盘
+核心架构: 
+  - 990x610 黄金比例横版视窗 + 左侧轻量侧边栏
+  - iOS 27 物理光学双层折射与菲涅尔镜面高光 (Pure QPainter Optics)
+  - 光随鼠动流体光斑 (Dynamic Specular Cursor Glow)
+  - 商汤双额度对称仪表 + 赠送积分双行排版 + 每日柱状图鼠标锚点缩放
 """
 import json
 import os
@@ -14,9 +18,10 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
 import scanner  # noqa: E402
 
-from PySide6.QtCore import Qt, QRectF, QObject, Signal, QTimer, QPoint, QRect
+from PySide6.QtCore import (Qt, QRectF, QObject, Signal, QTimer, QPoint, QRect,
+                            QPointF, QEvent)
 from PySide6.QtGui import (QColor, QFont, QPainter, QPen, QBrush, QPainterPath,
-                           QLinearGradient, QImage, QGuiApplication)
+                           QLinearGradient, QRadialGradient, QImage, QGuiApplication)
 from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QVBoxLayout,
                                QHBoxLayout, QGridLayout, QFrame, QPushButton,
                                QScrollArea, QMenu, QSizePolicy, QPlainTextEdit,
@@ -93,7 +98,7 @@ def qname(c):
 refresh_palette()
 
 
-# ============================================================ 菜单与通用样式
+# ============================================================ 菜单与全局样式
 def menu_qss():
     dark = theme_state["dark"]
     if dark:
@@ -150,6 +155,173 @@ def fmt(n):
 
 def fmt_full(n):
     return f"{int(n):,}"
+
+
+# ============================================================ iOS 27 液态玻璃光学基底
+class LiquidGlassFrame(QFrame):
+    """iOS 27 物理级液态玻璃主底板 (微折射双层渐变 + 菲涅尔镜面边缘 + 光随鼠动光斑)"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMouseTracking(True)
+        self._glow_pos = None
+        QApplication.instance().installEventFilter(self)
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.MouseMove:
+            if self.isVisible() and theme_state.get("glass", False):
+                gp = ev.globalPosition().toPoint()
+                lp = self.mapFromGlobal(gp)
+                if self.rect().contains(lp):
+                    self._glow_pos = QPointF(lp)
+                    self.update()
+                elif self._glow_pos is not None:
+                    self._glow_pos = None
+                    self.update()
+        return super().eventFilter(obj, ev)
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        rect = QRectF(0.5, 0.5, w - 1.0, h - 1.0)
+        path = QPainterPath()
+        path.addRoundedRect(rect, 14, 14)
+
+        dark = theme_state["dark"]
+        glass = theme_state["glass"]
+
+        if glass:
+            # 1. 深度微折射双层对角渐变底板 (Subsurface Fluid Tint)
+            bg_grad = QLinearGradient(0, 0, w, h)
+            if dark:
+                bg_grad.setColorAt(0.0, QColor(38, 43, 56, 175))
+                bg_grad.setColorAt(0.42, QColor(22, 25, 32, 145))
+                bg_grad.setColorAt(1.0, QColor(14, 16, 22, 135))
+            else:
+                bg_grad.setColorAt(0.0, QColor(255, 255, 255, 195))
+                bg_grad.setColorAt(0.45, QColor(242, 246, 253, 140))
+                bg_grad.setColorAt(1.0, QColor(225, 234, 248, 125))
+            p.setPen(Qt.NoPen)
+            p.setBrush(QBrush(bg_grad))
+            p.drawPath(path)
+
+            # 2. 动态光随鼠动流体高光斑 (Dynamic Specular Cursor Glow)
+            if self._glow_pos is not None:
+                p.save()
+                p.setClipPath(path)
+                glow_r = 230.0
+                glow = QRadialGradient(self._glow_pos, glow_r, self._glow_pos)
+                if dark:
+                    glow.setColorAt(0.0, QColor(255, 255, 255, 35))
+                    glow.setColorAt(0.35, QColor(145, 185, 255, 15))
+                    glow.setColorAt(1.0, QColor(255, 255, 255, 0))
+                else:
+                    glow.setColorAt(0.0, QColor(255, 255, 255, 65))
+                    glow.setColorAt(0.35, QColor(160, 205, 255, 22))
+                    glow.setColorAt(1.0, QColor(255, 255, 255, 0))
+                p.setBrush(QBrush(glow))
+                p.drawEllipse(self._glow_pos, glow_r, glow_r)
+                p.restore()
+
+            # 3. 侧边栏玻璃分型槽线 (1px Frosted Trench Line)
+            sep_x = 190.0
+            sep_grad = QLinearGradient(sep_x, 0, sep_x, h)
+            if dark:
+                sep_grad.setColorAt(0.0, QColor(255, 255, 255, 55))
+                sep_grad.setColorAt(0.5, QColor(255, 255, 255, 18))
+                sep_grad.setColorAt(1.0, QColor(255, 255, 255, 35))
+            else:
+                sep_grad.setColorAt(0.0, QColor(255, 255, 255, 140))
+                sep_grad.setColorAt(0.5, QColor(205, 215, 230, 95))
+                sep_grad.setColorAt(1.0, QColor(255, 255, 255, 90))
+            p.setPen(QPen(QBrush(sep_grad), 1.0))
+            p.drawLine(QPointF(sep_x, 1.0), QPointF(sep_x, h - 1.0))
+
+            # 4. 双层菲涅尔高光边缘 (Fresnel Specular Bevel Rim)
+            rim_grad = QLinearGradient(0, 0, 0, h)
+            if dark:
+                rim_grad.setColorAt(0.0, QColor(255, 255, 255, 120))
+                rim_grad.setColorAt(0.4, QColor(255, 255, 255, 28))
+                rim_grad.setColorAt(1.0, QColor(255, 255, 255, 65))
+            else:
+                rim_grad.setColorAt(0.0, QColor(255, 255, 255, 240))
+                rim_grad.setColorAt(0.4, QColor(190, 202, 220, 100))
+                rim_grad.setColorAt(1.0, QColor(255, 255, 255, 150))
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(QBrush(rim_grad), 1.2))
+            p.drawPath(path)
+
+            # 5. 顶部镜面折射光弧 (Top Specular Bevel Arc)
+            arc_grad = QLinearGradient(16, 1.2, w - 16, 1.2)
+            arc_grad.setColorAt(0.0, QColor(255, 255, 255, 0))
+            arc_grad.setColorAt(0.3, QColor(255, 255, 255, 100 if dark else 180))
+            arc_grad.setColorAt(0.7, QColor(255, 255, 255, 100 if dark else 180))
+            arc_grad.setColorAt(1.0, QColor(255, 255, 255, 0))
+            p.setPen(QPen(QBrush(arc_grad), 1.0))
+            p.drawLine(QPointF(16, 1.2), QPointF(w - 16, 1.2))
+        else:
+            p.setPen(QPen(BORDER, 1.0))
+            p.setBrush(QBrush(BG))
+            p.drawPath(path)
+
+
+class GlassPodFrame(QFrame):
+    """iOS 27 悬浮透镜子卡片 (Frosted Glass Pod: 高透固化率背板 + 1px 镜面切角)"""
+    def __init__(self, radius=10, parent=None):
+        super().__init__(parent)
+        self.radius = radius
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        r = self.radius
+        rect = QRectF(0.5, 0.5, w - 1.0, h - 1.0)
+        path = QPainterPath()
+        path.addRoundedRect(rect, r, r)
+
+        dark = theme_state["dark"]
+        glass = theme_state["glass"]
+
+        if glass:
+            # 微阶微梯度背板，防止背景过度透光影响文字辨识
+            grad = QLinearGradient(0, 0, 0, h)
+            if dark:
+                grad.setColorAt(0.0, QColor(36, 40, 50, 236))
+                grad.setColorAt(1.0, QColor(25, 28, 35, 222))
+            else:
+                grad.setColorAt(0.0, QColor(255, 255, 255, 246))
+                grad.setColorAt(1.0, QColor(246, 249, 254, 232))
+            p.setPen(Qt.NoPen)
+            p.setBrush(QBrush(grad))
+            p.drawPath(path)
+
+            # 菲涅尔切角外边框
+            rim = QLinearGradient(0, 0, 0, h)
+            if dark:
+                rim.setColorAt(0.0, QColor(255, 255, 255, 80))
+                rim.setColorAt(0.5, QColor(255, 255, 255, 20))
+                rim.setColorAt(1.0, QColor(255, 255, 255, 42))
+            else:
+                rim.setColorAt(0.0, QColor(255, 255, 255, 220))
+                rim.setColorAt(0.5, QColor(210, 218, 230, 100))
+                rim.setColorAt(1.0, QColor(255, 255, 255, 140))
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(QBrush(rim), 1.0))
+            p.drawPath(path)
+
+            # 顶部 1px 镜面切角微反光线
+            top_hl = QLinearGradient(r, 1.2, w - r, 1.2)
+            top_hl.setColorAt(0.0, QColor(255, 255, 255, 0))
+            top_hl.setColorAt(0.3, QColor(255, 255, 255, 85 if dark else 150))
+            top_hl.setColorAt(0.7, QColor(255, 255, 255, 85 if dark else 150))
+            top_hl.setColorAt(1.0, QColor(255, 255, 255, 0))
+            p.setPen(QPen(QBrush(top_hl), 1.0))
+            p.drawLine(QPointF(r, 1.2), QPointF(w - r, 1.2))
+        else:
+            p.setPen(QPen(BORDER, 1.0))
+            p.setBrush(QBrush(CARD))
+            p.drawPath(path)
 
 
 # ============================================================ 头部组件
@@ -272,15 +444,15 @@ class ChartTip(QWidget):
                 p.setFont(fv)
                 p.setPen(TEXT if color is not None else TEXT2)
                 p.drawText(QRectF(self._value_right - 300, y, 300, self.ROW_H),
-                       Qt.AlignRight | Qt.AlignVCenter, vl)
+                           Qt.AlignRight | Qt.AlignVCenter, vl)
                 p.setFont(f2)
             y += self.ROW_H
 
 
-# ============================================================ 汇总指标卡 (上下分层排布)
-class StatCard(QFrame):
+# ============================================================ 汇总指标卡
+class StatCard(GlassPodFrame):
     def __init__(self, label, accent, parent=None):
-        super().__init__(parent)
+        super().__init__(radius=10, parent=parent)
         self.label_text = label
         self.accent = accent
         self.value_text = "—"
@@ -298,14 +470,10 @@ class StatCard(QFrame):
             self.update()
 
     def paintEvent(self, ev):
+        super().paintEvent(ev)
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(self.rect().adjusted(0, 0, -1, -1)), 10, 10)
-        p.setPen(QPen(BORDER, 1))
-        p.setBrush(QBrush(CARD))
-        p.drawPath(path)
 
         p.setPen(Qt.NoPen)
         p.setBrush(self.accent)
@@ -452,61 +620,99 @@ class ModelRow(QWidget):
         right_text(f"{self.requests:,}", REQ_W, x1 + PCT_W + HIT_W + REQ_W, TEXT2)
 
 
-# ============================================================ 图表组件
+# ============================================================ 柱状图组件 (支持鼠标锚点滚轮横向缩放 & 拖动平移)
 class StackedBarChart(QWidget):
-    """柱状图数据视口引擎: 滚轮以鼠标锚点缩放 + 拖拽平移浏览"""
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.all_data = []
         self.data = []
+        self.colors = {}
+        self.view_start = 0.0
+        self.view_count = 35.0
+        self._drag_start_x = None
+        self._drag_start_view = 0.0
         self.setMouseTracking(True)
         self.setMinimumHeight(130)
-        self._vi0 = 0.0      # 视口起点 (数据索引, 浮点支持细分缩放)
-        self._vi1 = 0.0      # 视口终点
-        self._drag = None    # (按下时 x, 按下时视口起点)
 
-    def set_data(self, daily, models_rank, days_limit=35):
+    def set_data(self, daily, models_rank):
         top = [m for m, _ in models_rank[:8]]
         self.colors = {m: MODEL_COLORS[i % len(MODEL_COLORS)] for i, m in enumerate(top)}
-        days = sorted(d for d in daily if d != "unknown")[-days_limit:]
-        self.data = []
+        days = sorted(d for d in daily if d != "unknown")
+        
+        self.all_data = []
         for d in days:
             parts = []
             for m in top:
                 v = daily[d].get(m, {}).get("total", 0)
                 if v:
                     parts.append((m, self.colors[m], v))
-            self.data.append({"date": d, "parts": parts})
-        self._vi0, self._vi1 = 0.0, float(len(self.data)) or 0.0
-        self._drag = None
-        self.update()
+            self.all_data.append({"date": d, "parts": parts})
 
-    @property
-    def _view(self):
-        n = float(len(self.data))
-        if n <= 0:
-            return 0.0, 0.0
-        return max(0.0, min(self._vi0, n - 0.001)), max(0.0, min(self._vi1, n))
+        total = len(self.all_data)
+        default_len = min(35.0, float(total)) if total > 0 else 35.0
+        self.view_count = default_len
+        self.view_start = float(max(0, total - int(default_len)))
+        self._sync_slice()
+
+    def _sync_slice(self):
+        total = len(self.all_data)
+        if total == 0:
+            self.data = []
+            self.update()
+            return
+
+        self.view_count = max(5.0, min(float(total), self.view_count))
+        self.view_start = max(0.0, min(float(total - self.view_count), self.view_start))
+        
+        s = int(round(self.view_start))
+        c = int(round(self.view_count))
+        self.data = self.all_data[s : s + c]
+        self.update()
 
     def _geom(self):
         w, h = self.width(), self.height()
         return w, h, 38, 8, 4, 16
 
+    def wheelEvent(self, ev):
+        if not self.all_data or len(self.all_data) <= 5:
+            super().wheelEvent(ev)
+            return
+
+        delta = ev.angleDelta().y()
+        if delta == 0:
+            return
+
+        w, h, padL, padR, padT, padB = self._geom()
+        iw = max(10, w - padL - padR)
+        mx = ev.position().x()
+
+        anchor_ratio = max(0.0, min(1.0, (mx - padL) / iw))
+        total = float(len(self.all_data))
+        anchor_idx = self.view_start + anchor_ratio * self.view_count
+
+        scale = 0.80 if delta > 0 else 1.25
+        new_count = max(5.0, min(total, self.view_count * scale))
+        new_start = anchor_idx - anchor_ratio * new_count
+
+        self.view_count = new_count
+        self.view_start = new_start
+        self._sync_slice()
+
+        ChartTip.instance().hide_tip()
+        ev.accept()
+
     def paintEvent(self, ev):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        w, h, padL, padR, padT, padB = self._geom()
+        w, h = self.width(), self.height()
+        padL, padR, padT, padB = 38, 8, 4, 16
         iw, ih = w - padL - padR, h - padT - padB
         if not self.data:
             p.setPen(TEXT3)
             p.drawText(self.rect(), Qt.AlignCenter, "暂无数据")
             return
-        a, b = self._view
-        n = len(self.data)
-        ia = max(0, min(int(a), n - 1))
-        ib = max(ia + 1, min(int(b), n))
-        if ib <= ia:
-            ib = min(n, ia + 1)
-        maxV = max((sum(v for _, _, v in d["parts"]) for d in self.data[ia:ib]), default=1) or 1
+
+        maxV = max((sum(v for _, _, v in d["parts"]) for d in self.data), default=1) or 1
         p.setFont(QFont("Consolas", 7.5))
         for k in range(3):
             y = padT + ih - ih * k / 2
@@ -517,98 +723,50 @@ class StackedBarChart(QWidget):
             label = f"{v/1e8:.1f}亿" if v >= 1e8 else (f"{v/1e4:.0f}万" if v >= 1e4 else f"{v:.0f}")
             p.drawText(QRectF(0, y - 7, padL - 4, 14), Qt.AlignRight | Qt.AlignVCenter, label)
 
-        span = b - a
-        slot = iw / span if span > 0 else iw
-        bw = max(2.5, min(12.0, slot * 0.6))
+        n = len(self.data)
+        slot = iw / n
+        bw = max(2.5, min(14.0, slot * 0.6))
         p.setFont(QFont("Consolas", 7))
-        step = max(1, int(span // 7)) if span >= 1 else 1
-        for i in range(ia, ib):
-            frac = i + 0.5 - a
-            cx = padL + slot * frac
+        step = max(1, n // 7)
+        for i, d in enumerate(self.data):
+            cx = padL + slot * i + slot / 2
             y_cur = padT + ih
-            for _m, color, v in self.data[i]["parts"]:
+            for _m, color, v in d["parts"]:
                 hh = v / maxV * ih
                 p.setPen(Qt.NoPen)
                 p.setBrush(color)
                 p.drawRect(QRectF(cx - bw / 2, y_cur - hh, bw, hh))
                 y_cur -= hh
-            if (i - ia) % step == 0 or i == ib - 1:
+            if i % step == 0 or i == n - 1:
                 p.setPen(TEXT3)
                 p.drawText(QRectF(cx - 20, h - padB + 1, 40, 13),
-                           Qt.AlignCenter, self.data[i]["date"][5:].replace("-", "/"))
-
-    def _idx_at(self, x):
-        w, h, padL, padR, padT, padB = self._geom()
-        iw = w - padL - padR
-        a, b = self._view
-        span = b - a
-        if span <= 0:
-            return None
-        frac = (x - padL) / iw * span + a
-        idx = int(frac)
-        if 0 <= idx < len(self.data):
-            return idx
-        return None
-
-    def wheelEvent(self, ev):
-        """滚轮缩放: 以鼠标指向的日期为固定锚点; 上滚放大, 下滚缩小; Y 轴随视口峰值自适应"""
-        if not self.data:
-            return
-        from PySide6.QtCore import QPointF
-        pos = ev.position() if hasattr(ev, "position") else QPointF(ev.pos())
-        delta = ev.angleDelta().y()
-        if delta == 0:
-            return
-        w, h, padL, padR, padT, padB = self._geom()
-        iw = w - padL - padR
-        a, b = self._view
-        n = float(len(self.data))
-        span = b - a
-        # 锚点: 鼠标处的数据索引 (钳制到视口内)
-        frac = max(0.0, min(1.0, (pos.x() - padL) / iw)) if iw > 0 else 0.5
-        anchor = a + span * frac
-        # 上滚放大(视口变窄), 下滚缩小(视口变宽)
-        factor = 1 / 1.25 if delta > 0 else 1.25
-        new_span = max(1.0, min(n, span * factor))
-        if new_span >= n - 1e-6:
-            self._vi0, self._vi1 = 0.0, n
-            self.update()
-            return
-        # 保持锚点到视口两端的比例不变
-        left = (anchor - a) / span if span > 0 else 0.5
-        new_a = anchor - new_span * left
-        new_b = new_a + new_span
-        if new_a < 0:
-            new_a, new_b = 0.0, new_span
-        if new_b > n:
-            new_b, new_a = n, n - new_span
-        self._vi0, self._vi1 = new_a, new_b
-        self.update()
+                           Qt.AlignCenter, d["date"][5:].replace("-", "/"))
 
     def mousePressEvent(self, ev):
-        if ev.button() == Qt.LeftButton and self.data:
-            self._drag = (ev.position().x(), self._vi0, self._vi1)
-            self.setCursor(Qt.ClosedHandCursor)
+        if ev.button() in (Qt.LeftButton, Qt.RightButton):
+            self._drag_start_x = ev.position().x()
+            self._drag_start_view = self.view_start
 
     def mouseMoveEvent(self, ev):
-        if self._drag is not None:
-            # 拖拽平移视口
-            x0, va, vb = self._drag
-            n = float(len(self.data))
+        if self._drag_start_x is not None and (ev.buttons() & (Qt.LeftButton | Qt.RightButton)):
             w, h, padL, padR, padT, padB = self._geom()
-            iw = w - padL - padR
-            span = vb - va
-            dx = (ev.position().x() - x0) / iw * span if iw > 0 else 0
-            new_a = max(0.0, min(n - span, va - dx)) if span < n else 0.0
-            self._vi0, self._vi1 = new_a, new_a + span
-            self.update()
+            iw = max(10, w - padL - padR)
+            dx = ev.position().x() - self._drag_start_x
+            shift_items = -(dx / iw) * self.view_count
+            self.view_start = self._drag_start_view + shift_items
+            self._sync_slice()
             ChartTip.instance().hide_tip()
             return
+
         if not self.data:
             return
         gp = ev.globalPosition().toPoint()
-        idx = self._idx_at(ev.position().x())
-        if idx is not None:
+        x = ev.position().x()
+        w, h, padL, padR, padT, padB = self._geom()
+        iw = w - padL - padR
+        slot = iw / len(self.data)
+        idx = int((x - padL) / slot)
+        if 0 <= idx < len(self.data):
             d = self.data[idx]
             total = sum(v for _, _, v in d["parts"])
             rows = []
@@ -621,12 +779,12 @@ class StackedBarChart(QWidget):
             ChartTip.instance().hide_tip()
 
     def mouseReleaseEvent(self, ev):
-        if self._drag is not None:
-            self._drag = None
-            self.setCursor(Qt.ArrowCursor)
+        self._drag_start_x = None
 
     def leaveEvent(self, ev):
+        self._drag_start_x = None
         ChartTip.instance().hide_tip()
+
 
 class HeatMap(QWidget):
     def __init__(self, parent=None):
@@ -1286,7 +1444,7 @@ def load_sn_stats(force=False):
         acc[pk][1] += canon_used.get(c, 0) + canon_dsh.get(c, 0)
         acc_since[pk] += canon_since.get(c, 0)
 
-    # 3.5) 官网同步值校准基准 + 同步后增量调用精确扣除 (完全复原原版可靠计算)
+    # 同步时刻后，增量扣除本地新增调用数
     sync_time_str = None
     if sync:
         try: sync_time_str = time.strftime("%H:%M", time.localtime(sync["ts"]))
@@ -1365,7 +1523,7 @@ def load_sn_stats(force=False):
     }
 
 
-# ============================================================ 商汤官网风格额度组件 (彻底解决遮挡 + 去除状态估算)
+# ============================================================ 商汤积分池卡片 (双进度对称仪表)
 SN_PURPLE = QColor("#7c67ff")
 SN_PURPLE_DARK = QColor("#9d8eff")
 SN_ORANGE = QColor("#ff7043")
@@ -1399,17 +1557,14 @@ class SNProgressBar(QWidget):
         fill = (SN_ORANGE_DARK if dark else SN_ORANGE) if self.color == "orange" \
             else (SN_PURPLE_DARK if dark else SN_PURPLE)
 
-        grad = QLinearGradient(0, 0, fill_w, 0)
-        grad.setColorAt(0, fill.lighter(115))
-        grad.setColorAt(1, fill)
-        p.setBrush(QBrush(grad))
+        p.setBrush(fill)
         p.drawRoundedRect(QRectF(0, 0, fill_w, h), r, r)
 
 
-class SNPoolCard(QFrame):
-    """周/5h 完全对称双仪表卡片: 上下两组结构一致, 通栏舒展无挤压"""
+class SNPoolCard(GlassPodFrame):
+    """商汤积分池卡片: 周周期与 5h 窗口额度对称呈现，通栏舒展无遮挡"""
     def __init__(self, pool, parent=None):
-        super().__init__(parent)
+        super().__init__(radius=12, parent=parent)
         self.pool = pool
         self.setObjectName("sn_pool_card")
         self._build_ui()
@@ -1417,100 +1572,127 @@ class SNPoolCard(QFrame):
 
     def _build_ui(self):
         v = QVBoxLayout(self)
-        v.setContentsMargins(16, 12, 16, 12)
+        v.setContentsMargins(16, 13, 16, 13)
         v.setSpacing(9)
 
-        # 顶栏: 胶囊徽标 + 池名称 (左) | 适用模型 (右)
+        # 1. 顶栏: 胶囊徽标 + 池名称 (左) | 适用模型说明 (右)
         top = QHBoxLayout()
         top.setSpacing(8)
+
         self.tag_badge = QLabel()
         self.tag_badge.setFont(QFont("Microsoft YaHei UI", 8.5, QFont.Bold))
         top.addWidget(self.tag_badge)
+
         self.name_lbl = QLabel(self.pool["name"])
         self.name_lbl.setFont(QFont("Microsoft YaHei UI", 10.5, QFont.Bold))
         top.addWidget(self.name_lbl)
         top.addStretch(1)
+
         self.scope_lbl = QLabel(self.pool.get("scope", ""))
-        self.scope_lbl.setFont(QFont("Microsoft YaHei UI", 8))
+        self.scope_lbl.setFont(QFont("Microsoft YaHei UI", 8.5))
         top.addWidget(self.scope_lbl)
         v.addLayout(top)
 
-        wt = self.pool.get("window_total", 0) or 1
-        wrem = self.pool.get("window_remaining", 0)
-        wratio = max(0.0, min(1.0, wrem / wt))
-        wtotal = self.pool.get("weekly_total", 0) or 1
-        wrem2 = self.pool.get("weekly_remaining", 0)
-        wratio2 = max(0.0, min(1.0, wrem2 / wtotal))
+        # 2. 周周期额度展示块 (结构与 5h 完全对称)
+        week_box = QVBoxLayout()
+        week_box.setSpacing(3)
 
-        def meter(key_tag, title, rem, total, ratio, reset_text, accent_key):
-            box = QVBoxLayout()
-            box.setSpacing(3)
-            head = QHBoxLayout()
-            lbl = QLabel(title)
-            lbl.setFont(QFont("Microsoft YaHei UI", 8.5))
-            head.addWidget(lbl)
-            head.addStretch(1)
-            val = QLabel(f"{rem:,.0f} / {total:,}  ({ratio * 100:.1f}%)")
-            val.setFont(QFont("Consolas", 9, QFont.Bold))
-            head.addWidget(val)
-            box.addLayout(head)
-            bar = SNProgressBar(ratio, color=self.pool.get("color", accent_key))
-            box.addWidget(bar)
-            sub = QHBoxLayout()
-            sub.addStretch(1)
-            rst = QLabel(reset_text)
-            rst.setFont(QFont("Microsoft YaHei UI", 8))
-            sub.addWidget(rst)
-            box.addLayout(sub)
-            return box, lbl, val, bar, rst
+        w_top = QHBoxLayout()
+        self.week_title = QLabel("周周期额度")
+        self.week_title.setFont(QFont("Microsoft YaHei UI", 8.5))
+        w_top.addWidget(self.week_title)
+        w_top.addStretch(1)
 
-        # 仪表一: 周周期 (与下方 5h 完全同构)
-        wbox, self.week_title, self.balance_lbl, self.week_bar, self.next_reset_lbl = meter(
-            "week", "周周期可用额度", wrem2, wtotal, wratio2,
-            f"周重置: {self.pool.get('next_weekly_reset', '—')}", "purple")
-        v.addLayout(wbox)
+        wt_week = self.pool.get("weekly_total", 0)
+        r_week = self.pool["weekly_remaining"] / wt_week if wt_week else 0
+        self.week_val_lbl = QLabel(f"{self.pool['weekly_remaining']:,.0f} / {wt_week:,} ({r_week * 100:.1f}%)")
+        self.week_val_lbl.setFont(QFont("Consolas", 8.8, QFont.Bold))
+        w_top.addWidget(self.week_val_lbl)
+        week_box.addLayout(w_top)
 
-        # 仪表二: 5h 窗口 (同构)
-        hbox, self.window_title, self.window_val_lbl, self.bar, self.window_reset_lbl = meter(
-            "win", "5h 窗口额度", wrem, wt, wratio,
-            f"5h重置于: {self.pool.get('window_reset', '—')}", "purple")
-        v.addLayout(hbox)
+        self.bar_week = SNProgressBar(r_week, color=self.pool.get("color", "purple"))
+        week_box.addWidget(self.bar_week)
+
+        w_bot = QHBoxLayout()
+        w_bot.addStretch(1)
+        nr = self.pool.get("next_weekly_reset", "—")
+        self.week_reset_lbl = QLabel(f"周额度重置于: {nr}")
+        self.week_reset_lbl.setFont(QFont("Microsoft YaHei UI", 8))
+        w_bot.addWidget(self.week_reset_lbl)
+        week_box.addLayout(w_bot)
+
+        v.addLayout(week_box)
+
+        # 3. 5h 滑动窗口额度展示块
+        win_box = QVBoxLayout()
+        win_box.setSpacing(3)
+
+        win_top = QHBoxLayout()
+        self.window_title = QLabel("5h 窗口额度")
+        self.window_title.setFont(QFont("Microsoft YaHei UI", 8.5))
+        win_top.addWidget(self.window_title)
+        win_top.addStretch(1)
+
+        wt_win = self.pool.get("window_total", 0)
+        r_win = self.pool["window_remaining"] / wt_win if wt_win else 0
+        self.window_val_lbl = QLabel(f"{self.pool['window_remaining']:,.0f} / {wt_win:,} ({r_win * 100:.1f}%)")
+        self.window_val_lbl.setFont(QFont("Consolas", 8.8, QFont.Bold))
+        win_top.addWidget(self.window_val_lbl)
+        win_box.addLayout(win_top)
+
+        self.bar_win = SNProgressBar(r_win, color=self.pool.get("color", "purple"))
+        win_box.addWidget(self.bar_win)
+
+        win_bot = QHBoxLayout()
+        win_bot.addStretch(1)
+        self.window_reset_lbl = QLabel(f"5h窗口重置于: {self.pool.get('window_reset', '—')}")
+        self.window_reset_lbl.setFont(QFont("Microsoft YaHei UI", 8))
+        win_bot.addWidget(self.window_reset_lbl)
+        win_box.addLayout(win_bot)
+
+        v.addLayout(win_box)
 
     def apply_theme(self):
         dark = theme_state["dark"]
         is_orange = self.pool.get("color") == "orange"
         accent = (SN_ORANGE_DARK if dark else SN_ORANGE) if is_orange \
             else (SN_PURPLE_DARK if dark else SN_PURPLE)
+
+        self.setStyleSheet("#sn_pool_card { background:transparent; border:none; }")
+
         badge_bg = qrgba(accent, 35 if dark else 24)
         badge_text = qname(accent)
-        self.setStyleSheet(
-            f"#sn_pool_card {{ background:{qrgba(CARD)}; border:1px solid {qrgba(BORDER)}; border-radius:12px; }}")
         self.tag_badge.setText("Flash-Lite" if is_orange else "通用池")
         self.tag_badge.setStyleSheet(
             f"background:{badge_bg}; color:{badge_text}; border-radius:5px; padding:2px 7px;")
-        self.name_lbl.setStyleSheet(f"color:{qname(TEXT)};")
-        self.scope_lbl.setStyleSheet(f"color:{qname(TEXT3)};")
-        for lbl in (self.week_title, self.window_title):
-            lbl.setStyleSheet(f"color:{qname(TEXT3)};")
-        for lbl in (self.balance_lbl, self.window_val_lbl):
-            lbl.setStyleSheet(f"color:{qname(TEXT)};")
-        for lbl in (self.next_reset_lbl, self.window_reset_lbl):
-            lbl.setStyleSheet(f"color:{qname(TEXT2)};")
-        self.week_bar.update()
-        self.bar.update()
 
-class SNSyncPanel(QFrame):
-    """纯净极简同步面板: 去除不需要的状态与本地估算标签"""
+        self.name_lbl.setStyleSheet(f"color:{qname(TEXT)};")
+        self.week_val_lbl.setStyleSheet(f"color:{badge_text};")
+        self.window_val_lbl.setStyleSheet(f"color:{badge_text};")
+
+        for lbl in (self.week_title, self.window_title, self.scope_lbl):
+            lbl.setStyleSheet(f"color:{qname(TEXT3)};")
+
+        for lbl in (self.week_reset_lbl, self.window_reset_lbl):
+            lbl.setStyleSheet(f"color:{qname(TEXT2)};")
+
+        self.bar_week.update()
+        self.bar_win.update()
+        self.update()
+
+
+class SNSyncPanel(GlassPodFrame):
+    """纯净极简同步面板: 去除本地估算标签"""
     saved = Signal()
     cleared = Signal()
     save_finished = Signal(bool, str)
 
     def __init__(self, parent=None):
-        super().__init__(parent)
+        super().__init__(radius=12, parent=parent)
         self.setObjectName("sn_sync_panel")
         self._status_mode = "none"
         self._status_msg = "未配置自动同步"
-        self._sync_test = False   # 测试模式: _on_save 同步执行 (_http_json 由测试打桩)
+        self._sync_test = False
         self.save_finished.connect(self._on_save_finished)
         self._build_ui()
         self.apply_theme()
@@ -1520,7 +1702,6 @@ class SNSyncPanel(QFrame):
         v.setContentsMargins(16, 11, 16, 11)
         v.setSpacing(7)
 
-        # 顶栏: 标题 + 状态文本 (兼容旧接口 status_lbl)
         head = QHBoxLayout()
         head.setSpacing(8)
 
@@ -1539,13 +1720,11 @@ class SNSyncPanel(QFrame):
         head.addWidget(self.guide_lbl)
         v.addLayout(head)
 
-        # cURL 输入框
         self.curl_edit = QPlainTextEdit()
         self.curl_edit.setPlaceholderText('粘贴 cURL 命令 (curl "https://platform.sensenova.cn/lite/console/...")')
         self.curl_edit.setFixedHeight(42)
         v.addWidget(self.curl_edit)
 
-        # 底部操作栏: 左侧轻量错误/成功反馈，右侧按钮
         row = QHBoxLayout()
         row.setSpacing(8)
 
@@ -1568,7 +1747,6 @@ class SNSyncPanel(QFrame):
         v.addLayout(row)
 
     def set_status(self, s):
-        # 极简三态状态文本: 成功/未配置/异常 (不含「本地估算」字样)
         if s.get("autosync_error"):
             self._status_mode = "error"
             self._status_msg = f"⚠ 同步异常: {s['autosync_error'][:22]}"
@@ -1622,7 +1800,7 @@ class SNSyncPanel(QFrame):
             self.save_finished.emit(ok, msg)
 
         if self._sync_test:
-            worker()   # 测试模式: 同步执行, 便于断言 err_lbl
+            worker()
             return
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1639,7 +1817,7 @@ class SNSyncPanel(QFrame):
         text, text2, text3 = qname(TEXT), qname(TEXT2), qname(TEXT3)
 
         self.setStyleSheet(
-            f"#sn_sync_panel {{ background:{qrgba(CARD)}; border:1px solid {border}; border-radius:12px; }}"
+            "#sn_sync_panel { background:transparent; border:none; }"
             f"QPlainTextEdit {{ background:{qrgba(TRACK)}; color:{text}; border:1px solid {border};"
             f" border-radius:6px; padding:5px 8px; font-family:Consolas, monospace; font-size:10.5px; }}"
             f"QPlainTextEdit:focus {{ border:1px solid #3b6fe0; }}"
@@ -1647,7 +1825,6 @@ class SNSyncPanel(QFrame):
         self.title_lbl.setStyleSheet(f"color:{text};")
         self.guide_lbl.setStyleSheet(f"color:{text3};")
 
-        # 状态文本三态配色 (成功绿/异常红/默认灰)
         mode = self._status_mode
         if mode == "success":
             st_color = "#34d399" if dark else "#059669"
@@ -1672,10 +1849,11 @@ class SNSyncPanel(QFrame):
             "QPushButton{ background:#3b6fe0; color:white; border:none; border-radius:6px;"
             " padding:4px 16px; font-size:11px; font-weight:600; }"
             "QPushButton:hover{ background:#2f5ec4; }")
+        self.update()
 
 
 class SNQuotaPage(QWidget):
-    """商汤日日新展示页"""
+    """商汤日日新展示页 (赠送积分双行分栏，易读性全面优化)"""
     saved = Signal()
     cleared = Signal()
 
@@ -1693,41 +1871,54 @@ class SNQuotaPage(QWidget):
         self.pools_layout.setSpacing(10)
         v.addLayout(self.pools_layout)
 
-        # 2. 赠送积分双行轻量卡片: 第一行标题+规则说明, 第二行可用总额+最近到期
-        self.promo_bar = QFrame()
-        self.promo_bar.setObjectName("sn_promo_bar")
-        self.promo_bar.setFixedHeight(58)
-        pvv = QVBoxLayout(self.promo_bar)
-        pvv.setContentsMargins(14, 8, 14, 8)
-        pvv.setSpacing(4)
+        # 2. 活动固定积分优雅双行卡片
+        self.promo_card = GlassPodFrame(radius=10)
+        self.promo_card.setObjectName("sn_promo_card")
+        self.promo_bar = self.promo_card   # 兼容别名: 回归测试引用 promo_bar
+        pv = QVBoxLayout(self.promo_card)
+        pv.setContentsMargins(16, 9, 16, 9)
+        pv.setSpacing(6)
 
+        # 第一行: 图标与标题 (左) | 规则说明 (右)
         row1 = QHBoxLayout()
-        row1.setSpacing(8)
+        row1.setSpacing(6)
         self.promo_icon = QLabel("🎁")
         row1.addWidget(self.promo_icon)
+
         self.promo_title = QLabel("活动固定积分")
         self.promo_title.setFont(QFont("Microsoft YaHei UI", 9.5, QFont.Bold))
         row1.addWidget(self.promo_title)
+
         self.promo_rule = QLabel("Flash-Lite 1:1 消费返赠 · 30天有效")
-        self.promo_rule.setFont(QFont("Microsoft YaHei UI", 8))
+        self.promo_rule.setFont(QFont("Microsoft YaHei UI", 8.5))
         row1.addWidget(self.promo_rule)
         row1.addStretch(1)
-        pvv.addLayout(row1)
+        pv.addLayout(row1)
 
+        # 第二行: 可用总额大字 (左) | 最近到期信息 (右)
         row2 = QHBoxLayout()
-        row2.setSpacing(10)
+        row2.setSpacing(8)
+
         self.promo_val_tag = QLabel("可用总额:")
         self.promo_val_tag.setFont(QFont("Microsoft YaHei UI", 8.5))
         row2.addWidget(self.promo_val_tag)
+
         self.promo_val = QLabel("0.00")
-        self.promo_val.setFont(QFont("Consolas", 13, QFont.Bold))
+        self.promo_val.setFont(QFont("Consolas", 12, QFont.Bold))
         row2.addWidget(self.promo_val)
+
         row2.addStretch(1)
-        self.promo_exp = QLabel("最近到期: —")
-        self.promo_exp.setFont(QFont("Microsoft YaHei UI", 8.5, QFont.Bold))
+
+        self.promo_exp_tag = QLabel("最近到期:")
+        self.promo_exp_tag.setFont(QFont("Microsoft YaHei UI", 8.5))
+        row2.addWidget(self.promo_exp_tag)
+
+        self.promo_exp = QLabel("—")
+        self.promo_exp.setFont(QFont("Consolas", 9.5, QFont.Bold))
         row2.addWidget(self.promo_exp)
-        pvv.addLayout(row2)
-        v.addWidget(self.promo_bar)
+
+        pv.addLayout(row2)
+        v.addWidget(self.promo_card)
 
         # 3. 极简同步面板
         self.sync_panel = SNSyncPanel()
@@ -1735,7 +1926,7 @@ class SNQuotaPage(QWidget):
         self.sync_panel.cleared.connect(self.cleared)
         v.addWidget(self.sync_panel)
 
-        # 4. 底部微型注释 (去除所有估算相关说明，仅保留权威解释)
+        # 4. 底部微型注释
         self.foot_lbl = QLabel("注: 上限为官方公开的公测期固定额度 (60,000/5h · 600,000/周)；数据均以控制台实际调用与配额为准。")
         self.foot_lbl.setFont(QFont("Microsoft YaHei UI", 8))
         self.foot_lbl.setStyleSheet(f"color:{qname(TEXT3)};")
@@ -1764,20 +1955,19 @@ class SNQuotaPage(QWidget):
                     tot = p.get("total_balance", 0)
                     exp = p.get("nearest_expire", "—")
                     self.promo_val.setText(f"{tot:,.2f}" if isinstance(tot, (int, float)) else str(tot))
-                    self.promo_exp.setText(f"最近到期: {exp}")
+                    self.promo_exp.setText(f"{exp}")
 
         self.sync_panel.set_status(s)
         self.apply_theme()
 
     def apply_theme(self):
-        border = qrgba(BORDER)
-        self.promo_bar.setStyleSheet(
-            f"#sn_promo_bar {{ background:{qrgba(CARD)}; border:1px solid {border}; border-radius:8px; }}")
+        self.promo_card.setStyleSheet("#sn_promo_card { background:transparent; border:none; }")
         self.promo_title.setStyleSheet(f"color:{qname(TEXT)};")
         self.promo_rule.setStyleSheet(f"color:{qname(TEXT3)};")
         self.promo_val_tag.setStyleSheet(f"color:{qname(TEXT3)};")
         self.promo_val.setStyleSheet(f"color:{qname(TEXT)};")
-        self.promo_exp.setStyleSheet(f"color:{qname(TEXT3)};")
+        self.promo_exp_tag.setStyleSheet(f"color:{qname(TEXT3)};")
+        self.promo_exp.setStyleSheet(f"color:{qname(TEXT2)};")
         self.foot_lbl.setStyleSheet(f"color:{qname(TEXT3)};")
 
         for i in range(self.pools_layout.count()):
@@ -1786,6 +1976,8 @@ class SNQuotaPage(QWidget):
                 w.apply_theme()
 
         self.sync_panel.apply_theme()
+        self.promo_card.update()
+
 
 # ============================================================ 导航按钮
 class NavButton(QPushButton):
@@ -1829,7 +2021,8 @@ class CardWindow(QWidget):
         outer = QHBoxLayout(self)
         outer.setContentsMargins(10, 10, 10, 10)
 
-        self.card = QFrame()
+        # 核心主底板: iOS 27 液态玻璃
+        self.card = LiquidGlassFrame()
         self.card.setObjectName("main_card")
         outer.addWidget(self.card)
 
@@ -1845,7 +2038,6 @@ class CardWindow(QWidget):
         side_lay.setContentsMargins(14, 16, 14, 16)
         side_lay.setSpacing(8)
 
-        # Logo / Title
         brand = QHBoxLayout()
         self.dot_logo = QLabel("●")
         self.dot_logo.setStyleSheet("color:#3b6fe0; font-size:14px;")
@@ -1967,7 +2159,8 @@ class CardWindow(QWidget):
         body_split = QHBoxLayout()
         body_split.setSpacing(10)
 
-        self.table_card = QFrame()
+        # 左栏: 模型排行榜 (悬浮透镜卡片)
+        self.table_card = GlassPodFrame(radius=10)
         self.table_card.setObjectName("table_card")
         tv = QVBoxLayout(self.table_card)
         tv.setContentsMargins(8, 6, 8, 6)
@@ -1984,20 +2177,21 @@ class CardWindow(QWidget):
         tv.addWidget(self.model_area)
         body_split.addWidget(self.table_card, 56)
 
+        # 右栏: 图表区
         charts_col = QVBoxLayout()
         charts_col.setSpacing(10)
 
-        self.chart_card = QFrame()
+        self.chart_card = GlassPodFrame(radius=10)
         self.chart_card.setObjectName("chart_card")
         cv = QVBoxLayout(self.chart_card)
         cv.setContentsMargins(10, 6, 8, 6)
         cv.setSpacing(0)
-        cv.addWidget(CardHeader("每日用量分布", BLUE))
+        cv.addWidget(CardHeader("每日用量分布 (滚轮缩放/拖动平移)", BLUE))
         self.chart = StackedBarChart()
         cv.addWidget(self.chart)
         charts_col.addWidget(self.chart_card, 56)
 
-        self.heat_card = QFrame()
+        self.heat_card = GlassPodFrame(radius=10)
         self.heat_card.setObjectName("heat_card")
         hv = QVBoxLayout(self.heat_card)
         hv.setContentsMargins(10, 6, 8, 6)
@@ -2062,25 +2256,31 @@ class CardWindow(QWidget):
     # ---------------- 样式刷新 ----------------
     def apply_styles(self):
         dark = theme_state["dark"]
-        hl = QColor(255, 255, 255, 60 if not dark else 35) if theme_state["glass"] else BORDER
-        card_border = qrgba(hl)
-        sub_border = qrgba(hl)
+        glass = theme_state["glass"]
 
-        self.card.setStyleSheet(
-            f"#main_card {{ background:{qrgba(BG)}; border:1px solid {card_border}; border-radius:14px; }}")
+        # 主框架与子透镜卡片背景交由 QPainter 处理，去除 QSS 扁平覆盖
+        self.card.setStyleSheet("#main_card { background:transparent; border:none; }")
         self.sidebar.setStyleSheet(
-            f"#sidebar {{ background:{qrgba(SIDEBAR)}; border-top-left-radius:14px; border-bottom-left-radius:14px;"
-            f" border-right:1px solid {sub_border}; }}")
+            f"#sidebar {{ background:{'transparent' if glass else qrgba(SIDEBAR)};"
+            f" border-top-left-radius:14px; border-bottom-left-radius:14px;"
+            f" border-right:{'none' if glass else f'1px solid {qrgba(BORDER)}'}; }}")
+
         self.app_title.setStyleSheet(f"color:{qname(TEXT)};")
         self.subtitle.setStyleSheet(f"color:{qname(TEXT3)};")
 
+        # 今日快报微磨砂横条
+        if glass:
+            tb_bg = "rgba(255, 255, 255, 0.08)" if dark else "rgba(255, 255, 255, 0.45)"
+            tb_border = "rgba(255, 255, 255, 0.18)" if dark else "rgba(255, 255, 255, 0.70)"
+        else:
+            tb_bg = qrgba(CARD)
+            tb_border = qrgba(BORDER)
         self.today_bar.setStyleSheet(
-            f"background:{qrgba(CARD)}; border:1px solid {sub_border}; border-radius:6px;"
+            f"background:{tb_bg}; border:1px solid {tb_border}; border-radius:6px;"
             f" padding:4px 10px; color:{qname(TEXT2)}; font-size:11px;")
 
         for w in (self.table_card, self.chart_card, self.heat_card):
-            w.setStyleSheet(
-                f"background:{qrgba(CARD)}; border:1px solid {sub_border}; border-radius:10px;")
+            w.setStyleSheet("background:transparent; border:none;")
 
         self.btn_refresh.setStyleSheet(
             "QPushButton{ background:#3b6fe0; color:white; border:none; border-radius:8px; font-weight:600; }"
@@ -2213,8 +2413,7 @@ class CardWindow(QWidget):
             elif src == "sn":
                 ws = time.strftime("%H:%M", time.localtime(s.get("window_start", 0)))
                 we = time.strftime("%H:%M", time.localtime(s.get("window_end", 0)))
-                mode = "自动同步" if s.get("sync_src") == "auto" else "未配置自动同步"
-                self.subtitle.setText(f"商汤 · 积分额度 ({mode}) · 窗口 {ws}–{we} · 已更新 {time.strftime('%H:%M:%S')}")
+                self.subtitle.setText(f"商汤 · 积分额度 · 窗口 {ws}–{we} · 已更新 {time.strftime('%H:%M:%S')}")
             else:
                 self.subtitle.setText(f"WorkBuddy · {s.get('firstDay','—')} ~ {s.get('lastDay','—')} · 真实 usage · 已更新 {time.strftime('%H:%M:%S')}")
         elif src == "sn":
@@ -2342,7 +2541,7 @@ class CardWindow(QWidget):
         menu = make_menu(self)
         act_hide = menu.addAction("⌫  隐藏窗口 (Esc)")
         act_dark = menu.addAction(("◉ " if theme_state["dark"] else "○ ") + "深色模式")
-        act_blur = menu.addAction(("◉ " if theme_state["glass"] else "○ ") + "液态玻璃 (半透明)")
+        act_blur = menu.addAction(("◉ " if theme_state["glass"] else "○ ") + "液态玻璃 (iOS 27)")
         act_auto = menu.addAction(("◉ " if autostart_enabled() else "○ ") + "开机自启动")
         menu.addSeparator()
         act_quit = menu.addAction("✕  退出程序")
@@ -2450,7 +2649,7 @@ PET_W, PET_H = 118, 148
 PET_SLEEP_AFTER = 60
 PET_OTHER_EVERY = (150, 420)
 PET_MS = {"idle": 240, "sleep": 1500, "drag": 140, "click": 300, "other": 300, "special": 360}
-APP_BUILD = "v8.2-horizontal"
+APP_BUILD = "v8.4-liquid-glass"
 
 
 def _pet_idle_seq(n):
