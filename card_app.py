@@ -2730,6 +2730,9 @@ class BallWindow(QWidget):
         self.setToolTip("Token 审计 — 单击/双击打开统计面板 / 右键菜单")
         self.show()
         if self.pet_frames is not None and theme_state.get("pet"):
+            # 桌宠模式启动: 必须同步 self.pet=True, 否则窗口被拉大但 paintEvent
+            # 仍按悬浮球绘制且动画定时器不推进 (表现为"很大的旧悬浮窗球")
+            self.pet = True
             self._pet_apply(True)
 
     def _frames_of(self, st):
