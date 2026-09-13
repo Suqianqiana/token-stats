@@ -41,11 +41,11 @@ w.render()
 rows_before = w.model_lay.count()
 check("初始 WB 行数>1", rows_before > 2, f"rows={rows_before}")
 
-w._switch_source(w.src_sn)        # 切商汤(缓存渲染)
+w._switch_nav(w.btn_nav_sn)       # 切商汤(缓存渲染)
 sn_hidden = w.sn_page.testAttribute(ca.Qt.WA_WState_Hidden) is False
 check("商汤页显示", sn_hidden)
 
-w._switch_source(w.src_wb)        # 切回 WB (load_initial 读真实磁盘缓存)
+w._switch_nav(w.btn_nav_wb)       # 切回 WB (load_initial 读真实磁盘缓存)
 rows_real = w.model_lay.count()
 check("切回 WB 行数>2", rows_real > 2, f"rows={rows_real}")
 
@@ -65,9 +65,7 @@ check("race: WB 明细行不被清空", w.model_lay.count() == rows_real,
       f"rows={w.model_lay.count()}")
 check("race: WB subtitle 不串台", w.subtitle.text() == sub_before)
 check("race: SN 结果入缓存", w._sn_cache is SN_POOLS)
-check("race: WB 页可见 / SN 页隐藏",
-      not w.content_old.testAttribute(ca.Qt.WA_WState_Hidden)
-      and w.sn_page.testAttribute(ca.Qt.WA_WState_Hidden))
+check("race: WB 页可见 / SN 页隐藏", w.stack.currentIndex() == 0)
 
 # pending-refresh: 扫描中切换源 → 完成后置位补刷
 w._scanning = True
@@ -231,7 +229,7 @@ panel._sync_test = True   # 测试模式: 同步执行 (_http_json 已被 fake �
 panel.curl_edit.setPlainText(CURL_BASH)
 ca._http_json = fake_http
 panel._on_save()
-check("非商汤结构 → 友好报错", "识别失败" in panel.err_lbl.text(),
+check("非商汤结构 → 友好报错", "未识别到商汤 pools 结构" in panel.err_lbl.text(),
       panel.err_lbl.text()[:40])
 ca._http_json = _orig_http
 ca.clear_sn_autosync()
@@ -367,22 +365,21 @@ w2._sn_cache = {"source": "sn", "synced": True, "sync_time": "01:10",
                 "sync_src": "auto", "autosync_error": None,
                 "window_start": time.time() - 3600, "window_end": time.time() + 3600,
                 "pools": RENDER_POOLS}
-w2._switch_source(w2.src_sn)
-lay = w2.sn_page.cards_lay
-check("商汤页卡片数=3 (单列)", lay.count() == 3, f"count={lay.count()}")
+w2._switch_nav(w2.btn_nav_sn)
+lay = w2.sn_page.pools_layout
+check("商汤页池卡数=2 (横排)", lay.count() == 2, f"count={lay.count()}")
+check("活动积分条存在", w2.sn_page.promo_bar is not None)
 check("内嵌同步面板存在", w2.sn_page.sync_panel is not None)
 check("面板状态行=自动同步", "自动同步" in w2.sn_page.sync_panel.status_lbl.text(),
       w2.sn_page.sync_panel.status_lbl.text())
 w2.layout().activate()
 h_sn = w2.height()
 check("SN 窗口高度在合理区间", 500 <= h_sn <= 1000, f"h={h_sn}")
-# 顶部定位统一: WB/商汤页 place_right 后 y 一致 (基准高度 880, 不随页高漂移)
-w2.resize(664, 880)
-w2.place_right()
-y_wb = w2.y()
-w2._switch_source(w2.src_sn)
-w2.place_right()
-check("切页后窗口顶部位置统一", w2.y() == y_wb, f"y_wb={y_wb} y_sn={w2.y()}")
+# 横版固定尺寸 (990x610): 切页不改变窗口几何, 不会忽高忽矮/遮挡底部按钮
+w2_layout_w = w2.width(); w2_layout_h = w2.height()
+w2._switch_nav(w2.btn_nav_wb)
+check("切页后窗口尺寸恒定 (横版固定)", w2.width() == w2_layout_w and w2.height() == w2_layout_h,
+      f"w={w2.width()}x{w2.height()}")
 
 # ========== 7. 系统代理 10061 → 自动绕过代理直连重试 ==========
 print("== 7. 系统代理拒绝连接 → 绕过代理直连重试 ==")
