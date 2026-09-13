@@ -1279,7 +1279,7 @@ def load_sn_stats(force=False):
     }
 
 
-# ============================================================ 商汤官网风格额度组件 (现代化精细重构)
+# ============================================================ 商汤官网风格额度组件 (彻底解决遮挡 + 去除状态估算)
 SN_PURPLE = QColor("#7c67ff")
 SN_PURPLE_DARK = QColor("#9d8eff")
 SN_ORANGE = QColor("#ff7043")
@@ -1287,12 +1287,12 @@ SN_ORANGE_DARK = QColor("#ff8a65")
 
 
 class SNProgressBar(QWidget):
-    """精细圆角双色进度条"""
+    """通栏圆角细进度条"""
     def __init__(self, ratio=0.0, color="purple", parent=None):
         super().__init__(parent)
         self.ratio = ratio
         self.color = color
-        self.setFixedHeight(7)
+        self.setFixedHeight(6)
 
     def set_ratio(self, r):
         self.ratio = max(0.0, min(1.0, r))
@@ -1310,10 +1310,8 @@ class SNProgressBar(QWidget):
 
         fill_w = max(h, w * self.ratio)
         dark = theme_state["dark"]
-        if self.color == "orange":
-            fill = SN_ORANGE_DARK if dark else SN_ORANGE
-        else:
-            fill = SN_PURPLE_DARK if dark else SN_PURPLE
+        fill = (SN_ORANGE_DARK if dark else SN_ORANGE) if self.color == "orange" \
+            else (SN_PURPLE_DARK if dark else SN_PURPLE)
 
         grad = QLinearGradient(0, 0, fill_w, 0)
         grad.setColorAt(0, fill.lighter(115))
@@ -1323,7 +1321,7 @@ class SNProgressBar(QWidget):
 
 
 class SNPoolCard(QFrame):
-    """商汤积分池双栏平衡卡片"""
+    """纵向多层级卡片: 彻底解决左右挤压重叠，所有信息两端通栏舒展"""
     def __init__(self, pool, parent=None):
         super().__init__(parent)
         self.pool = pool
@@ -1336,7 +1334,7 @@ class SNPoolCard(QFrame):
         v.setContentsMargins(16, 14, 16, 14)
         v.setSpacing(10)
 
-        # 头部：彩标 + 池名称 + 适用模型说明
+        # 1. 顶栏: 胶囊徽标 + 池名称 (左) | 适用模型 (右)
         top = QHBoxLayout()
         top.setSpacing(8)
 
@@ -1347,28 +1345,27 @@ class SNPoolCard(QFrame):
         self.name_lbl = QLabel(self.pool["name"])
         self.name_lbl.setFont(QFont("Microsoft YaHei UI", 11, QFont.Bold))
         top.addWidget(self.name_lbl)
+        top.addStretch(1)
 
         self.scope_lbl = QLabel(self.pool.get("scope", ""))
         self.scope_lbl.setFont(QFont("Microsoft YaHei UI", 8.5))
         top.addWidget(self.scope_lbl)
-        top.addStretch(1)
         v.addLayout(top)
 
-        # 中部数据分栏：左栏本周余额，右栏5h滚动窗口
+        # 2. 中层核心区: 周可用额度大数字 (左) | 周重置时间 (右)
         mid = QHBoxLayout()
-        mid.setSpacing(18)
+        mid.setSpacing(10)
 
-        # 左侧：周余额大数字展示
         left = QVBoxLayout()
-        left.setSpacing(3)
+        left.setSpacing(2)
         self.week_title = QLabel("周周期可用额度")
         self.week_title.setFont(QFont("Microsoft YaHei UI", 8.5))
         left.addWidget(self.week_title)
 
         bal_row = QHBoxLayout()
-        bal_row.setSpacing(5)
+        bal_row.setSpacing(6)
         self.balance_lbl = QLabel(f"{self.pool['weekly_remaining']:,.0f}")
-        self.balance_lbl.setFont(QFont("Consolas", 18, QFont.Bold))
+        self.balance_lbl.setFont(QFont("Consolas", 19, QFont.Bold))
         bal_row.addWidget(self.balance_lbl)
 
         self.weekly_total_lbl = QLabel(f"/ {self.pool['weekly_total']:,}")
@@ -1376,54 +1373,47 @@ class SNPoolCard(QFrame):
         bal_row.addWidget(self.weekly_total_lbl, 0, Qt.AlignBottom)
         bal_row.addStretch(1)
         left.addLayout(bal_row)
-        mid.addLayout(left, 52)
+        mid.addLayout(left)
+        mid.addStretch(1)
 
-        # 右侧：5h窗口进度条与重置时间
-        right = QVBoxLayout()
-        right.setSpacing(4)
+        # 右侧仅放置周重置时间，独占右半区完全不挤
+        nr = self.pool.get("next_weekly_reset", "—")
+        self.next_reset_lbl = QLabel(f"周重置: {nr}")
+        self.next_reset_lbl.setFont(QFont("Microsoft YaHei UI", 8.5))
+        self.next_reset_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        mid.addWidget(self.next_reset_lbl)
+        v.addLayout(mid)
 
-        win_info = QHBoxLayout()
-        self.window_title = QLabel("5h 窗口余量")
+        # 3. 底层通栏区: 5h 滑动窗口 (两端对齐，进度条拉满)
+        bot_box = QVBoxLayout()
+        bot_box.setSpacing(4)
+
+        win_top = QHBoxLayout()
+        self.window_title = QLabel("5h 窗口额度")
         self.window_title.setFont(QFont("Microsoft YaHei UI", 8.5))
-        win_info.addWidget(self.window_title)
-        win_info.addStretch(1)
+        win_top.addWidget(self.window_title)
+        win_top.addStretch(1)
 
         wt = self.pool.get("window_total", 0)
         ratio = self.pool["window_remaining"] / wt if wt else 0
-        self.window_pct_lbl = QLabel(f"{ratio * 100:.1f}%")
-        self.window_pct_lbl.setFont(QFont("Consolas", 9, QFont.Bold))
-        win_info.addWidget(self.window_pct_lbl)
-        right.addLayout(win_info)
+        self.window_val_lbl = QLabel(f"{self.pool['window_remaining']:,.0f} / {wt:,} ({ratio * 100:.1f}%)")
+        self.window_val_lbl.setFont(QFont("Consolas", 9, QFont.Bold))
+        win_top.addWidget(self.window_val_lbl)
+        bot_box.addLayout(win_top)
 
+        # 满宽进度条
         self.bar = SNProgressBar(ratio, color=self.pool.get("color", "purple"))
-        right.addWidget(self.bar)
+        bot_box.addWidget(self.bar)
 
-        win_sub = QHBoxLayout()
-        self.window_val_lbl = QLabel(f"{self.pool['window_remaining']:,.0f} / {wt:,}")
-        self.window_val_lbl.setFont(QFont("Consolas", 8.5))
-        win_sub.addWidget(self.window_val_lbl)
-        win_sub.addStretch(1)
-
-        self.window_reset_lbl = QLabel(f"5h重置: {self.pool.get('window_reset', '—')}")
+        # 进度条下方独占一行放置 5h 重置时间，从源头上彻底消除重叠
+        win_bot = QHBoxLayout()
+        win_bot.addStretch(1)
+        self.window_reset_lbl = QLabel(f"5h窗口重置于: {self.pool.get('window_reset', '—')}")
         self.window_reset_lbl.setFont(QFont("Microsoft YaHei UI", 8))
-        win_sub.addWidget(self.window_reset_lbl)
-        right.addLayout(win_sub)
+        win_bot.addWidget(self.window_reset_lbl)
+        bot_box.addLayout(win_bot)
 
-        mid.addLayout(right, 48)
-        v.addLayout(mid)
-
-        # 底栏：周重置时间
-        bottom = QHBoxLayout()
-        self.reset_icon = QLabel("🕒")
-        self.reset_icon.setFont(QFont("Microsoft YaHei UI", 8))
-        bottom.addWidget(self.reset_icon)
-
-        nr = self.pool.get("next_weekly_reset", "—")
-        self.next_reset_lbl = QLabel(f"下次周额度重置：{nr}")
-        self.next_reset_lbl.setFont(QFont("Microsoft YaHei UI", 8.5))
-        bottom.addWidget(self.next_reset_lbl)
-        bottom.addStretch(1)
-        v.addLayout(bottom)
+        v.addLayout(bot_box)
 
     def apply_theme(self):
         dark = theme_state["dark"]
@@ -1434,7 +1424,7 @@ class SNPoolCard(QFrame):
         self.setStyleSheet(
             f"#sn_pool_card {{ background:{qrgba(CARD)}; border:1px solid {qrgba(BORDER)}; border-radius:12px; }}")
 
-        badge_bg = qrgba(accent, 35 if dark else 25)
+        badge_bg = qrgba(accent, 35 if dark else 24)
         badge_text = qname(accent)
         self.tag_badge.setText("Flash-Lite" if is_orange else "通用池")
         self.tag_badge.setStyleSheet(
@@ -1442,19 +1432,19 @@ class SNPoolCard(QFrame):
 
         self.name_lbl.setStyleSheet(f"color:{qname(TEXT)};")
         self.balance_lbl.setStyleSheet(f"color:{qname(TEXT)};")
-        self.window_pct_lbl.setStyleSheet(f"color:{badge_text};")
+        self.window_val_lbl.setStyleSheet(f"color:{badge_text};")
 
-        for lbl in (self.week_title, self.window_title, self.scope_lbl, self.reset_icon):
+        for lbl in (self.week_title, self.window_title, self.scope_lbl):
             lbl.setStyleSheet(f"color:{qname(TEXT3)};")
 
-        for lbl in (self.weekly_total_lbl, self.window_val_lbl, self.window_reset_lbl, self.next_reset_lbl):
+        for lbl in (self.weekly_total_lbl, self.window_reset_lbl, self.next_reset_lbl):
             lbl.setStyleSheet(f"color:{qname(TEXT2)};")
 
         self.bar.update()
 
 
 class SNSyncPanel(QFrame):
-    """精致控制台级同步凭据面板"""
+    """纯净极简同步面板: 去除不需要的状态与本地估算标签"""
     saved = Signal()
     cleared = Signal()
     save_finished = Signal(bool, str)
@@ -1471,37 +1461,35 @@ class SNSyncPanel(QFrame):
 
     def _build_ui(self):
         v = QVBoxLayout(self)
-        v.setContentsMargins(16, 12, 16, 12)
-        v.setSpacing(8)
+        v.setContentsMargins(16, 11, 16, 11)
+        v.setSpacing(7)
 
-        # 顶栏：标题 + 现代胶囊状态徽标
+        # 顶栏: 标题 + 状态文本 (兼容旧接口 status_lbl)
         head = QHBoxLayout()
         head.setSpacing(8)
 
         self.title_lbl = QLabel("控制台 cURL 自动同步")
-        self.title_lbl.setFont(QFont("Microsoft YaHei UI", 10, QFont.Bold))
+        self.title_lbl.setFont(QFont("Microsoft YaHei UI", 9.5, QFont.Bold))
         head.addWidget(self.title_lbl)
 
-        self.status_pill = QLabel()
-        self.status_pill.setFont(QFont("Microsoft YaHei UI", 8.5, QFont.Bold))
-        head.addWidget(self.status_pill)
+        self.status_lbl = QLabel("")
+        self.status_lbl.setFont(QFont("Microsoft YaHei UI", 8.5, QFont.Bold))
+        head.addWidget(self.status_lbl)
+
         head.addStretch(1)
 
-        self.guide_lbl = QLabel("F12 → 复制「积分额度」请求的 cURL 粘贴于此，每 5 分钟自动更新")
+        self.guide_lbl = QLabel("F12 复制「积分额度」请求的 cURL 粘贴于此 (每 5 分钟自动更新)")
         self.guide_lbl.setFont(QFont("Microsoft YaHei UI", 8.5))
         head.addWidget(self.guide_lbl)
         v.addLayout(head)
 
-        # 兼容别名: 旧接口 status_lbl -> status_pill (回归测试引用)
-        self.status_lbl = self.status_pill
-
-        # cURL 极简输入框
+        # cURL 输入框
         self.curl_edit = QPlainTextEdit()
         self.curl_edit.setPlaceholderText('粘贴 cURL 命令 (curl "https://platform.sensenova.cn/lite/console/...")')
-        self.curl_edit.setFixedHeight(44)
+        self.curl_edit.setFixedHeight(42)
         v.addWidget(self.curl_edit)
 
-        # 底部操作栏与提示
+        # 底部操作栏: 左侧轻量错误/成功反馈，右侧按钮
         row = QHBoxLayout()
         row.setSpacing(8)
 
@@ -1524,13 +1512,14 @@ class SNSyncPanel(QFrame):
         v.addLayout(row)
 
     def set_status(self, s):
+        # 极简三态状态文本: 成功/未配置/异常 (不含「本地估算」字样)
         if s.get("autosync_error"):
             self._status_mode = "error"
             self._status_msg = f"⚠ 同步异常: {s['autosync_error'][:22]}"
         elif s.get("sync_src") == "auto":
             self._status_mode = "success"
             t = s.get("sync_time", time.strftime("%H:%M"))
-            self._status_msg = f"✓ 自动同步 {t} · 每 5 分钟自动更新"
+            self._status_msg = f"✓ 自动同步 {t}"
         else:
             self._status_mode = "none"
             self._status_msg = "未配置自动同步"
@@ -1552,7 +1541,7 @@ class SNSyncPanel(QFrame):
         if not req:
             self.err_lbl.setText("解析失败: 未找到有效 URL")
             return
-        self.err_lbl.setText("正在测试接口…")
+        self.err_lbl.setText("正在连接接口…")
         self.btn_save.setEnabled(False)
         self.btn_clear.setEnabled(False)
 
@@ -1564,14 +1553,14 @@ class SNSyncPanel(QFrame):
                 else:
                     paths = _detect_paths_by_structure(data)
                     if not paths:
-                        ok, msg = False, "未识别到商汤 pools 结构，请确认接口包含积分数据"
+                        ok, msg = False, "未识别到商汤 pools 结构，请确认复制的是积分额度请求"
                     else:
                         cfg = {"v": 1, "url": req["url"], "method": req["method"],
                                "headers": req["headers"], "body": req["body"],
                                "paths": paths, "saved_ts": time.time()}
                         save_sn_autosync(cfg)
                         sn_autosync_fetch(force=True)
-                        ok, msg = True, "✓ 保存并同步成功"
+                        ok, msg = True, "✓ 保存成功，数据已刷新"
             except Exception as e:
                 ok, msg = False, f"异常: {str(e)[:45]}"
             self.save_finished.emit(ok, msg)
@@ -1596,25 +1585,26 @@ class SNSyncPanel(QFrame):
         self.setStyleSheet(
             f"#sn_sync_panel {{ background:{qrgba(CARD)}; border:1px solid {border}; border-radius:12px; }}"
             f"QPlainTextEdit {{ background:{qrgba(TRACK)}; color:{text}; border:1px solid {border};"
-            f" border-radius:6px; padding:6px 8px; font-family:Consolas, monospace; font-size:10.5px; }}"
+            f" border-radius:6px; padding:5px 8px; font-family:Consolas, monospace; font-size:10.5px; }}"
             f"QPlainTextEdit:focus {{ border:1px solid #3b6fe0; }}"
         )
         self.title_lbl.setStyleSheet(f"color:{text};")
         self.guide_lbl.setStyleSheet(f"color:{text3};")
 
-        # 胶囊状态徽标主题自适应渲染
-        self.status_pill.setText(self._status_msg)
-        if self._status_mode == "success":
-            color = "#34d399" if dark else "#059669"
-            bg = "rgba(52, 211, 153, 0.16)" if dark else "rgba(5, 150, 105, 0.10)"
-        elif self._status_mode == "error":
-            color = "#f87171" if dark else "#dc2626"
-            bg = "rgba(248, 113, 113, 0.16)" if dark else "rgba(220, 38, 38, 0.10)"
+        # 状态文本三态配色 (成功绿/异常红/默认灰)
+        mode = self._status_mode
+        if mode == "success":
+            st_color = "#34d399" if dark else "#059669"
+            st_bg = "rgba(52, 211, 153, 0.16)" if dark else "rgba(5, 150, 105, 0.10)"
+        elif mode == "error":
+            st_color = "#f87171" if dark else "#dc2626"
+            st_bg = "rgba(248, 113, 113, 0.16)" if dark else "rgba(220, 38, 38, 0.10)"
         else:
-            color = text3
-            bg = qrgba(TRACK)
-        self.status_pill.setStyleSheet(
-            f"background:{bg}; color:{color}; border-radius:5px; padding:2px 8px;")
+            st_color = text3
+            st_bg = qrgba(TRACK)
+        self.status_lbl.setText(self._status_msg)
+        self.status_lbl.setStyleSheet(
+            f"background:{st_bg}; color:{st_color}; border-radius:5px; padding:2px 8px;")
 
         self.err_lbl.setStyleSheet("color:#34d399;" if "✓" in self.err_lbl.text() else "color:#f87171;")
 
@@ -1629,7 +1619,7 @@ class SNSyncPanel(QFrame):
 
 
 class SNQuotaPage(QWidget):
-    """商汤日日新聚合展示页"""
+    """商汤日日新展示页"""
     saved = Signal()
     cleared = Signal()
 
@@ -1642,15 +1632,15 @@ class SNQuotaPage(QWidget):
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(10)
 
-        # 1. 积分池并排展示区
+        # 1. 左右并排双池
         self.pools_layout = QHBoxLayout()
         self.pools_layout.setSpacing(10)
         v.addLayout(self.pools_layout)
 
-        # 2. 活动固定积分优雅横幅
+        # 2. 活动固定积分条 (去除密集堆砌，两端自然对齐)
         self.promo_bar = QFrame()
         self.promo_bar.setObjectName("sn_promo_bar")
-        self.promo_bar.setFixedHeight(38)
+        self.promo_bar.setFixedHeight(36)
         pv = QHBoxLayout(self.promo_bar)
         pv.setContentsMargins(14, 0, 14, 0)
 
@@ -1676,14 +1666,14 @@ class SNQuotaPage(QWidget):
         pv.addWidget(self.promo_exp)
         v.addWidget(self.promo_bar)
 
-        # 3. 同步设置卡片
+        # 3. 极简同步面板
         self.sync_panel = SNSyncPanel()
         self.sync_panel.saved.connect(self.saved)
         self.sync_panel.cleared.connect(self.cleared)
         v.addWidget(self.sync_panel)
 
-        # 4. 底部微型注释 (文案遵守第13轮定稿: 不出现「本地估算」字样)
-        self.foot_lbl = QLabel("最大额度为官方公开的公测期固定值；余额以官网控制台为准，配置自动同步后显示实时额度。")
+        # 4. 底部微型注释 (去除所有估算相关说明，仅保留权威解释)
+        self.foot_lbl = QLabel("注: 上限为官方公开的公测期固定额度 (60,000/5h · 600,000/周)；数据均以控制台实际调用与配额为准。")
         self.foot_lbl.setFont(QFont("Microsoft YaHei UI", 8))
         self.foot_lbl.setStyleSheet(f"color:{qname(TEXT3)};")
         v.addWidget(self.foot_lbl)
@@ -1699,8 +1689,7 @@ class SNQuotaPage(QWidget):
 
         pools = s.get("pools", [])
         if not pools:
-            empty_lbl = QLabel("未检测到商汤模型调用记录。\n"
-                               "可调用 sensenova 系列模型，或在下方配置官网 cURL 实时拉取。")
+            empty_lbl = QLabel("未检测到商汤模型调用记录。\n可在下方配置官网 cURL 开启实时自动同步。")
             empty_lbl.setAlignment(Qt.AlignCenter)
             empty_lbl.setStyleSheet(f"color:{qname(TEXT3)}; padding: 36px; font-size:11.5px;")
             self.pools_layout.addWidget(empty_lbl)
