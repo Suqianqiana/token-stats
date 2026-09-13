@@ -454,11 +454,15 @@ class ModelRow(QWidget):
 
 # ============================================================ 图表组件
 class StackedBarChart(QWidget):
+    """柱状图数据视口引擎: 滚轮以鼠标锚点缩放 + 拖拽平移浏览"""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.data = []
         self.setMouseTracking(True)
         self.setMinimumHeight(130)
+        self._vi0 = 0.0      # 视口起点 (数据索引, 浮点支持细分缩放)
+        self._vi1 = 0.0      # 视口终点
+        self._drag = None    # (按下时 x, 按下时视口起点)
 
     def set_data(self, daily, models_rank, days_limit=35):
         top = [m for m, _ in models_rank[:8]]
@@ -472,7 +476,16 @@ class StackedBarChart(QWidget):
                 if v:
                     parts.append((m, self.colors[m], v))
             self.data.append({"date": d, "parts": parts})
+        self._vi0, self._vi1 = 0.0, float(len(self.data)) or 0.0
+        self._drag = None
         self.update()
+
+    @property
+    def _view(self):
+        n = float(len(self.data))
+        if n <= 0:
+            return 0.0, 0.0
+        return max(0.0, min(self._vi0, n - 0.001)), max(0.0, min(self._vi1, n))
 
     def _geom(self):
         w, h = self.width(), self.height()
@@ -487,7 +500,13 @@ class StackedBarChart(QWidget):
             p.setPen(TEXT3)
             p.drawText(self.rect(), Qt.AlignCenter, "暂无数据")
             return
-        maxV = max((sum(v for _, _, v in d["parts"]) for d in self.data), default=1) or 1
+        a, b = self._view
+        n = len(self.data)
+        ia = max(0, min(int(a), n - 1))
+        ib = max(ia + 1, min(int(b), n))
+        if ib <= ia:
+            ib = min(n, ia + 1)
+        maxV = max((sum(v for _, _, v in d["parts"]) for d in self.data[ia:ib]), default=1) or 1
         p.setFont(QFont("Consolas", 7.5))
         for k in range(3):
             y = padT + ih - ih * k / 2
@@ -498,35 +517,98 @@ class StackedBarChart(QWidget):
             label = f"{v/1e8:.1f}亿" if v >= 1e8 else (f"{v/1e4:.0f}万" if v >= 1e4 else f"{v:.0f}")
             p.drawText(QRectF(0, y - 7, padL - 4, 14), Qt.AlignRight | Qt.AlignVCenter, label)
 
-        n = len(self.data)
-        slot = iw / n
+        span = b - a
+        slot = iw / span if span > 0 else iw
         bw = max(2.5, min(12.0, slot * 0.6))
         p.setFont(QFont("Consolas", 7))
-        step = max(1, n // 7)
-        for i, d in enumerate(self.data):
-            cx = padL + slot * i + slot / 2
+        step = max(1, int(span // 7)) if span >= 1 else 1
+        for i in range(ia, ib):
+            frac = i + 0.5 - a
+            cx = padL + slot * frac
             y_cur = padT + ih
-            for _m, color, v in d["parts"]:
+            for _m, color, v in self.data[i]["parts"]:
                 hh = v / maxV * ih
                 p.setPen(Qt.NoPen)
                 p.setBrush(color)
                 p.drawRect(QRectF(cx - bw / 2, y_cur - hh, bw, hh))
                 y_cur -= hh
-            if i % step == 0 or i == n - 1:
+            if (i - ia) % step == 0 or i == ib - 1:
                 p.setPen(TEXT3)
                 p.drawText(QRectF(cx - 20, h - padB + 1, 40, 13),
-                           Qt.AlignCenter, d["date"][5:].replace("-", "/"))
+                           Qt.AlignCenter, self.data[i]["date"][5:].replace("-", "/"))
+
+    def _idx_at(self, x):
+        w, h, padL, padR, padT, padB = self._geom()
+        iw = w - padL - padR
+        a, b = self._view
+        span = b - a
+        if span <= 0:
+            return None
+        frac = (x - padL) / iw * span + a
+        idx = int(frac)
+        if 0 <= idx < len(self.data):
+            return idx
+        return None
+
+    def wheelEvent(self, ev):
+        """滚轮缩放: 以鼠标指向的日期为固定锚点; 上滚放大, 下滚缩小; Y 轴随视口峰值自适应"""
+        if not self.data:
+            return
+        from PySide6.QtCore import QPointF
+        pos = ev.position() if hasattr(ev, "position") else QPointF(ev.pos())
+        delta = ev.angleDelta().y()
+        if delta == 0:
+            return
+        w, h, padL, padR, padT, padB = self._geom()
+        iw = w - padL - padR
+        a, b = self._view
+        n = float(len(self.data))
+        span = b - a
+        # 锚点: 鼠标处的数据索引 (钳制到视口内)
+        frac = max(0.0, min(1.0, (pos.x() - padL) / iw)) if iw > 0 else 0.5
+        anchor = a + span * frac
+        # 上滚放大(视口变窄), 下滚缩小(视口变宽)
+        factor = 1 / 1.25 if delta > 0 else 1.25
+        new_span = max(1.0, min(n, span * factor))
+        if new_span >= n - 1e-6:
+            self._vi0, self._vi1 = 0.0, n
+            self.update()
+            return
+        # 保持锚点到视口两端的比例不变
+        left = (anchor - a) / span if span > 0 else 0.5
+        new_a = anchor - new_span * left
+        new_b = new_a + new_span
+        if new_a < 0:
+            new_a, new_b = 0.0, new_span
+        if new_b > n:
+            new_b, new_a = n, n - new_span
+        self._vi0, self._vi1 = new_a, new_b
+        self.update()
+
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.LeftButton and self.data:
+            self._drag = (ev.position().x(), self._vi0, self._vi1)
+            self.setCursor(Qt.ClosedHandCursor)
 
     def mouseMoveEvent(self, ev):
+        if self._drag is not None:
+            # 拖拽平移视口
+            x0, va, vb = self._drag
+            n = float(len(self.data))
+            w, h, padL, padR, padT, padB = self._geom()
+            iw = w - padL - padR
+            span = vb - va
+            dx = (ev.position().x() - x0) / iw * span if iw > 0 else 0
+            new_a = max(0.0, min(n - span, va - dx)) if span < n else 0.0
+            self._vi0, self._vi1 = new_a, new_a + span
+            self.update()
+            ChartTip.instance().hide_tip()
+            return
         if not self.data:
             return
         gp = ev.globalPosition().toPoint()
-        x = ev.position().x()
-        w, h, padL, padR, padT, padB = self._geom()
-        iw = w - padL - padR
-        slot = iw / len(self.data)
-        idx = int((x - padL) / slot)
-        if 0 <= idx < len(self.data):
+        idx = self._idx_at(ev.position().x())
+        if idx is not None:
             d = self.data[idx]
             total = sum(v for _, _, v in d["parts"])
             rows = []
@@ -538,9 +620,13 @@ class StackedBarChart(QWidget):
         else:
             ChartTip.instance().hide_tip()
 
+    def mouseReleaseEvent(self, ev):
+        if self._drag is not None:
+            self._drag = None
+            self.setCursor(Qt.ArrowCursor)
+
     def leaveEvent(self, ev):
         ChartTip.instance().hide_tip()
-
 
 class HeatMap(QWidget):
     def __init__(self, parent=None):
@@ -1321,7 +1407,7 @@ class SNProgressBar(QWidget):
 
 
 class SNPoolCard(QFrame):
-    """纵向多层级卡片: 彻底解决左右挤压重叠，所有信息两端通栏舒展"""
+    """周/5h 完全对称双仪表卡片: 上下两组结构一致, 通栏舒展无挤压"""
     def __init__(self, pool, parent=None):
         super().__init__(parent)
         self.pool = pool
@@ -1331,117 +1417,87 @@ class SNPoolCard(QFrame):
 
     def _build_ui(self):
         v = QVBoxLayout(self)
-        v.setContentsMargins(16, 14, 16, 14)
-        v.setSpacing(10)
+        v.setContentsMargins(16, 12, 16, 12)
+        v.setSpacing(9)
 
-        # 1. 顶栏: 胶囊徽标 + 池名称 (左) | 适用模型 (右)
+        # 顶栏: 胶囊徽标 + 池名称 (左) | 适用模型 (右)
         top = QHBoxLayout()
         top.setSpacing(8)
-
         self.tag_badge = QLabel()
         self.tag_badge.setFont(QFont("Microsoft YaHei UI", 8.5, QFont.Bold))
         top.addWidget(self.tag_badge)
-
         self.name_lbl = QLabel(self.pool["name"])
-        self.name_lbl.setFont(QFont("Microsoft YaHei UI", 11, QFont.Bold))
+        self.name_lbl.setFont(QFont("Microsoft YaHei UI", 10.5, QFont.Bold))
         top.addWidget(self.name_lbl)
         top.addStretch(1)
-
         self.scope_lbl = QLabel(self.pool.get("scope", ""))
-        self.scope_lbl.setFont(QFont("Microsoft YaHei UI", 8.5))
+        self.scope_lbl.setFont(QFont("Microsoft YaHei UI", 8))
         top.addWidget(self.scope_lbl)
         v.addLayout(top)
 
-        # 2. 中层核心区: 周可用额度大数字 (左) | 周重置时间 (右)
-        mid = QHBoxLayout()
-        mid.setSpacing(10)
+        wt = self.pool.get("window_total", 0) or 1
+        wrem = self.pool.get("window_remaining", 0)
+        wratio = max(0.0, min(1.0, wrem / wt))
+        wtotal = self.pool.get("weekly_total", 0) or 1
+        wrem2 = self.pool.get("weekly_remaining", 0)
+        wratio2 = max(0.0, min(1.0, wrem2 / wtotal))
 
-        left = QVBoxLayout()
-        left.setSpacing(2)
-        self.week_title = QLabel("周周期可用额度")
-        self.week_title.setFont(QFont("Microsoft YaHei UI", 8.5))
-        left.addWidget(self.week_title)
+        def meter(key_tag, title, rem, total, ratio, reset_text, accent_key):
+            box = QVBoxLayout()
+            box.setSpacing(3)
+            head = QHBoxLayout()
+            lbl = QLabel(title)
+            lbl.setFont(QFont("Microsoft YaHei UI", 8.5))
+            head.addWidget(lbl)
+            head.addStretch(1)
+            val = QLabel(f"{rem:,.0f} / {total:,}  ({ratio * 100:.1f}%)")
+            val.setFont(QFont("Consolas", 9, QFont.Bold))
+            head.addWidget(val)
+            box.addLayout(head)
+            bar = SNProgressBar(ratio, color=self.pool.get("color", accent_key))
+            box.addWidget(bar)
+            sub = QHBoxLayout()
+            sub.addStretch(1)
+            rst = QLabel(reset_text)
+            rst.setFont(QFont("Microsoft YaHei UI", 8))
+            sub.addWidget(rst)
+            box.addLayout(sub)
+            return box, lbl, val, bar, rst
 
-        bal_row = QHBoxLayout()
-        bal_row.setSpacing(6)
-        self.balance_lbl = QLabel(f"{self.pool['weekly_remaining']:,.0f}")
-        self.balance_lbl.setFont(QFont("Consolas", 19, QFont.Bold))
-        bal_row.addWidget(self.balance_lbl)
+        # 仪表一: 周周期 (与下方 5h 完全同构)
+        wbox, self.week_title, self.balance_lbl, self.week_bar, self.next_reset_lbl = meter(
+            "week", "周周期可用额度", wrem2, wtotal, wratio2,
+            f"周重置: {self.pool.get('next_weekly_reset', '—')}", "purple")
+        v.addLayout(wbox)
 
-        self.weekly_total_lbl = QLabel(f"/ {self.pool['weekly_total']:,}")
-        self.weekly_total_lbl.setFont(QFont("Consolas", 9.5))
-        bal_row.addWidget(self.weekly_total_lbl, 0, Qt.AlignBottom)
-        bal_row.addStretch(1)
-        left.addLayout(bal_row)
-        mid.addLayout(left)
-        mid.addStretch(1)
-
-        # 右侧仅放置周重置时间，独占右半区完全不挤
-        nr = self.pool.get("next_weekly_reset", "—")
-        self.next_reset_lbl = QLabel(f"周重置: {nr}")
-        self.next_reset_lbl.setFont(QFont("Microsoft YaHei UI", 8.5))
-        self.next_reset_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        mid.addWidget(self.next_reset_lbl)
-        v.addLayout(mid)
-
-        # 3. 底层通栏区: 5h 滑动窗口 (两端对齐，进度条拉满)
-        bot_box = QVBoxLayout()
-        bot_box.setSpacing(4)
-
-        win_top = QHBoxLayout()
-        self.window_title = QLabel("5h 窗口额度")
-        self.window_title.setFont(QFont("Microsoft YaHei UI", 8.5))
-        win_top.addWidget(self.window_title)
-        win_top.addStretch(1)
-
-        wt = self.pool.get("window_total", 0)
-        ratio = self.pool["window_remaining"] / wt if wt else 0
-        self.window_val_lbl = QLabel(f"{self.pool['window_remaining']:,.0f} / {wt:,} ({ratio * 100:.1f}%)")
-        self.window_val_lbl.setFont(QFont("Consolas", 9, QFont.Bold))
-        win_top.addWidget(self.window_val_lbl)
-        bot_box.addLayout(win_top)
-
-        # 满宽进度条
-        self.bar = SNProgressBar(ratio, color=self.pool.get("color", "purple"))
-        bot_box.addWidget(self.bar)
-
-        # 进度条下方独占一行放置 5h 重置时间，从源头上彻底消除重叠
-        win_bot = QHBoxLayout()
-        win_bot.addStretch(1)
-        self.window_reset_lbl = QLabel(f"5h窗口重置于: {self.pool.get('window_reset', '—')}")
-        self.window_reset_lbl.setFont(QFont("Microsoft YaHei UI", 8))
-        win_bot.addWidget(self.window_reset_lbl)
-        bot_box.addLayout(win_bot)
-
-        v.addLayout(bot_box)
+        # 仪表二: 5h 窗口 (同构)
+        hbox, self.window_title, self.window_val_lbl, self.bar, self.window_reset_lbl = meter(
+            "win", "5h 窗口额度", wrem, wt, wratio,
+            f"5h重置于: {self.pool.get('window_reset', '—')}", "purple")
+        v.addLayout(hbox)
 
     def apply_theme(self):
         dark = theme_state["dark"]
         is_orange = self.pool.get("color") == "orange"
         accent = (SN_ORANGE_DARK if dark else SN_ORANGE) if is_orange \
             else (SN_PURPLE_DARK if dark else SN_PURPLE)
-
-        self.setStyleSheet(
-            f"#sn_pool_card {{ background:{qrgba(CARD)}; border:1px solid {qrgba(BORDER)}; border-radius:12px; }}")
-
         badge_bg = qrgba(accent, 35 if dark else 24)
         badge_text = qname(accent)
+        self.setStyleSheet(
+            f"#sn_pool_card {{ background:{qrgba(CARD)}; border:1px solid {qrgba(BORDER)}; border-radius:12px; }}")
         self.tag_badge.setText("Flash-Lite" if is_orange else "通用池")
         self.tag_badge.setStyleSheet(
             f"background:{badge_bg}; color:{badge_text}; border-radius:5px; padding:2px 7px;")
-
         self.name_lbl.setStyleSheet(f"color:{qname(TEXT)};")
-        self.balance_lbl.setStyleSheet(f"color:{qname(TEXT)};")
-        self.window_val_lbl.setStyleSheet(f"color:{badge_text};")
-
-        for lbl in (self.week_title, self.window_title, self.scope_lbl):
+        self.scope_lbl.setStyleSheet(f"color:{qname(TEXT3)};")
+        for lbl in (self.week_title, self.window_title):
             lbl.setStyleSheet(f"color:{qname(TEXT3)};")
-
-        for lbl in (self.weekly_total_lbl, self.window_reset_lbl, self.next_reset_lbl):
+        for lbl in (self.balance_lbl, self.window_val_lbl):
+            lbl.setStyleSheet(f"color:{qname(TEXT)};")
+        for lbl in (self.next_reset_lbl, self.window_reset_lbl):
             lbl.setStyleSheet(f"color:{qname(TEXT2)};")
-
+        self.week_bar.update()
         self.bar.update()
-
 
 class SNSyncPanel(QFrame):
     """纯净极简同步面板: 去除不需要的状态与本地估算标签"""
@@ -1637,33 +1693,40 @@ class SNQuotaPage(QWidget):
         self.pools_layout.setSpacing(10)
         v.addLayout(self.pools_layout)
 
-        # 2. 活动固定积分条 (去除密集堆砌，两端自然对齐)
+        # 2. 赠送积分双行轻量卡片: 第一行标题+规则说明, 第二行可用总额+最近到期
         self.promo_bar = QFrame()
         self.promo_bar.setObjectName("sn_promo_bar")
-        self.promo_bar.setFixedHeight(36)
-        pv = QHBoxLayout(self.promo_bar)
-        pv.setContentsMargins(14, 0, 14, 0)
+        self.promo_bar.setFixedHeight(58)
+        pvv = QVBoxLayout(self.promo_bar)
+        pvv.setContentsMargins(14, 8, 14, 8)
+        pvv.setSpacing(4)
 
+        row1 = QHBoxLayout()
+        row1.setSpacing(8)
         self.promo_icon = QLabel("🎁")
-        pv.addWidget(self.promo_icon)
+        row1.addWidget(self.promo_icon)
+        self.promo_title = QLabel("活动固定积分")
+        self.promo_title.setFont(QFont("Microsoft YaHei UI", 9.5, QFont.Bold))
+        row1.addWidget(self.promo_title)
+        self.promo_rule = QLabel("Flash-Lite 1:1 消费返赠 · 30天有效")
+        self.promo_rule.setFont(QFont("Microsoft YaHei UI", 8))
+        row1.addWidget(self.promo_rule)
+        row1.addStretch(1)
+        pvv.addLayout(row1)
 
-        self.promo_title = QLabel("活动固定积分 (Flash-Lite 1:1 消费返赠)")
-        self.promo_title.setFont(QFont("Microsoft YaHei UI", 9))
-        pv.addWidget(self.promo_title)
-        pv.addStretch(1)
-
-        self.promo_val_tag = QLabel("余额:")
+        row2 = QHBoxLayout()
+        row2.setSpacing(10)
+        self.promo_val_tag = QLabel("可用总额:")
         self.promo_val_tag.setFont(QFont("Microsoft YaHei UI", 8.5))
-        pv.addWidget(self.promo_val_tag)
-
+        row2.addWidget(self.promo_val_tag)
         self.promo_val = QLabel("0.00")
-        self.promo_val.setFont(QFont("Consolas", 10, QFont.Bold))
-        pv.addWidget(self.promo_val)
-
-        pv.addSpacing(16)
+        self.promo_val.setFont(QFont("Consolas", 13, QFont.Bold))
+        row2.addWidget(self.promo_val)
+        row2.addStretch(1)
         self.promo_exp = QLabel("最近到期: —")
-        self.promo_exp.setFont(QFont("Microsoft YaHei UI", 8.5))
-        pv.addWidget(self.promo_exp)
+        self.promo_exp.setFont(QFont("Microsoft YaHei UI", 8.5, QFont.Bold))
+        row2.addWidget(self.promo_exp)
+        pvv.addLayout(row2)
         v.addWidget(self.promo_bar)
 
         # 3. 极简同步面板
@@ -1710,7 +1773,8 @@ class SNQuotaPage(QWidget):
         border = qrgba(BORDER)
         self.promo_bar.setStyleSheet(
             f"#sn_promo_bar {{ background:{qrgba(CARD)}; border:1px solid {border}; border-radius:8px; }}")
-        self.promo_title.setStyleSheet(f"color:{qname(TEXT2)};")
+        self.promo_title.setStyleSheet(f"color:{qname(TEXT)};")
+        self.promo_rule.setStyleSheet(f"color:{qname(TEXT3)};")
         self.promo_val_tag.setStyleSheet(f"color:{qname(TEXT3)};")
         self.promo_val.setStyleSheet(f"color:{qname(TEXT)};")
         self.promo_exp.setStyleSheet(f"color:{qname(TEXT3)};")
