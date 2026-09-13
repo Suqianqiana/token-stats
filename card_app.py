@@ -1863,6 +1863,7 @@ def load_sn_stats(force=False):
 
 
 # ============================================================ 商汤积分池卡片 (双进度对称仪表)
+# ============================================================ 商汤积分池卡片 (双进度对称仪表)
 SN_PURPLE = QColor("#7c67ff")
 SN_PURPLE_DARK = QColor("#9d8eff")
 SN_ORANGE = QColor("#ff7043")
@@ -1879,7 +1880,7 @@ class SNProgressBar(QWidget):
 
     def apply_size(self):
         m = curr_metric()
-        self.setFixedHeight(m["sn_prog_h"])
+        self.setFixedHeight(m.get("sn_prog_h", 10))
         self.update()
 
     def set_ratio(self, r):
@@ -1906,7 +1907,7 @@ class SNProgressBar(QWidget):
 
 
 class SNPoolCard(GlassPodFrame):
-    """商汤积分池卡片: 周周期与 5h 窗口额度对称呈现，通栏舒展"""
+    """商汤积分池卡片: 采用小细条标题语言，额度数值字号加大醒目"""
     def __init__(self, pool, parent=None):
         super().__init__(radius=12, parent=parent)
         self.pool = pool
@@ -1919,23 +1920,23 @@ class SNPoolCard(GlassPodFrame):
         v.setContentsMargins(16, 13, 16, 13)
         v.setSpacing(9)
 
-        # 1. 顶栏
+        # 1. 顶栏: 小细条标识 + 池名称 (左) | 适用模型说明 (右)
         top = QHBoxLayout()
         top.setSpacing(8)
 
-        self.tag_badge = QLabel()
-        self.tag_badge.setFont(QFont("Microsoft YaHei UI", 8.5, QFont.Bold))
-        top.addWidget(self.tag_badge)
+        self.bar_indicator = QFrame()
+        self.bar_indicator.setFixedSize(14, 3.5)
+        top.addWidget(self.bar_indicator, 0, Qt.AlignVCenter)
 
         self.name_lbl = QLabel(self.pool["name"])
-        top.addWidget(self.name_lbl)
+        top.addWidget(self.name_lbl, 0, Qt.AlignVCenter)
         top.addStretch(1)
 
         self.scope_lbl = QLabel(self.pool.get("scope", ""))
-        top.addWidget(self.scope_lbl)
+        top.addWidget(self.scope_lbl, 0, Qt.AlignVCenter)
         v.addLayout(top)
 
-        # 2. 周周期额度
+        # 2. 周周期额度展示块
         week_box = QVBoxLayout()
         week_box.setSpacing(3)
 
@@ -1962,7 +1963,7 @@ class SNPoolCard(GlassPodFrame):
 
         v.addLayout(week_box)
 
-        # 3. 5h 滑动窗口额度
+        # 3. 5h 滑动窗口额度展示块
         win_box = QVBoxLayout()
         win_box.setSpacing(3)
 
@@ -1990,14 +1991,25 @@ class SNPoolCard(GlassPodFrame):
 
     def apply_size(self):
         m = curr_metric()
-        self.name_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_title_pt"], QFont.Bold))
+        is_lg = theme_state.get("window_size") == "large"
+
+        # 额度标题与数值字号适当调大，视觉对比更突出
+        title_pt = m["sn_title_pt"] + 0.5
+        lbl_pt = 9.6 if not is_lg else 10.6
+        val_pt = 10.6 if not is_lg else 11.8
+        date_pt = 8.6 if not is_lg else 9.3
+
+        self.name_lbl.setFont(QFont("Microsoft YaHei UI", title_pt, QFont.Bold))
         self.scope_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
-        self.week_title.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
-        self.window_title.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
-        self.week_val_lbl.setFont(QFont("Consolas", m["sn_sub_pt"], QFont.Bold))
-        self.window_val_lbl.setFont(QFont("Consolas", m["sn_sub_pt"], QFont.Bold))
-        self.week_reset_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_date_pt"]))
-        self.window_reset_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_date_pt"]))
+
+        self.week_title.setFont(QFont("Microsoft YaHei UI", lbl_pt))
+        self.window_title.setFont(QFont("Microsoft YaHei UI", lbl_pt))
+        self.week_val_lbl.setFont(QFont("Consolas", val_pt, QFont.Bold))
+        self.window_val_lbl.setFont(QFont("Consolas", val_pt, QFont.Bold))
+
+        self.week_reset_lbl.setFont(QFont("Microsoft YaHei UI", date_pt))
+        self.window_reset_lbl.setFont(QFont("Microsoft YaHei UI", date_pt))
+
         self.bar_week.apply_size()
         self.bar_win.apply_size()
         self.update()
@@ -2009,22 +2021,17 @@ class SNPoolCard(GlassPodFrame):
             else (SN_PURPLE_DARK if dark else SN_PURPLE)
 
         self.setStyleSheet("#sn_pool_card { background:transparent; border:none; }")
-
-        badge_bg = qrgba(accent, 35 if dark else 24)
-        badge_text = qname(accent)
-        self.tag_badge.setText("Flash-Lite" if is_orange else "通用池")
-        self.tag_badge.setStyleSheet(
-            f"background:{badge_bg}; color:{badge_text}; border-radius:5px; padding:2px 7px;")
+        self.bar_indicator.setStyleSheet(f"background:{qname(accent)}; border-radius:1.75px;")
 
         self.name_lbl.setStyleSheet(f"color:{qname(TEXT)};")
-        self.week_val_lbl.setStyleSheet(f"color:{badge_text};")
-        self.window_val_lbl.setStyleSheet(f"color:{badge_text};")
+        self.week_val_lbl.setStyleSheet(f"color:{qname(accent)};")
+        self.window_val_lbl.setStyleSheet(f"color:{qname(accent)};")
 
-        for lbl in (self.week_title, self.window_title, self.scope_lbl):
+        for lbl in (self.scope_lbl, self.week_reset_lbl, self.window_reset_lbl):
             lbl.setStyleSheet(f"color:{qname(TEXT3)};")
 
-        for lbl in (self.week_reset_lbl, self.window_reset_lbl):
-            lbl.setStyleSheet(f"color:{qname(TEXT2)};")
+        for lbl in (self.week_title, self.window_title):
+            lbl.setStyleSheet(f"color:{qname(TEXT2)}; font-weight: 500;")
 
         self.apply_size()
         self.bar_week.update()
@@ -2032,8 +2039,140 @@ class SNPoolCard(GlassPodFrame):
         self.update()
 
 
+class SNPromoCard(GlassPodFrame):
+    """活动固定积分卡片: 双列居中平衡布局 + 到期黄色胶囊标签"""
+    def __init__(self, parent=None):
+        super().__init__(radius=12, parent=parent)
+        self.setObjectName("sn_promo_card")
+        self._build_ui()
+        self.apply_theme()
+
+    def _build_ui(self):
+        v = QVBoxLayout(self)
+        v.setContentsMargins(16, 12, 16, 12)
+        v.setSpacing(8)
+
+        top = QHBoxLayout()
+        top.setSpacing(8)
+
+        self.bar_indicator = QFrame()
+        self.bar_indicator.setFixedSize(14, 3.5)
+        top.addWidget(self.bar_indicator, 0, Qt.AlignVCenter)
+
+        self.title_lbl = QLabel("活动固定积分")
+        top.addWidget(self.title_lbl, 0, Qt.AlignVCenter)
+        top.addStretch(1)
+
+        self.rule_lbl = QLabel("Flash-Lite 1:1 消费返赠 · 30天有效")
+        top.addWidget(self.rule_lbl, 0, Qt.AlignVCenter)
+        v.addLayout(top)
+
+        content_row = QHBoxLayout()
+        content_row.setSpacing(16)
+        content_row.setContentsMargins(4, 2, 4, 2)
+
+        left_col = QVBoxLayout()
+        left_col.setSpacing(3)
+        self.total_tag = QLabel("总量余额")
+        left_col.addWidget(self.total_tag)
+
+        self.total_val = QLabel("0.00")
+        left_col.addWidget(self.total_val)
+        content_row.addLayout(left_col, 1)
+
+        self.v_line = QFrame()
+        self.v_line.setFrameShape(QFrame.VLine)
+        self.v_line.setFixedWidth(1)
+        content_row.addWidget(self.v_line)
+
+        right_col = QVBoxLayout()
+        right_col.setSpacing(3)
+
+        expire_head = QHBoxLayout()
+        expire_head.setSpacing(6)
+        self.expire_tag = QLabel("最近一次到期")
+        expire_head.addWidget(self.expire_tag)
+
+        self.expire_date_badge = QLabel("—")
+        expire_head.addWidget(self.expire_date_badge)
+        expire_head.addStretch(1)
+        right_col.addLayout(expire_head)
+
+        self.expire_val = QLabel("0.00")
+        right_col.addWidget(self.expire_val)
+        content_row.addLayout(right_col, 1)
+
+        v.addLayout(content_row)
+
+    def set_data(self, total_val, expire_info):
+        """设置数据并智能拆分到期日期与到期额度"""
+        try:
+            fv = float(total_val)
+            self.total_val.setText(f"{fv:,.3f}".rstrip("0").rstrip(".") if "." in f"{fv:,.3f}" else f"{fv:,.0f}")
+        except Exception:
+            self.total_val.setText(str(total_val) if total_val else "0.00")
+
+        exp_s = str(expire_info) if expire_info else "—"
+        if " · " in exp_s:
+            d_part, _, b_part = exp_s.partition(" · ")
+            self.expire_date_badge.setText(d_part.strip())
+            try:
+                fb = float(b_part)
+                self.expire_val.setText(f"{fb:,.4f}".rstrip("0").rstrip(".") if "." in f"{fb:,.4f}" else f"{fb:,.0f}")
+            except Exception:
+                self.expire_val.setText(b_part.strip())
+        else:
+            self.expire_date_badge.setText(exp_s)
+            self.expire_val.setText("0.00")
+
+    def apply_size(self):
+        m = curr_metric()
+        is_lg = theme_state.get("window_size") == "large"
+
+        self.title_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_title_pt"], QFont.Bold))
+        self.rule_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
+
+        lbl_pt = 8.8 if not is_lg else 9.5
+        val_pt = 18.0 if not is_lg else 21.0
+        badge_pt = 8.5 if not is_lg else 9.0
+
+        self.total_tag.setFont(QFont("Microsoft YaHei UI", lbl_pt))
+        self.expire_tag.setFont(QFont("Microsoft YaHei UI", lbl_pt))
+        self.expire_date_badge.setFont(QFont("Consolas", badge_pt, QFont.Bold))
+
+        self.total_val.setFont(QFont("Consolas", val_pt, QFont.Bold))
+        self.expire_val.setFont(QFont("Consolas", val_pt, QFont.Bold))
+        self.update()
+
+    def apply_theme(self):
+        dark = theme_state["dark"]
+        accent = SN_PURPLE_DARK if dark else SN_PURPLE
+        border = qrgba(BORDER)
+
+        self.setStyleSheet("#sn_promo_card { background:transparent; border:none; }")
+        self.bar_indicator.setStyleSheet(f"background:{qname(accent)}; border-radius:1.75px;")
+
+        self.title_lbl.setStyleSheet(f"color:{qname(TEXT)};")
+        self.rule_lbl.setStyleSheet(f"color:{qname(TEXT3)};")
+
+        self.total_tag.setStyleSheet(f"color:{qname(TEXT3)}; font-weight:500;")
+        self.expire_tag.setStyleSheet(f"color:{qname(TEXT3)}; font-weight:500;")
+
+        self.total_val.setStyleSheet(f"color:{qname(TEXT)};")
+        self.expire_val.setStyleSheet(f"color:{qname(accent)};")
+
+        badge_bg = "rgba(245, 158, 11, 0.22)" if dark else "rgba(245, 158, 11, 0.16)"
+        badge_text = "#fbbf24" if dark else "#b45309"
+        self.expire_date_badge.setStyleSheet(
+            f"background:{badge_bg}; color:{badge_text}; border-radius:4px; padding:1px 6px;")
+
+        self.v_line.setStyleSheet(f"background:{border};")
+        self.apply_size()
+        self.update()
+
+
 class SNSyncPanel(GlassPodFrame):
-    """纯净极简同步面板"""
+    """纯净极简同步面板: 采用小细条标题设计语言"""
     saved = Signal()
     cleared = Signal()
     save_finished = Signal(bool, str)
@@ -2056,16 +2195,20 @@ class SNSyncPanel(GlassPodFrame):
         head = QHBoxLayout()
         head.setSpacing(8)
 
+        self.bar_indicator = QFrame()
+        self.bar_indicator.setFixedSize(14, 3.5)
+        head.addWidget(self.bar_indicator, 0, Qt.AlignVCenter)
+
         self.title_lbl = QLabel("控制台 cURL 自动同步")
-        head.addWidget(self.title_lbl)
+        head.addWidget(self.title_lbl, 0, Qt.AlignVCenter)
 
         self.status_lbl = QLabel("")
-        head.addWidget(self.status_lbl)
+        head.addWidget(self.status_lbl, 0, Qt.AlignVCenter)
 
         head.addStretch(1)
 
         self.guide_lbl = QLabel("F12 复制「积分额度」请求的 cURL 粘贴于此 (每 5 分钟自动更新)")
-        head.addWidget(self.guide_lbl)
+        head.addWidget(self.guide_lbl, 0, Qt.AlignVCenter)
         v.addLayout(head)
 
         self.curl_edit = QPlainTextEdit()
@@ -2115,7 +2258,6 @@ class SNSyncPanel(GlassPodFrame):
         self.apply_theme()
 
     def set_syncing(self, msg="正在同步积分…"):
-        """同步中进度态 (避免更新按钮灰色无反馈的卡顿感)"""
         self._status_mode = "syncing"
         self._status_msg = f"⟳ {msg}"
         self.apply_theme()
@@ -2184,6 +2326,7 @@ class SNSyncPanel(GlassPodFrame):
             f" border-radius:6px; padding:6px 8px; font-family:Consolas, monospace; font-size:{m['opt_btn_px']}px; }}"
             f"QPlainTextEdit:focus {{ border:1px solid #3b6fe0; }}"
         )
+        self.bar_indicator.setStyleSheet("background:#3b6fe0; border-radius:1.75px;")
         self.title_lbl.setStyleSheet(f"color:{text};")
         self.guide_lbl.setStyleSheet(f"color:{text3};")
 
@@ -2219,7 +2362,7 @@ class SNSyncPanel(GlassPodFrame):
 
 
 class SNAccountCard(GlassPodFrame):
-    """账号密码卡片: 输入后持久化保存到 sn_account.json, 供自动登录/换账号使用"""
+    """账号密码卡片: 采用小细条设计语言"""
     saved = Signal()
 
     def __init__(self, parent=None):
@@ -2236,14 +2379,19 @@ class SNAccountCard(GlassPodFrame):
 
         head = QHBoxLayout()
         head.setSpacing(8)
-        self.title_lbl = QLabel("🔐 账号密码 (自动登录)")
-        head.addWidget(self.title_lbl)
+
+        self.bar_indicator = QFrame()
+        self.bar_indicator.setFixedSize(14, 3.5)
+        head.addWidget(self.bar_indicator, 0, Qt.AlignVCenter)
+
+        self.title_lbl = QLabel("账号密码 (自动登录凭据)")
+        head.addWidget(self.title_lbl, 0, Qt.AlignVCenter)
         head.addStretch(1)
+
         self.status_lbl = QLabel("")
-        head.addWidget(self.status_lbl)
+        head.addWidget(self.status_lbl, 0, Qt.AlignVCenter)
         v.addLayout(head)
 
-        # 账号 + 密码 同一行
         form = QHBoxLayout()
         form.setSpacing(8)
         self.user_tag = QLabel("账号")
@@ -2266,10 +2414,9 @@ class SNAccountCard(GlassPodFrame):
         form.addWidget(self.btn_show)
         v.addLayout(form)
 
-        # 说明 + 保存按钮
         brow = QHBoxLayout()
         brow.setSpacing(8)
-        self.guide_lbl = QLabel("仅存本机, 用于凭证过期自动重登")
+        self.guide_lbl = QLabel("仅存本机，用于网页凭据过期自动重登")
         brow.addWidget(self.guide_lbl, 1)
         self.btn_save = QPushButton("保存账号")
         self.btn_save.setCursor(Qt.PointingHandCursor)
@@ -2340,6 +2487,7 @@ class SNAccountCard(GlassPodFrame):
             f" border-radius:6px; padding:5px 8px; font-size:{m['opt_btn_px']}px; }}"
             f"QLineEdit:focus {{ border:1px solid #3b6fe0; }}"
         )
+        self.bar_indicator.setStyleSheet("background:#3b6fe0; border-radius:1.75px;")
         self.title_lbl.setStyleSheet(f"color:{text};")
         self.guide_lbl.setStyleSheet(f"color:{text3};")
         self.user_tag.setStyleSheet(f"color:{text2};")
@@ -2360,7 +2508,7 @@ class SNAccountCard(GlassPodFrame):
 
 
 class SNQuotaPage(QWidget):
-    """商汤日日新展示页 (赠送积分双行分栏，易读性全面优化)"""
+    """商汤日日新展示页: 视觉风格高度收敛统驭，精致美观不花哨"""
     saved = Signal()
     cleared = Signal()
 
@@ -2373,50 +2521,14 @@ class SNQuotaPage(QWidget):
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(10)
 
-        # 1. 左右并排双池
+        # 1. 左右对称双积分池 (额度文字加大醒目)
         self.pools_layout = QHBoxLayout()
         self.pools_layout.setSpacing(10)
         v.addLayout(self.pools_layout)
 
-        # 2. 活动固定积分优雅双行卡片
-        self.promo_card = GlassPodFrame(radius=10)
-        self.promo_card.setObjectName("sn_promo_card")
+        # 2. 活动固定积分卡片 (双列平衡排版)
+        self.promo_card = SNPromoCard()
         self.promo_bar = self.promo_card
-        pv = QVBoxLayout(self.promo_card)
-        pv.setContentsMargins(16, 9, 16, 9)
-        pv.setSpacing(6)
-
-        row1 = QHBoxLayout()
-        row1.setSpacing(6)
-        self.promo_icon = QLabel("🎁")
-        row1.addWidget(self.promo_icon)
-
-        self.promo_title = QLabel("活动固定积分")
-        row1.addWidget(self.promo_title)
-
-        self.promo_rule = QLabel("Flash-Lite 1:1 消费返赠 · 30天有效")
-        row1.addWidget(self.promo_rule)
-        row1.addStretch(1)
-        pv.addLayout(row1)
-
-        row2 = QHBoxLayout()
-        row2.setSpacing(8)
-
-        self.promo_val_tag = QLabel("可用总额:")
-        row2.addWidget(self.promo_val_tag)
-
-        self.promo_val = QLabel("0.00")
-        row2.addWidget(self.promo_val)
-
-        row2.addStretch(1)
-
-        self.promo_exp_tag = QLabel("最近到期:")
-        row2.addWidget(self.promo_exp_tag)
-
-        self.promo_exp = QLabel("—")
-        row2.addWidget(self.promo_exp)
-
-        pv.addLayout(row2)
         v.addWidget(self.promo_card)
 
         # 3. 极简同步面板
@@ -2425,7 +2537,7 @@ class SNQuotaPage(QWidget):
         self.sync_panel.cleared.connect(self.cleared)
         v.addWidget(self.sync_panel)
 
-        # 3.5. 账号密码卡片 (自动登录/换账号)
+        # 3.5. 账号密码卡片
         self.account_card = SNAccountCard()
         self.account_card.saved.connect(self._on_account_saved)
         v.addWidget(self.account_card)
@@ -2439,24 +2551,18 @@ class SNQuotaPage(QWidget):
 
     def apply_size(self):
         m = curr_metric()
-        self.promo_title.setFont(QFont("Microsoft YaHei UI", m["sn_title_pt"], QFont.Bold))
-        self.promo_rule.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
-        self.promo_val_tag.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
-        self.promo_val.setFont(QFont("Consolas", m["promo_val_pt"], QFont.Bold))
-        self.promo_exp_tag.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
-        self.promo_exp.setFont(QFont("Consolas", m["sn_sub_pt"], QFont.Bold))
         self.foot_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_date_pt"]))
 
         for i in range(self.pools_layout.count()):
             w = self.pools_layout.itemAt(i).widget()
             if isinstance(w, SNPoolCard):
                 w.apply_size()
+        self.promo_card.apply_size()
         self.sync_panel.apply_size()
         self.account_card.apply_size()
         self.update()
 
     def _on_account_saved(self):
-        """账号保存后: 清除旧 token/登录态缓存, 下次刷新会用新账号重新登录"""
         try:
             if os.path.exists(SN_TOKEN_FILE):
                 os.remove(SN_TOKEN_FILE)
@@ -2484,20 +2590,12 @@ class SNQuotaPage(QWidget):
                 elif p.get("id") == "promo":
                     tot = p.get("total_balance", 0)
                     exp = p.get("nearest_expire", "—")
-                    self.promo_val.setText(f"{tot:,.2f}" if isinstance(tot, (int, float)) else str(tot))
-                    self.promo_exp.setText(f"{exp}")
+                    self.promo_card.set_data(tot, exp)
 
         self.sync_panel.set_status(s)
         self.apply_theme()
 
     def apply_theme(self):
-        self.promo_card.setStyleSheet("#sn_promo_card { background:transparent; border:none; }")
-        self.promo_title.setStyleSheet(f"color:{qname(TEXT)};")
-        self.promo_rule.setStyleSheet(f"color:{qname(TEXT3)};")
-        self.promo_val_tag.setStyleSheet(f"color:{qname(TEXT3)};")
-        self.promo_val.setStyleSheet(f"color:{qname(TEXT)};")
-        self.promo_exp_tag.setStyleSheet(f"color:{qname(TEXT3)};")
-        self.promo_exp.setStyleSheet(f"color:{qname(TEXT2)};")
         self.foot_lbl.setStyleSheet(f"color:{qname(TEXT3)};")
 
         for i in range(self.pools_layout.count()):
@@ -2505,13 +2603,11 @@ class SNQuotaPage(QWidget):
             if isinstance(w, SNPoolCard):
                 w.apply_theme()
 
+        self.promo_card.apply_theme()
         self.sync_panel.apply_theme()
         self.account_card.apply_theme()
         self.apply_size()
-        self.promo_card.update()
 
-
-# ============================================================ 导航按钮
 class NavButton(QPushButton):
     def __init__(self, text, icon_str="", parent=None):
         super().__init__(f"  {icon_str}  {text}", parent)
