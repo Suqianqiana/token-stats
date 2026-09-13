@@ -1865,11 +1865,12 @@ def load_sn_stats(force=False):
 # ============================================================ 商汤积分池卡片 (双进度对称仪表)
 # ============================================================ 商汤积分池卡片 (双进度对称仪表)
 class BarIndicator(QWidget):
-    """小细条指示器: 与 WB/DSH 页 StatCard 完全一致的自绘渲染(16×3 圆角1.5px)"""
+    """小细条指示器: 自绘圆角胶囊 (16×4 圆角2px, 与 WB/DSH StatCard 同款渲染)"""
     def __init__(self, color, parent=None):
         super().__init__(parent)
         self._color = color
-        self.setFixedSize(16, 3)
+        self.setFixedSize(16, 4)
+        self.setAttribute(Qt.WA_TranslucentBackground)   # 角部透明, 圆角才能透出父背景可见
 
     def set_color(self, c):
         self._color = c
@@ -1880,7 +1881,7 @@ class BarIndicator(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         p.setPen(Qt.NoPen)
         p.setBrush(self._color)
-        p.drawRoundedRect(QRectF(0, 0, 16, 3), 1.5, 1.5)
+        p.drawRoundedRect(QRectF(0.5, 0.5, 15, 3), 2.0, 2.0)
 
 
 SN_PURPLE = QColor("#7c67ff")
@@ -2396,7 +2397,7 @@ class SNAccountCard(GlassPodFrame):
         head = QHBoxLayout()
         head.setSpacing(8)
 
-        self.bar_indicator = BarIndicator(QColor("#3b6fe0"))
+        self.bar_indicator = BarIndicator(QColor("#8b5cd6"))
         head.addWidget(self.bar_indicator, 0, Qt.AlignVCenter)
 
         self.title_lbl = QLabel("账号密码 (自动登录凭据)")
