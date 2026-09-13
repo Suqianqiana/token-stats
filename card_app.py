@@ -1864,6 +1864,25 @@ def load_sn_stats(force=False):
 
 # ============================================================ 商汤积分池卡片 (双进度对称仪表)
 # ============================================================ 商汤积分池卡片 (双进度对称仪表)
+class BarIndicator(QWidget):
+    """小细条指示器: 与 WB/DSH 页 StatCard 完全一致的自绘渲染(16×3 圆角1.5px)"""
+    def __init__(self, color, parent=None):
+        super().__init__(parent)
+        self._color = color
+        self.setFixedSize(16, 3)
+
+    def set_color(self, c):
+        self._color = c
+        self.update()
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(self._color)
+        p.drawRoundedRect(QRectF(0, 0, 16, 3), 1.5, 1.5)
+
+
 SN_PURPLE = QColor("#7c67ff")
 SN_PURPLE_DARK = QColor("#9d8eff")
 SN_ORANGE = QColor("#ff7043")
@@ -1924,8 +1943,7 @@ class SNPoolCard(GlassPodFrame):
         top = QHBoxLayout()
         top.setSpacing(8)
 
-        self.bar_indicator = QFrame()
-        self.bar_indicator.setFixedSize(14, 3.5)
+        self.bar_indicator = BarIndicator(SN_PURPLE)
         top.addWidget(self.bar_indicator, 0, Qt.AlignVCenter)
 
         self.name_lbl = QLabel(self.pool["name"])
@@ -2021,7 +2039,7 @@ class SNPoolCard(GlassPodFrame):
             else (SN_PURPLE_DARK if dark else SN_PURPLE)
 
         self.setStyleSheet("#sn_pool_card { background:transparent; border:none; }")
-        self.bar_indicator.setStyleSheet(f"background:{qname(accent)}; border-radius:1.75px;")
+        self.bar_indicator.set_color(accent)
 
         self.name_lbl.setStyleSheet(f"color:{qname(TEXT)};")
         self.week_val_lbl.setStyleSheet(f"color:{qname(accent)};")
@@ -2049,15 +2067,15 @@ class SNPromoCard(GlassPodFrame):
 
     def _build_ui(self):
         v = QVBoxLayout(self)
-        v.setContentsMargins(16, 12, 16, 12)
-        v.setSpacing(8)
+        v.setContentsMargins(16, 8, 16, 8)
+        v.setSpacing(6)
 
         top = QHBoxLayout()
         top.setSpacing(8)
 
-        self.bar_indicator = QFrame()
-        self.bar_indicator.setFixedSize(14, 3.5)
-        top.addWidget(self.bar_indicator, 0, Qt.AlignVCenter)
+        self.promo_icon = QLabel("🎁")
+        self.promo_icon.setFont(QFont("Microsoft YaHei UI", 13))
+        top.addWidget(self.promo_icon, 0, Qt.AlignVCenter)
 
         self.title_lbl = QLabel("活动固定积分")
         top.addWidget(self.title_lbl, 0, Qt.AlignVCenter)
@@ -2068,11 +2086,11 @@ class SNPromoCard(GlassPodFrame):
         v.addLayout(top)
 
         content_row = QHBoxLayout()
-        content_row.setSpacing(16)
-        content_row.setContentsMargins(4, 2, 4, 2)
+        content_row.setSpacing(12)
+        content_row.setContentsMargins(4, 0, 4, 2)
 
         left_col = QVBoxLayout()
-        left_col.setSpacing(3)
+        left_col.setSpacing(1)
         self.total_tag = QLabel("总量余额")
         left_col.addWidget(self.total_tag)
 
@@ -2086,7 +2104,7 @@ class SNPromoCard(GlassPodFrame):
         content_row.addWidget(self.v_line)
 
         right_col = QVBoxLayout()
-        right_col.setSpacing(3)
+        right_col.setSpacing(1)
 
         expire_head = QHBoxLayout()
         expire_head.setSpacing(6)
@@ -2132,9 +2150,9 @@ class SNPromoCard(GlassPodFrame):
         self.title_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_title_pt"], QFont.Bold))
         self.rule_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
 
-        lbl_pt = 8.8 if not is_lg else 9.5
-        val_pt = 18.0 if not is_lg else 21.0
-        badge_pt = 8.5 if not is_lg else 9.0
+        lbl_pt = 8.5 if not is_lg else 9.0
+        val_pt = 13.0 if not is_lg else 15.0
+        badge_pt = 8.0 if not is_lg else 8.5
 
         self.total_tag.setFont(QFont("Microsoft YaHei UI", lbl_pt))
         self.expire_tag.setFont(QFont("Microsoft YaHei UI", lbl_pt))
@@ -2150,7 +2168,6 @@ class SNPromoCard(GlassPodFrame):
         border = qrgba(BORDER)
 
         self.setStyleSheet("#sn_promo_card { background:transparent; border:none; }")
-        self.bar_indicator.setStyleSheet(f"background:{qname(accent)}; border-radius:1.75px;")
 
         self.title_lbl.setStyleSheet(f"color:{qname(TEXT)};")
         self.rule_lbl.setStyleSheet(f"color:{qname(TEXT3)};")
@@ -2189,14 +2206,13 @@ class SNSyncPanel(GlassPodFrame):
 
     def _build_ui(self):
         v = QVBoxLayout(self)
-        v.setContentsMargins(16, 11, 16, 11)
-        v.setSpacing(7)
+        v.setContentsMargins(16, 6, 16, 6)
+        v.setSpacing(5)
 
         head = QHBoxLayout()
         head.setSpacing(8)
 
-        self.bar_indicator = QFrame()
-        self.bar_indicator.setFixedSize(14, 3.5)
+        self.bar_indicator = BarIndicator(QColor("#3b6fe0"))
         head.addWidget(self.bar_indicator, 0, Qt.AlignVCenter)
 
         self.title_lbl = QLabel("控制台 cURL 自动同步")
@@ -2213,6 +2229,7 @@ class SNSyncPanel(GlassPodFrame):
 
         self.curl_edit = QPlainTextEdit()
         self.curl_edit.setPlaceholderText('粘贴 cURL 命令 (curl "https://platform.sensenova.cn/lite/console/...")')
+        self.curl_edit.setFixedHeight(34)
         v.addWidget(self.curl_edit)
 
         row = QHBoxLayout()
@@ -2239,7 +2256,7 @@ class SNSyncPanel(GlassPodFrame):
         self.status_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"], QFont.Bold))
         self.guide_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
         self.err_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
-        self.curl_edit.setFixedHeight(m["sn_input_h"])
+        self.curl_edit.setFixedHeight(34)
         self.btn_clear.setFixedHeight(m["opt_btn_h"])
         self.btn_save.setFixedHeight(m["opt_btn_h"])
         self.update()
@@ -2326,7 +2343,6 @@ class SNSyncPanel(GlassPodFrame):
             f" border-radius:6px; padding:6px 8px; font-family:Consolas, monospace; font-size:{m['opt_btn_px']}px; }}"
             f"QPlainTextEdit:focus {{ border:1px solid #3b6fe0; }}"
         )
-        self.bar_indicator.setStyleSheet("background:#3b6fe0; border-radius:1.75px;")
         self.title_lbl.setStyleSheet(f"color:{text};")
         self.guide_lbl.setStyleSheet(f"color:{text3};")
 
@@ -2374,14 +2390,13 @@ class SNAccountCard(GlassPodFrame):
 
     def _build_ui(self):
         v = QVBoxLayout(self)
-        v.setContentsMargins(16, 11, 16, 11)
-        v.setSpacing(7)
+        v.setContentsMargins(16, 6, 16, 6)
+        v.setSpacing(5)
 
         head = QHBoxLayout()
         head.setSpacing(8)
 
-        self.bar_indicator = QFrame()
-        self.bar_indicator.setFixedSize(14, 3.5)
+        self.bar_indicator = BarIndicator(QColor("#3b6fe0"))
         head.addWidget(self.bar_indicator, 0, Qt.AlignVCenter)
 
         self.title_lbl = QLabel("账号密码 (自动登录凭据)")
@@ -2469,9 +2484,9 @@ class SNAccountCard(GlassPodFrame):
         self.guide_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
         self.user_tag.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
         self.pwd_tag.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
-        self.user_edit.setFixedHeight(m["sn_input_h"])
-        self.pwd_edit.setFixedHeight(m["sn_input_h"])
-        self.btn_show.setFixedHeight(m["sn_input_h"])
+        self.user_edit.setFixedHeight(32)
+        self.pwd_edit.setFixedHeight(32)
+        self.btn_show.setFixedHeight(32)
         self.btn_show.setFixedWidth(44)
         self.btn_save.setFixedHeight(m["opt_btn_h"])
         self.update()
@@ -2487,7 +2502,6 @@ class SNAccountCard(GlassPodFrame):
             f" border-radius:6px; padding:5px 8px; font-size:{m['opt_btn_px']}px; }}"
             f"QLineEdit:focus {{ border:1px solid #3b6fe0; }}"
         )
-        self.bar_indicator.setStyleSheet("background:#3b6fe0; border-radius:1.75px;")
         self.title_lbl.setStyleSheet(f"color:{text};")
         self.guide_lbl.setStyleSheet(f"color:{text3};")
         self.user_tag.setStyleSheet(f"color:{text2};")
