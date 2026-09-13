@@ -27,7 +27,7 @@ from PySide6.QtGui import (QColor, QFont, QPainter, QPen, QBrush, QPainterPath,
 from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QVBoxLayout,
                                QHBoxLayout, QGridLayout, QFrame, QPushButton,
                                QScrollArea, QMenu, QSizePolicy, QPlainTextEdit,
-                               QStackedWidget)
+                               QStackedWidget, QLineEdit)
 
 # ============================================================ 窗口尺寸与排版度量衡体系
 SIZE_METRICS = {
@@ -42,7 +42,7 @@ SIZE_METRICS = {
         "today_h": 28, "today_px": 11,
         "nav_btn_h": 38, "nav_btn_pt": 9.2,
         "title_pt": 12.0, "subtitle_pt": 9.0, "opt_btn_h": 28, "opt_btn_px": 11, "refresh_h": 34,
-        "sn_prog_h": 6, "sn_input_h": 42, "sn_title_pt": 10.5, "sn_sub_pt": 8.8, "sn_date_pt": 8.0,
+        "sn_prog_h": 10, "sn_input_h": 42, "sn_title_pt": 10.5, "sn_sub_pt": 8.8, "sn_date_pt": 8.0,
         "promo_val_pt": 12.0,
     },
     "large": {
@@ -56,7 +56,7 @@ SIZE_METRICS = {
         "today_h": 32, "today_px": 12,
         "nav_btn_h": 42, "nav_btn_pt": 9.8,
         "title_pt": 13.0, "subtitle_pt": 9.6, "opt_btn_h": 30, "opt_btn_px": 11, "refresh_h": 38,
-        "sn_prog_h": 7, "sn_input_h": 46, "sn_title_pt": 11.2, "sn_sub_pt": 9.2, "sn_date_pt": 8.5,
+        "sn_prog_h": 12, "sn_input_h": 46, "sn_title_pt": 11.2, "sn_sub_pt": 9.2, "sn_date_pt": 8.5,
         "promo_val_pt": 13.5,
     }
 }
@@ -1324,12 +1324,60 @@ def _http_json(req):
         return status, None, "响应不是 JSON"
 
 
-# ============================================================ Playwright 自动抓取 (方案A: 持久登录态 + 自动重登)
+# ============================================================ 商汤积分自动同步 (Playwright 持久登录态 + token 直连)
 SN_EDGE_PATH = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
 SN_LOGIN_STATE = os.path.join(scanner.PLUGIN_DATA_DIR, "sn_login_state.json")
 SN_ACCOUNT_FILE = os.path.join(scanner.PLUGIN_DATA_DIR, "sn_account.json")
+SN_TOKEN_FILE = os.path.join(scanner.PLUGIN_DATA_DIR, "sn_token.json")
 SN_POOL_API = "/lite/console/v1/tokenplan/pool-usage"
+SN_POOL_URL = "https://platform.sensenova.cn" + SN_POOL_API
 SN_CONSOLE_URL = "https://platform.sensenova.cn/console"
+SN_USE_PLAYWRIGHT = True   # 真自动抓取开关 (测试环境置 False 走 cURL mock)
+
+
+def _sn_load_token():
+    """从登录态/缓存读取 access_token (优先 sn_token.json 缓存, 回退 login_state)"""
+    # 1) 优先读独立缓存
+    try:
+        with open(SN_TOKEN_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        tok = d.get("access_token")
+        if tok:
+            return tok
+    except Exception:
+        pass
+    # 2) 回退从 login_state 的 origins.localStorage 提取
+    try:
+        with open(SN_LOGIN_STATE, "r", encoding="utf-8") as f:
+            st = json.load(f)
+        for origin in st.get("origins", []):
+            for item in origin.get("localStorage", []):
+                if item.get("name") == "access_token" and item.get("value"):
+                    return item["value"]
+    except Exception:
+        pass
+    return None
+
+
+def _sn_save_token(tok):
+    try:
+        with open(SN_TOKEN_FILE, "w", encoding="utf-8") as f:
+            json.dump({"access_token": tok}, f)
+    except Exception:
+        pass
+
+
+def _sn_parse_pool_data(data):
+    """零指纹解析 pool-usage 数据 → values dict (与旧 sn_autosync_fetch 一致)"""
+    paths = _detect_paths_by_structure(data)
+    if not paths:
+        return None
+    values = {}
+    for key, p in paths.items():
+        v = _get_path(data, p)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            values[key] = float(v)
+    return values or None
 
 
 def _sn_playwright_ready():
@@ -1341,23 +1389,51 @@ def _sn_playwright_ready():
         return False
 
 
-def sn_playwright_fetch():
-    """用 Playwright 持久登录态抓取商汤积分池数据, 解析成 values dict。
+def _sn_direct_fetch(token):
+    """用 access_token urllib 直连 pool-usage, 返回 (data_dict, error)。401 返回 (None, '401')"""
+    import urllib.request, urllib.error
+    ctx = None
+    try:
+        import ssl
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    except Exception:
+        pass
+    req = urllib.request.Request(SN_POOL_URL, headers={
+        "Authorization": "Bearer " + token,
+        "accept": "application/json",
+        "User-Agent": "Mozilla/5.0",
+    })
+    try:
+        if ctx is not None:
+            resp = urllib.request.urlopen(req, timeout=15, context=ctx)
+        else:
+            resp = urllib.request.urlopen(req, timeout=15)
+        body = resp.read(2_000_000).decode("utf-8", "replace")
+        data = json.loads(body)
+        if isinstance(data, dict) and data.get("pools"):
+            return data, None
+        return None, "积分接口无 pools 数据"
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            return None, "401"
+        return None, f"HTTP {e.code}"
+    except Exception as e:
+        return None, str(e)[:120]
 
-    返回 (values_dict, error)。登录态过期会自动用账号密码重登。
-    values 字段与 sn_autosync_fetch 一致 (general_w/general_5h/flash_w/flash_5h/
-    general_reset5/general_resetw/flash_reset5/flash_resetw/promo/promo_exp_ts/promo_exp_bal)。
-    """
+
+def _sn_playwright_login_and_fetch():
+    """Playwright 登录(必要时自动填账号密码) → 刷新 access_token → 抓取数据。返回 (data, token, error)"""
     if not _sn_playwright_ready():
-        return None, "playwright 未安装或未找到系统 Edge"
+        return None, None, "playwright 未安装或未找到系统 Edge"
     if not os.path.exists(SN_LOGIN_STATE):
-        return None, "未登录 (请先运行 sn_login.py 完成首次自动登录)"
+        return None, None, "未登录 (请在商汤页填写账号密码或运行 sn_login.py)"
     try:
         from playwright.sync_api import sync_playwright
     except Exception as e:
-        return None, f"playwright 导入失败: {str(e)[:80]}"
+        return None, None, f"playwright 导入失败: {str(e)[:80]}"
 
-    # 读账号 (自动重登用)
     username = password = ""
     try:
         with open(SN_ACCOUNT_FILE, "r", encoding="utf-8-sig") as f:
@@ -1368,6 +1444,7 @@ def sn_playwright_fetch():
         pass
 
     captured = {}
+    token = None
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(executable_path=SN_EDGE_PATH, headless=True)
@@ -1392,7 +1469,7 @@ def sn_playwright_fetch():
             if not captured.get("data") and "/login" in page.url:
                 if not username or not password:
                     browser.close()
-                    return None, "登录态已过期且无账号配置, 请重新运行 sn_login.py"
+                    return None, None, "登录态已过期且未配置账号密码"
                 try:
                     page.get_by_text("账号密码登录", exact=True).click(timeout=8000)
                     page.wait_for_timeout(1500)
@@ -1403,37 +1480,60 @@ def sn_playwright_fetch():
                     page.wait_for_timeout(8000)
                 except Exception as e:
                     browser.close()
-                    return None, f"自动重登失败: {str(e)[:100]}"
+                    return None, None, f"自动重登失败: {str(e)[:100]}"
+
+            # 提取 access_token
+            try:
+                token = page.evaluate("() => localStorage.getItem('access_token')")
+            except Exception:
+                pass
 
             if not captured.get("data"):
                 browser.close()
-                return None, "未捕获到积分数据, 登录态可能已过期"
+                return None, token, "未捕获到积分数据"
 
-            # 保存刷新后的登录态 (token 续期)
+            # 保存刷新后的登录态 + token 缓存
             try:
                 ctx.storage_state(path=SN_LOGIN_STATE)
             except Exception:
                 pass
+            if token:
+                _sn_save_token(token)
             browser.close()
     except Exception as e:
-        return None, f"playwright 抓取异常: {str(e)[:120]}"
+        return None, None, f"playwright 抓取异常: {str(e)[:120]}"
 
-    # 零指纹解析 pool-usage 数据
     data = captured.get("data")
-    paths = _detect_paths_by_structure(data)
-    if not paths:
-        return None, "积分接口响应结构无法识别"
-    values = {}
-    for key, p in paths.items():
-        v = _get_path(data, p)
-        if isinstance(v, (int, float)) and not isinstance(v, bool):
-            values[key] = float(v)
+    return data, token, None
+
+
+def sn_playwright_fetch():
+    """商汤积分真自动抓取: token 直连优先(快) → 401 时 Playwright 重登刷新(慢兜底)。
+
+    返回 (values_dict, error)。
+    """
+    # 快路径: 用缓存 access_token 直连
+    token = _sn_load_token()
+    if token:
+        data, err = _sn_direct_fetch(token)
+        if data is not None:
+            values = _sn_parse_pool_data(data)
+            if values:
+                _sn_save_token(token)   # 缓存 token, 避免每次从 login_state 解析
+                return values, None
+        # 401 或解析失败 → 走 Playwright 重登刷新
+    elif not os.path.exists(SN_LOGIN_STATE):
+        return None, "未登录 (请在商汤页填写账号密码完成首次登录)"
+
+    # 慢路径: Playwright 登录/重登 + 抓取
+    data, new_token, err = _sn_playwright_login_and_fetch()
+    if data is None:
+        return None, err or "抓取失败"
+    values = _sn_parse_pool_data(data)
     if not values:
-        return None, "积分接口未解析到数值"
+        return None, "积分接口响应结构无法识别"
     return values, None
 
-
-SN_USE_PLAYWRIGHT = True   # 真自动抓取开关 (测试环境置 False 走 cURL mock)
 
 
 def sn_autosync_fetch(force=False):
@@ -1999,6 +2099,12 @@ class SNSyncPanel(GlassPodFrame):
             self._status_msg = "未配置自动同步"
         self.apply_theme()
 
+    def set_syncing(self, msg="正在同步积分…"):
+        """同步中进度态 (避免更新按钮灰色无反馈的卡顿感)"""
+        self._status_mode = "syncing"
+        self._status_msg = f"⟳ {msg}"
+        self.apply_theme()
+
     def _on_clear(self):
         clear_sn_autosync()
         _autosync_mem.update(ts=0.0, values=None, error=None)
@@ -2073,6 +2179,9 @@ class SNSyncPanel(GlassPodFrame):
         elif mode == "error":
             st_color = "#f87171" if dark else "#dc2626"
             st_bg = "rgba(248, 113, 113, 0.16)" if dark else "rgba(220, 38, 38, 0.10)"
+        elif mode == "syncing":
+            st_color = "#f59e0b" if dark else "#d97706"
+            st_bg = "rgba(245, 158, 11, 0.16)" if dark else "rgba(217, 119, 6, 0.12)"
         else:
             st_color = text3
             st_bg = qrgba(TRACK)
@@ -2086,6 +2195,147 @@ class SNSyncPanel(GlassPodFrame):
             f"QPushButton{{ background:transparent; color:{text2}; border:1px solid {border};"
             f" border-radius:6px; padding:3px 12px; font-size:{m['opt_btn_px']}px; }}"
             f"QPushButton:hover{{ background:{qrgba(HOVER)}; color:{text}; }}")
+        self.btn_save.setStyleSheet(
+            "QPushButton{ background:#3b6fe0; color:white; border:none; border-radius:6px;"
+            f" padding:4px 16px; font-size:{m['opt_btn_px']}px; font-weight:600; }}"
+            "QPushButton:hover{ background:#2f5ec4; }")
+        self.apply_size()
+        self.update()
+
+
+class SNAccountCard(GlassPodFrame):
+    """账号密码卡片: 输入后持久化保存到 sn_account.json, 供自动登录/换账号使用"""
+    saved = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(radius=12, parent=parent)
+        self.setObjectName("sn_account_card")
+        self._build_ui()
+        self._load_account()
+        self.apply_theme()
+
+    def _build_ui(self):
+        v = QVBoxLayout(self)
+        v.setContentsMargins(16, 11, 16, 11)
+        v.setSpacing(7)
+
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        self.title_lbl = QLabel("🔐 账号密码 (自动登录)")
+        head.addWidget(self.title_lbl)
+        head.addStretch(1)
+        self.status_lbl = QLabel("")
+        head.addWidget(self.status_lbl)
+        v.addLayout(head)
+
+        # 账号 + 密码 同一行
+        form = QHBoxLayout()
+        form.setSpacing(8)
+        self.user_tag = QLabel("账号")
+        self.user_tag.setFixedWidth(32)
+        form.addWidget(self.user_tag)
+        self.user_edit = QLineEdit()
+        self.user_edit.setPlaceholderText("商汤账号")
+        form.addWidget(self.user_edit, 3)
+        self.pwd_tag = QLabel("密码")
+        self.pwd_tag.setFixedWidth(32)
+        form.addWidget(self.pwd_tag)
+        self.pwd_edit = QLineEdit()
+        self.pwd_edit.setEchoMode(QLineEdit.Password)
+        self.pwd_edit.setPlaceholderText("商汤密码")
+        form.addWidget(self.pwd_edit, 3)
+        self.btn_show = QPushButton("显示")
+        self.btn_show.setCheckable(True)
+        self.btn_show.setCursor(Qt.PointingHandCursor)
+        self.btn_show.clicked.connect(self._toggle_pwd)
+        form.addWidget(self.btn_show)
+        v.addLayout(form)
+
+        # 说明 + 保存按钮
+        brow = QHBoxLayout()
+        brow.setSpacing(8)
+        self.guide_lbl = QLabel("仅存本机, 用于凭证过期自动重登")
+        brow.addWidget(self.guide_lbl, 1)
+        self.btn_save = QPushButton("保存账号")
+        self.btn_save.setCursor(Qt.PointingHandCursor)
+        self.btn_save.clicked.connect(self._on_save)
+        brow.addWidget(self.btn_save)
+        v.addLayout(brow)
+
+    def _toggle_pwd(self):
+        if self.btn_show.isChecked():
+            self.pwd_edit.setEchoMode(QLineEdit.Normal)
+            self.btn_show.setText("隐藏")
+        else:
+            self.pwd_edit.setEchoMode(QLineEdit.Password)
+            self.btn_show.setText("显示")
+
+    def _load_account(self):
+        try:
+            with open(SN_ACCOUNT_FILE, "r", encoding="utf-8-sig") as f:
+                d = json.load(f)
+            self.user_edit.setText(d.get("username", ""))
+            self.pwd_edit.setText(d.get("password", ""))
+        except Exception:
+            pass
+
+    def _on_save(self):
+        username = self.user_edit.text().strip()
+        password = self.pwd_edit.text()
+        if not username or not password:
+            self.status_lbl.setText("请填写账号和密码")
+            self._status_color = "#e05252"
+            self.apply_theme()
+            return
+        try:
+            with open(SN_ACCOUNT_FILE, "w", encoding="utf-8") as f:
+                json.dump({"username": username, "password": password}, f, ensure_ascii=False)
+        except Exception as e:
+            self.status_lbl.setText(f"保存失败: {str(e)[:30]}")
+            self._status_color = "#e05252"
+            self.apply_theme()
+            return
+        self.status_lbl.setText("✓ 已保存")
+        self._status_color = "#34d399"
+        self.apply_theme()
+        self.saved.emit()
+
+    def apply_size(self):
+        m = curr_metric()
+        self.title_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_title_pt"], QFont.Bold))
+        self.status_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
+        self.guide_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
+        self.user_tag.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
+        self.pwd_tag.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
+        self.user_edit.setFixedHeight(m["sn_input_h"])
+        self.pwd_edit.setFixedHeight(m["sn_input_h"])
+        self.btn_show.setFixedHeight(m["sn_input_h"])
+        self.btn_show.setFixedWidth(44)
+        self.btn_save.setFixedHeight(m["opt_btn_h"])
+        self.update()
+
+    def apply_theme(self):
+        dark = theme_state["dark"]
+        border = qrgba(BORDER)
+        text, text2, text3 = qname(TEXT), qname(TEXT2), qname(TEXT3)
+        m = curr_metric()
+        self.setStyleSheet(
+            "#sn_account_card { background:transparent; border:none; }"
+            f"QLineEdit {{ background:{qrgba(TRACK)}; color:{text}; border:1px solid {border};"
+            f" border-radius:6px; padding:5px 8px; font-size:{m['opt_btn_px']}px; }}"
+            f"QLineEdit:focus {{ border:1px solid #3b6fe0; }}"
+        )
+        self.title_lbl.setStyleSheet(f"color:{text};")
+        self.guide_lbl.setStyleSheet(f"color:{text3};")
+        self.user_tag.setStyleSheet(f"color:{text2};")
+        self.pwd_tag.setStyleSheet(f"color:{text2};")
+        sc = getattr(self, "_status_color", text3)
+        self.status_lbl.setStyleSheet(f"color:{sc};")
+        self.btn_show.setStyleSheet(
+            f"QPushButton{{ background:transparent; color:{text3}; border:none;"
+            f" border-radius:6px; font-size:{m['sn_sub_pt']}px; padding:0 6px; }}"
+            f"QPushButton:hover{{ color:#3b6fe0; }}"
+            "QPushButton:checked{ color:#3b6fe0; font-weight:600; }")
         self.btn_save.setStyleSheet(
             "QPushButton{ background:#3b6fe0; color:white; border:none; border-radius:6px;"
             f" padding:4px 16px; font-size:{m['opt_btn_px']}px; font-weight:600; }}"
@@ -2160,6 +2410,11 @@ class SNQuotaPage(QWidget):
         self.sync_panel.cleared.connect(self.cleared)
         v.addWidget(self.sync_panel)
 
+        # 3.5. 账号密码卡片 (自动登录/换账号)
+        self.account_card = SNAccountCard()
+        self.account_card.saved.connect(self._on_account_saved)
+        v.addWidget(self.account_card)
+
         # 4. 底部微型注释
         self.foot_lbl = QLabel("注: 上限为官方公开的公测期固定额度 (60,000/5h · 600,000/周)；数据均以控制台实际调用与配额为准。")
         self.foot_lbl.setStyleSheet(f"color:{qname(TEXT3)};")
@@ -2182,7 +2437,17 @@ class SNQuotaPage(QWidget):
             if isinstance(w, SNPoolCard):
                 w.apply_size()
         self.sync_panel.apply_size()
+        self.account_card.apply_size()
         self.update()
+
+    def _on_account_saved(self):
+        """账号保存后: 清除旧 token/登录态缓存, 下次刷新会用新账号重新登录"""
+        try:
+            if os.path.exists(SN_TOKEN_FILE):
+                os.remove(SN_TOKEN_FILE)
+        except Exception:
+            pass
+        _autosync_mem.update(ts=0.0, values=None, error=None)
 
     def render(self, s):
         while self.pools_layout.count():
@@ -2226,6 +2491,7 @@ class SNQuotaPage(QWidget):
                 w.apply_theme()
 
         self.sync_panel.apply_theme()
+        self.account_card.apply_theme()
         self.apply_size()
         self.promo_card.update()
 
@@ -2684,7 +2950,10 @@ class CardWindow(QWidget):
         self.btn_refresh.setEnabled(False)
         src = self.source
         if src == "dsh": self.subtitle.setText("正在读取 DSH 账本…")
-        elif src == "sn": self.subtitle.setText("正在同步商汤积分…" if force else "正在统计商汤积分…")
+        elif src == "sn":
+            # 进度反馈: 同步面板显示进度态, 避免更新按钮灰色像卡住
+            self.sn_page.sync_panel.set_syncing("正在自动获取凭证并同步…" if force else "正在同步积分数据…")
+            self.subtitle.setText("正在自动同步商汤积分 (获取凭证)…" if force else "正在同步商汤积分…")
         else: self.subtitle.setText("正在扫描 WorkBuddy 会话数据…")
 
         def work():
