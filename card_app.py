@@ -2899,12 +2899,13 @@ class BallWindow(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
 
         self.pet_theme = theme_state.get("pet_theme", "v2")
-        self.pet_frames = load_pet_frames(self.pet_theme)
-        if self.pet_frames is None and self.pet_theme != "v1":
-            self.pet_theme = "v1"
-            self.pet_frames = load_pet_frames("v1")
-
+        self.pet_frames = None
+        if theme_state.get("pet"):
+            # 桌宠模式启动: 立即加载素材 (懒加载: 非桌宠模式先不加载, 加快启动)
+            self.pet_frames = self._load_frames()
+        self._loaded_pet_theme = self.pet_theme
         self.pet = False
+        self._last_drawn = -1
         self._state = "idle"
         n_idle = len(self.pet_frames["idle"]) if self.pet_frames else 1
         self._seq = _pet_idle_seq(n_idle)
@@ -2938,6 +2939,18 @@ class BallWindow(QWidget):
         if self.pet_frames is not None and theme_state.get("pet"):
             self.pet = True
             self._pet_apply(True)
+
+    def _load_frames(self):
+        """按当前主题加载素材 (含 v2→v1 回退); 结果缓存到 self.pet_frames"""
+        if self.pet_frames is not None and self._loaded_pet_theme == self.pet_theme:
+            return self.pet_frames
+        fr = load_pet_frames(self.pet_theme)
+        if fr is None and self.pet_theme != "v1":
+            self.pet_theme = "v1"
+            fr = load_pet_frames("v1")
+        self.pet_frames = fr
+        self._loaded_pet_theme = self.pet_theme
+        return fr
 
     def _frames_of(self, st):
         fr = self.pet_frames or {}
@@ -2979,7 +2992,11 @@ class BallWindow(QWidget):
             else:
                 self._pet_state("idle")
                 return
-        self.update()
+        # 流畅性: 帧号未变化(静止帧)时跳过重绘, 大幅降低桌宠常驻时的 CPU/绘制开销
+        cur = self._seq[self._si % len(self._seq)] if self._seq else -1
+        if cur != getattr(self, "_last_drawn", -1):
+            self._last_drawn = cur
+            self.update()
 
     def _pet_click(self):
         fr = self._frames_of("click")
@@ -2995,17 +3012,21 @@ class BallWindow(QWidget):
 
     def set_pet_theme(self, theme):
         if theme not in PET_THEMES: return
-        fr = load_pet_frames(theme)
-        if fr is None: return
+        old_theme = self.pet_theme
         self.pet_theme = theme
+        fr = self._load_frames()
+        if fr is None:
+            self.pet_theme = old_theme
+            return
         theme_state["pet_theme"] = theme
-        self.pet_frames = fr
         save_settings()
         if self.pet:
             self._pet_apply(True)
         self.update()
 
     def set_pet(self, on):
+        if on:
+            self._load_frames()   # 懒加载: 首次开启桌宠时才读素材
         on = bool(on) and self.pet_frames is not None
         self.pet = on
         theme_state["pet"] = on
@@ -3223,7 +3244,8 @@ def _restart_app():
         subprocess.Popen([pythonw, script], cwd=os.path.dirname(script),
                          creationflags=0x00000008 | 0x00000200)
     except Exception: pass
-    QTimer.singleShot(300, os._exit, 0)
+    # 150ms 足够新实例完成 pid 接管(_kill_stale_instance 兜底杀旧进程), 又远快于 300ms
+    QTimer.singleShot(150, os._exit, 0)
 
 
 # ============================================================ 单实例治理与启动
