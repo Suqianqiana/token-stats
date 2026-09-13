@@ -1324,7 +1324,130 @@ def _http_json(req):
         return status, None, "响应不是 JSON"
 
 
+# ============================================================ Playwright 自动抓取 (方案A: 持久登录态 + 自动重登)
+SN_EDGE_PATH = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+SN_LOGIN_STATE = os.path.join(scanner.PLUGIN_DATA_DIR, "sn_login_state.json")
+SN_ACCOUNT_FILE = os.path.join(scanner.PLUGIN_DATA_DIR, "sn_account.json")
+SN_POOL_API = "/lite/console/v1/tokenplan/pool-usage"
+SN_CONSOLE_URL = "https://platform.sensenova.cn/console"
+
+
+def _sn_playwright_ready():
+    """Playwright 是否可用(已安装 + 系统 Edge 存在)"""
+    try:
+        import playwright  # noqa: F401
+        return os.path.exists(SN_EDGE_PATH)
+    except Exception:
+        return False
+
+
+def sn_playwright_fetch():
+    """用 Playwright 持久登录态抓取商汤积分池数据, 解析成 values dict。
+
+    返回 (values_dict, error)。登录态过期会自动用账号密码重登。
+    values 字段与 sn_autosync_fetch 一致 (general_w/general_5h/flash_w/flash_5h/
+    general_reset5/general_resetw/flash_reset5/flash_resetw/promo/promo_exp_ts/promo_exp_bal)。
+    """
+    if not _sn_playwright_ready():
+        return None, "playwright 未安装或未找到系统 Edge"
+    if not os.path.exists(SN_LOGIN_STATE):
+        return None, "未登录 (请先运行 sn_login.py 完成首次自动登录)"
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as e:
+        return None, f"playwright 导入失败: {str(e)[:80]}"
+
+    # 读账号 (自动重登用)
+    username = password = ""
+    try:
+        with open(SN_ACCOUNT_FILE, "r", encoding="utf-8-sig") as f:
+            acct = json.load(f)
+        username = acct.get("username", "")
+        password = acct.get("password", "")
+    except Exception:
+        pass
+
+    captured = {}
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(executable_path=SN_EDGE_PATH, headless=True)
+            ctx = browser.new_context(storage_state=SN_LOGIN_STATE)
+            page = ctx.new_page()
+
+            def on_response(resp):
+                u = resp.url
+                if SN_POOL_API in u and resp.status == 200:
+                    try:
+                        d = json.loads(resp.text())
+                    except Exception:
+                        return
+                    if isinstance(d, dict) and d.get("pools"):
+                        captured["data"] = d
+
+            page.on("response", on_response)
+            page.goto(SN_CONSOLE_URL, timeout=30000)
+            page.wait_for_timeout(5000)
+
+            # 登录态失效 → 自动重登
+            if not captured.get("data") and "/login" in page.url:
+                if not username or not password:
+                    browser.close()
+                    return None, "登录态已过期且无账号配置, 请重新运行 sn_login.py"
+                try:
+                    page.get_by_text("账号密码登录", exact=True).click(timeout=8000)
+                    page.wait_for_timeout(1500)
+                    page.get_by_placeholder("请设置用户名").fill(username)
+                    page.get_by_placeholder("请输入密码").fill(password)
+                    page.wait_for_timeout(400)
+                    page.get_by_role("button", name="登录", exact=True).click(timeout=8000)
+                    page.wait_for_timeout(8000)
+                except Exception as e:
+                    browser.close()
+                    return None, f"自动重登失败: {str(e)[:100]}"
+
+            if not captured.get("data"):
+                browser.close()
+                return None, "未捕获到积分数据, 登录态可能已过期"
+
+            # 保存刷新后的登录态 (token 续期)
+            try:
+                ctx.storage_state(path=SN_LOGIN_STATE)
+            except Exception:
+                pass
+            browser.close()
+    except Exception as e:
+        return None, f"playwright 抓取异常: {str(e)[:120]}"
+
+    # 零指纹解析 pool-usage 数据
+    data = captured.get("data")
+    paths = _detect_paths_by_structure(data)
+    if not paths:
+        return None, "积分接口响应结构无法识别"
+    values = {}
+    for key, p in paths.items():
+        v = _get_path(data, p)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            values[key] = float(v)
+    if not values:
+        return None, "积分接口未解析到数值"
+    return values, None
+
+
+SN_USE_PLAYWRIGHT = True   # 真自动抓取开关 (测试环境置 False 走 cURL mock)
+
+
 def sn_autosync_fetch(force=False):
+    # 优先 Playwright 真自动抓取 (持久登录态, 免 3h 手动抓包)
+    if SN_USE_PLAYWRIGHT and _sn_playwright_ready() and os.path.exists(SN_LOGIN_STATE):
+        now = time.time()
+        if not force and now - _autosync_mem["ts"] < SN_AUTOSYNC_TTL and _autosync_mem["values"] is not None:
+            return _autosync_mem["values"]
+        vals, err = sn_playwright_fetch()
+        if vals:
+            _autosync_mem.update(ts=now, values=vals, error=None)
+            return vals
+        # Playwright 失败则回退 cURL (旧半自动方案兜底)
+        _autosync_mem.update(ts=now, values=None, error=err)
     cfg = load_sn_autosync()
     if not cfg: return None
     now = time.time()

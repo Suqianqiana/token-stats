@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import card_app as ca
 from PySide6.QtWidgets import QApplication
 
+ca.SN_USE_PLAYWRIGHT = False   # 回归测试关闭 Playwright 真自动, 走 cURL mock 路径
 app = QApplication.instance() or QApplication([])
 PASS = 0
 
