@@ -36,7 +36,7 @@ SIZE_METRICS = {
         "win_w": 990, "win_h": 610, "sidebar_w": 190,
         "stat_h": 72, "stat_val_pt": 13.2, "stat_lbl_pt": 8.5, "stat_hint_pt": 8.5,
         "stat_val_y": 28,  # 重心明显上提，距底边界留出 15px+ 舒适余量
-        "row_h": 28, "name_w": 110, "total_w": 68, "pct_w": 38, "hit_w": 44, "req_w": 48,
+        "row_h": 28, "name_w": 110, "total_w": 100, "pct_w": 38, "hit_w": 44, "req_w": 48,
         "row_pt": 8.8, "row_head_pt": 8.5,
         "chart_min_h": 130, "heat_min_h": 105, "heat_cell": 10.0, "heat_gap": 2.5,
         "today_h": 28, "today_px": 11,
@@ -50,7 +50,7 @@ SIZE_METRICS = {
         "win_w": 1180, "win_h": 730, "sidebar_w": 220,
         "stat_h": 84, "stat_val_pt": 15.8, "stat_lbl_pt": 9.0, "stat_hint_pt": 8.8,
         "stat_val_y": 34,  # 大窗口下同样重心居中偏上，比例舒展
-        "row_h": 34, "name_w": 134, "total_w": 82, "pct_w": 44, "hit_w": 50, "req_w": 54,
+        "row_h": 34, "name_w": 134, "total_w": 112, "pct_w": 44, "hit_w": 50, "req_w": 54,
         "row_pt": 9.2, "row_head_pt": 8.8,  # 表格行高拉开，文字保持干练清秀
         "chart_min_h": 155, "heat_min_h": 120, "heat_cell": 11.5, "heat_gap": 2.8,
         "today_h": 32, "today_px": 12,
@@ -421,11 +421,21 @@ class ChartTip(QWidget):
         super().__init__(None, Qt.ToolTip | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)  # 鼠标穿透: 悬浮框不拦截鼠标, 根治 enter/leave 闪烁
         self.rows = []
         self.title_text = ""
         self.accent = BLUE
 
     def show_tip(self, title, rows, accent, global_pos):
+        # 去重: 内容 + 位置未变则跳过, 避免 mouseMoveEvent 高频重复 resize/move 引入闪烁
+        key = (title, accent, global_pos.x(), global_pos.y(),
+               tuple((r[0] if isinstance(r, tuple) else None,
+                      r[1] if isinstance(r, tuple) else r,
+                      r[2] if isinstance(r, tuple) else "") for r in rows))
+        if key == getattr(self, "_last_key", None) and self.isVisible():
+            return
+        self._last_key = key
+
         self.title_text = title
         self.accent = accent
         norm = []
@@ -628,13 +638,19 @@ class ModelRow(QWidget):
 
     def enterEvent(self, ev):
         self.setStyleSheet(f"background:{qrgba(HOVER)};")
-        self._show_tip()
+        self._show_tip(ev.globalPosition().toPoint())
 
     def leaveEvent(self, ev):
         self.setStyleSheet(f"background:{qrgba(ZEBRA)};" if self._zebra else "")
         ChartTip.instance().hide_tip()
 
-    def _show_tip(self):
+    def mouseMoveEvent(self, ev):
+        # 跟随鼠标持续更新悬浮框(与柱状图一致), 避免 enter/leave 抖动 + 固定位置不跟随导致的闪烁
+        self._show_tip(ev.globalPosition().toPoint())
+
+    def _show_tip(self, global_pos=None):
+        if global_pos is None:
+            global_pos = self.mapToGlobal(QPoint(int(self.width() / 2), 2))
         rows = [
             (None, "输入", fmt_full(self.input_tok)),
             (None, "输出", fmt_full(self.output_tok)),
@@ -642,8 +658,7 @@ class ModelRow(QWidget):
             (None, "请求次数", f"{self.requests:,}"),
             (self.color, "Tokens 总量", f"{fmt_full(self.total)} ({self.pct:.1f}%)"),
         ]
-        ChartTip.instance().show_tip(self.name, rows, self.color,
-                                     self.mapToGlobal(QPoint(int(self.width() / 2), 2)))
+        ChartTip.instance().show_tip(self.name, rows, self.color, global_pos)
 
     def paintEvent(self, ev):
         p = QPainter(self)
@@ -3247,7 +3262,7 @@ PET_W, PET_H = 118, 148
 PET_SLEEP_AFTER = 60
 PET_OTHER_EVERY = (150, 420)
 PET_MS = {"idle": 240, "sleep": 1500, "drag": 140, "click": 300, "other": 300, "special": 360}
-APP_BUILD = "v8.7-crystal-glass"
+APP_BUILD = "v8.8-auto-sync"
 
 
 def _pet_idle_seq(n):
