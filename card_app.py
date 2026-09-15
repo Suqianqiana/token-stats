@@ -20,14 +20,54 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
 import scanner  # noqa: E402
 
+
+# ============================================================ 打包(exe)支持
+# 2026-09-16: 本程序可打包成单文件 exe。资源解析规则：
+#   · 未打包 → APP_DIR = 脚本目录（开发时与以前完全一致）
+#   · 已打包 → APP_DIR = exe 所在目录；资源**优先取 exe 同级的 assets/**
+#     （这样浅浅猫把 assets 放在 exe 旁边就能直接替换素材，无需重新打包），
+#     找不到再回退到打包内置的那份（PyInstaller 解包目录 sys._MEIPASS）。
+APP_ID = "qianqian.token-stats.1"        # Windows AppUserModelID：让任务栏图标正确归组
+APP_NAME = "Token 统计"
+
+
+def _app_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return BASE_DIR
+
+
+APP_DIR = _app_dir()
+_BUNDLE_DIR = getattr(sys, "_MEIPASS", APP_DIR)
+
+
+def res(*parts):
+    """资源路径：优先 exe/脚本 同级，否则回退到打包内置资源。"""
+    local = os.path.join(APP_DIR, *parts)
+    if os.path.exists(local):
+        return local
+    return os.path.join(_BUNDLE_DIR, *parts)
+
+
 from PySide6.QtCore import (Qt, QRectF, QObject, Signal, QTimer, QPoint, QRect,
                             QPointF)
 from PySide6.QtGui import (QColor, QFont, QPainter, QPen, QBrush, QPainterPath,
-                           QLinearGradient, QImage, QGuiApplication)
+                           QLinearGradient, QImage, QGuiApplication, QIcon, QAction)
 from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QVBoxLayout,
                                QHBoxLayout, QGridLayout, QFrame, QPushButton,
                                QScrollArea, QMenu, QSizePolicy, QPlainTextEdit,
-                               QStackedWidget, QLineEdit)
+                               QStackedWidget, QLineEdit, QSystemTrayIcon)
+
+
+def app_icon():
+    """exe / 任务栏 / 托盘 三处统一使用的图标（优先 .ico，回退 .png）。"""
+    for name in ("app_icon.ico", "app_icon.png"):
+        p = res("assets", name)
+        if os.path.exists(p):
+            ic = QIcon(p)
+            if not ic.isNull():
+                return ic
+    return QIcon()
 
 # ============================================================ 窗口尺寸与排版度量衡体系
 SIZE_METRICS = {
@@ -2675,6 +2715,10 @@ class RefreshBridge(QObject):
 
 # ============================================================ 主窗口 (双尺寸自适应架构)
 class CardWindow(QWidget):
+    # 2026-09-16: 面板"最小化"不再缩到任务栏, 而是收进系统托盘(托盘常驻, 随时可叫回)
+    minimize_to_tray = Signal()
+    tray_ok = False        # 由 main() 依据系统托盘是否可用来设置
+
     def __init__(self):
         super().__init__()
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window | Qt.WindowStaysOnTopHint)
@@ -2821,7 +2865,7 @@ class CardWindow(QWidget):
         self.btn_min = QPushButton("–")
         self.btn_min.setFixedSize(26, 26)
         self.btn_min.setCursor(Qt.PointingHandCursor)
-        self.btn_min.clicked.connect(self.showMinimized)
+        self.btn_min.clicked.connect(self._minimize_to_tray)
         top_bar.addWidget(self.btn_min)
 
         self.btn_close = QPushButton("✕")
@@ -2909,6 +2953,21 @@ class CardWindow(QWidget):
 
         work_lay.addWidget(self.stack, 1)
         main_layout.addWidget(self.workspace, 1)
+
+    def _minimize_to_tray(self):
+        """最小化 = 收进托盘: 隐藏面板, 由系统托盘图标常驻; 托盘菜单/双击可重新打开。
+        兜底: 若本机系统托盘不可用, 退回原来的"缩到任务栏", 避免收起来后叫不回来。"""
+        if not getattr(self, "tray_ok", False):
+            self.showMinimized()
+            return
+        self.hide()
+        self.minimize_to_tray.emit()
+
+    def show_from_tray(self):
+        """从托盘/悬浮球把面板叫回来(置顶 + 激活)。"""
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     # ---------------- 动态尺寸适配器 ----------------
     def apply_size_mode(self, mode_name, save=True):
@@ -3352,10 +3411,20 @@ _RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 _RUN_NAME = "TokenAuditCard"
 
 
-def _autostart_command():
+def _launch_argv():
+    """启动本程序所需命令行（2026-09-16 兼容打包版）：
+    · 已打包 → 就是 exe 自己
+    · 开发时 → pythonw + card_app.py
+    供"开机自启"和"一键重启"共用，避免打包后指向不存在的 pythonw/脚本。"""
+    if getattr(sys, "frozen", False):
+        return [sys.executable]
     pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
     if not os.path.exists(pythonw): pythonw = sys.executable
-    return f'"{pythonw}" "{os.path.abspath(__file__)}"'
+    return [pythonw, os.path.abspath(__file__)]
+
+
+def _autostart_command():
+    return " ".join(f'"{a}"' for a in _launch_argv())
 
 
 def autostart_enabled():
@@ -3425,7 +3494,7 @@ def load_settings():
         #    把浅浅猫新选的 v4/v2 强行改回 v3(2026-09-15 定位到的反复回退根因)。
         #   现改为: 只有"确实还是旧版(v1/v2)"才升级, 且把标记放进 theme_state 让它能被保存。
         _pt = d.get("pet_theme", "v3")
-        _v3r = os.path.join(BASE_DIR, "assets", "pet_v3r")
+        _v3r = res("assets", "pet_v3r")
         if _pt in ("v1", "v2") and os.path.isdir(_v3r):
             _pt = "v3"
         theme_state["pet_theme_v3"] = True      # 随 theme_state 一起保存, 防止反复迁移
@@ -3449,10 +3518,10 @@ PET_THEMES = {
     # update 2026-09-14 (第40轮): 新增 V4 —— 浅浅猫指定右键菜单显示名 "deepseek娘V4Pro"
     #   素材源 = setC (ChatGPT Image 2026年9月14日 07_20_09.png, 2行x6列=12帧, 透明底零抠图)
     #   映射: C1~C3=idle / C4=sleep / C5=wake / C6=drag / C7~C10=click / C11=sidle
-    "v4": {"name": "deepseek娘V4Pro", "dir": os.path.join(BASE_DIR, "assets", "pet_v4")},
-    "v3": {"name": "最新素材 (v3 · 与原版合并)", "dir": os.path.join(BASE_DIR, "assets", "pet_v3r")},
-    "v2": {"name": "新版素材 (高清)", "dir": os.path.join(BASE_DIR, "assets", "pet_v2")},
-    "v1": {"name": "经典素材 (旧版)", "dir": os.path.join(BASE_DIR, "assets", "pet")},
+    "v4": {"name": "deepseek娘V4Pro", "dir": res("assets", "pet_v4")},
+    "v3": {"name": "最新素材 (v3 · 与原版合并)", "dir": res("assets", "pet_v3r")},
+    "v2": {"name": "新版素材 (高清)", "dir": res("assets", "pet_v2")},
+    "v1": {"name": "经典素材 (旧版)", "dir": res("assets", "pet")},
 }
 # idle=普通待机 / sleep=睡觉 / wake=睡醒 / drag=拖拽 / click=点击互动
 # sidle=特殊待机动作(持续15~60s) / pat=摸摸头(随机取一个)
@@ -3896,10 +3965,8 @@ class BallWindow(QWidget):
 def _restart_app():
     try:
         import subprocess
-        pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-        if not os.path.exists(pythonw): pythonw = sys.executable
-        script = os.path.abspath(__file__)
-        subprocess.Popen([pythonw, script], cwd=os.path.dirname(script),
+        # 打包后 argv 就是 exe 自己；开发时是 pythonw + 脚本（见 _launch_argv）
+        subprocess.Popen(_launch_argv(), cwd=APP_DIR,
                          creationflags=0x00000008 | 0x00000200)
     except Exception: pass
     # 150ms 足够新实例完成 pid 接管(_kill_stale_instance 兜底杀旧进程), 又远快于 300ms
@@ -3926,10 +3993,155 @@ def _kill_stale_instance():
     except Exception: pass
 
 
+# ============================================================ 系统托盘 (2026-09-16)
+class TrayIcon(QObject):
+    """系统托盘常驻图标：面板"最小化"收进这里，图标右键有菜单。
+
+    · 图标 = 与 exe / 任务栏 同一张 app_icon（三处统一）
+    · 左键单击 / 双击 = 显示或收起统计面板
+    · 右键菜单 = 打开面板 / 立即刷新 / 桌宠形态 / 素材版本 / 摸摸头 / 退出
+    """
+
+    def __init__(self, app, card, ball):
+        super().__init__(app)
+        self.app = app
+        self.card = card
+        self.ball = ball
+        self._hint_shown = False
+
+        self.tray = QSystemTrayIcon(app_icon(), app)
+        self.tray.setToolTip(f"{APP_NAME} — 单击显示面板 / 右键菜单")
+        self.tray.activated.connect(self._on_activated)
+
+        # ★ 与桌宠右键菜单用**同一套自绘样式**(make_menu: 圆角 + 半透明 + 主题配色),
+        #   而不是系统默认菜单(默认菜单方角灰底, 和面板风格不搭)。
+        self.menu = make_menu(None)
+        self.menu.aboutToShow.connect(self._build_menu)   # 每次弹出前重建, 保证勾选状态最新
+        self._build_menu()
+        self.tray.setContextMenu(self.menu)
+        self.tray.show()
+
+    # ---------- 菜单 ----------
+    def _build_menu(self):
+        m = self.menu
+        m.setStyleSheet(menu_qss())      # 主题(明/暗)切换后同步刷新样式
+        m.clear()
+        self._submenus = []              # ★ 子菜单要留引用: 托盘菜单长期存在,
+                                         #   局部变量被子菜单只在 rebuild 期间有效, 会被 GC 回收
+        a_open = m.addAction("📊  打开统计面板")
+        a_open.triggered.connect(self.card.show_from_tray)
+        a_refresh = m.addAction("⟳  立即刷新数据")
+        a_refresh.triggered.connect(self._refresh)
+        m.addSeparator()
+
+        a_pet = m.addAction("🐳  桌宠形态 (DeepSeek 娘)")
+        a_pet.setCheckable(True)
+        a_pet.setChecked(bool(self.ball.pet))
+        a_pet.triggered.connect(lambda: self.ball.set_pet(not self.ball.pet))
+
+        theme_menu = m.addMenu("🎨  素材版本")
+        theme_menu.setStyleSheet(menu_qss())   # 子菜单也显式套上(不依赖样式继承, 保证与桌宠菜单一致)
+        self._submenus.append(theme_menu)      # 留引用防 GC
+        for key in PET_THEMES:
+            act = theme_menu.addAction(PET_THEMES[key]["name"])
+            act.setCheckable(True)
+            act.setChecked(self.ball.pet_theme == key)
+            act.setData(key)
+        theme_menu.triggered.connect(
+            lambda a: a.data() in PET_THEMES and self.ball.set_pet_theme(a.data()))
+
+        a_pat = m.addAction("🤗  摸摸头")
+        a_pat.triggered.connect(self.ball._pet_pat)
+        m.addSeparator()
+
+        a_restart = m.addAction("🔄  一键重启")
+        a_restart.triggered.connect(_restart_app)
+        a_quit = m.addAction("✕  退出")
+        a_quit.triggered.connect(self._quit)
+
+    def _refresh(self):
+        self.card.show_from_tray()
+        self.card.refresh()
+
+    def _quit(self):
+        self.tray.hide()
+        os._exit(0)
+
+    # ---------- 交互 ----------
+    def _on_activated(self, reason):
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+            if self.card.isVisible():
+                self.card.hide()
+            else:
+                self.card.show_from_tray()
+
+    def show_message_once(self):
+        """首次从面板最小化到托盘时提示一次, 之后不再打扰。"""
+        if self._hint_shown:
+            return
+        self._hint_shown = True
+        try:
+            self.tray.showMessage(APP_NAME, "已最小化到托盘，点击图标可重新打开",
+                                  app_icon(), 3000)
+        except Exception:
+            pass
+
+
+def run_selftest():
+    """--selftest: 无界面自检（打包后用它验证资源/图标/托盘是否正常）。
+
+    窗口模式下 exe 没有控制台，所以结果同时写到 数据目录/selftest.txt。
+    """
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    lines = []
+
+    def log(msg):
+        lines.append(str(msg))
+
+    log(f"frozen     = {getattr(sys, 'frozen', False)}")
+    log(f"APP_DIR    = {APP_DIR}")
+    log(f"_MEIPASS   = {getattr(sys, '_MEIPASS', '(未打包)')}")
+    log(f"BASE_DIR   = {BASE_DIR}")
+    log(f"exe        = {sys.executable}")
+    app = QApplication([])
+    app.setApplicationName(APP_NAME)
+    ic = app_icon()
+    log(f"app_icon   = {'OK ' + str(ic.availableSizes()[:8]) if not ic.isNull() else '★ 加载失败'}")
+    for name in ("app_icon.ico", "app_icon.png"):
+        log(f"  {name:<16} exists={os.path.exists(res('assets', name))}  path={res('assets', name)}")
+    log(f"tray_available = {QSystemTrayIcon.isSystemTrayAvailable()}")
+    for t in PET_THEMES:
+        fr = load_pet_frames(t)
+        log(f"theme {t:<3} = " + (str({k: len(v) for k, v in sorted(fr.items())})
+                                   if fr else "★ 加载失败"))
+    ok = (not ic.isNull()) and all(load_pet_frames(t) for t in PET_THEMES)
+    log(f"RESULT = {'PASS' if ok else 'FAIL'}")
+    try:
+        rp = os.path.join(scanner.PLUGIN_DATA_DIR, "selftest.txt")
+        with open(rp, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        print(f"(selftest 报告已写入 {rp})")
+    except Exception as e:
+        print("写报告失败:", e)
+    print("\n".join(lines))
+    return 0 if ok else 1
+
+
 def main():
+    if "--selftest" in sys.argv:
+        sys.exit(run_selftest())
     _kill_stale_instance()
+    # 任务栏图标归组: 必须在 QApplication 之前设置, 否则任务栏显示的是 python 图标
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+    except Exception:
+        pass
     app = QApplication(sys.argv)
-    app.setApplicationName("Token 统计")
+    app.setApplicationName(APP_NAME)
+    app.setApplicationDisplayName(APP_NAME)
+    app.setWindowIcon(app_icon())          # ② 任务栏/所有窗口 图标
+    app.setQuitOnLastWindowClosed(False)   # 托盘常驻: 关掉所有窗口也不退出
     app.setStyle("Fusion")
     load_settings()
     refresh_palette()
@@ -3937,6 +4149,14 @@ def main():
 
     card = CardWindow()
     ball = BallWindow(card)
+    # 系统托盘: 可用才启用"最小化到托盘"(不可用时退回原有行为, 并允许关窗即退出)
+    tray = TrayIcon(app, card, ball) if QSystemTrayIcon.isSystemTrayAvailable() else None
+    card.tray_ok = tray is not None
+    if tray is not None:
+        card.minimize_to_tray.connect(tray.show_message_once)
+        app._tray = tray      # 保持引用, 防止被回收
+    else:
+        app.setQuitOnLastWindowClosed(True)
     QTimer.singleShot(0, card.load_initial)
     sys.exit(app.exec())
 
