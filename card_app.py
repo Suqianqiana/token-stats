@@ -3411,13 +3411,27 @@ _RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 _RUN_NAME = "TokenAuditCard"
 
 
+def _launcher_exe():
+    """带图标的轻量启动器 exe（由 launcher.py 打包而来，体积约 8~10MB，内含 PySide6 的整包 84MB）。
+    存在时，开机自启 / 一键重启 都优先走它 —— 这样对外看起来就是一个正常软件。"""
+    for name in ("TokenStats.exe", "Token统计.exe"):
+        p = os.path.join(BASE_DIR, name)
+        if os.path.exists(p):
+            return p
+    return None
+
+
 def _launch_argv():
-    """启动本程序所需命令行（2026-09-16 兼容打包版）：
-    · 已打包 → 就是 exe 自己
+    """启动本程序所需命令行：
+    · 主程序已被打包 → 就是自己
+    · 有轻量启动器 exe → 用启动器（双击/自启/重启都统一走它）
     · 开发时 → pythonw + card_app.py
     供"开机自启"和"一键重启"共用，避免打包后指向不存在的 pythonw/脚本。"""
     if getattr(sys, "frozen", False):
         return [sys.executable]
+    launcher = _launcher_exe()
+    if launcher:
+        return [launcher]
     pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
     if not os.path.exists(pythonw): pythonw = sys.executable
     return [pythonw, os.path.abspath(__file__)]
@@ -3444,8 +3458,14 @@ def set_autostart(enable):
         cmd = _autostart_command()
         try:
             content = f'CreateObject("WScript.Shell").Run "{cmd.replace(chr(34), chr(34)+chr(34))}", 0, False\r\n'
-            with open(VBS_PATH, "w", encoding="ascii") as f:
-                f.write(content)
+            # ★ 该脚本由系统按 ANSI(本地代码页) 读取: 用 mbcs 写才不会在路径含中文时编码失败
+            #   (原写 ascii, 只要路径里有中文就抛 UnicodeEncodeError 而不是 OSError, 会直接崩菜单)
+            try:
+                with open(VBS_PATH, "w", encoding="mbcs") as f:
+                    f.write(content)
+            except (UnicodeEncodeError, LookupError):
+                with open(VBS_PATH, "w", encoding="utf-8") as f:
+                    f.write(content)
             return os.path.exists(VBS_PATH)
         except OSError:
             pass
