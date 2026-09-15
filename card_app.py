@@ -1405,8 +1405,11 @@ def _sn_playwright_ready():
 
 
 def _sn_direct_fetch(token):
-    """用 access_token urllib 直连 pool-usage, 返回 (data_dict, error)。401 返回 (None, '401')"""
-    import urllib.request, urllib.error
+    """用 access_token urllib 直连 pool-usage, 返回 (data_dict, error)。401 返回 (None, '401')
+
+    健壮性: ①系统代理失败(10061)自动绕过直连重试 ②瞬时网络错误重试 2 次(间隔递增)。
+    """
+    import urllib.request, urllib.error, time as _time
     ctx = None
     try:
         import ssl
@@ -1415,27 +1418,56 @@ def _sn_direct_fetch(token):
         ctx.verify_mode = ssl.CERT_NONE
     except Exception:
         pass
-    req = urllib.request.Request(SN_POOL_URL, headers={
-        "Authorization": "Bearer " + token,
-        "accept": "application/json",
-        "User-Agent": "Mozilla/5.0",
-    })
-    try:
+
+    def _do(direct=False):
+        req = urllib.request.Request(SN_POOL_URL, headers={
+            "Authorization": "Bearer " + token,
+            "accept": "application/json",
+            "User-Agent": "Mozilla/5.0",
+        })
+        kwargs = {"timeout": 15}
         if ctx is not None:
-            resp = urllib.request.urlopen(req, timeout=15, context=ctx)
+            kwargs["context"] = ctx
+        if direct:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            resp = opener.open(req, **kwargs)
         else:
-            resp = urllib.request.urlopen(req, timeout=15)
+            resp = urllib.request.urlopen(req, **kwargs)
         body = resp.read(2_000_000).decode("utf-8", "replace")
-        data = json.loads(body)
-        if isinstance(data, dict) and data.get("pools"):
-            return data, None
-        return None, "积分接口无 pools 数据"
-    except urllib.error.HTTPError as e:
-        if e.code in (401, 403):
-            return None, "401"
-        return None, f"HTTP {e.code}"
-    except Exception as e:
-        return None, str(e)[:120]
+        return json.loads(body)
+
+    last_err = ""
+    for attempt in range(3):
+        try:
+            data = _do(direct=False)
+            if isinstance(data, dict) and data.get("pools"):
+                return data, None
+            return None, "积分接口无 pools 数据"
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                return None, "401"
+            return None, f"HTTP {e.code}"
+        except urllib.error.URLError as e:
+            reason = str(getattr(e, "reason", "")) + str(e)
+            # 系统代理拒绝连接 → 绕过代理直连重试
+            if "10061" in reason:
+                try:
+                    data = _do(direct=True)
+                    if isinstance(data, dict) and data.get("pools"):
+                        return data, None
+                    return None, "积分接口无 pools 数据"
+                except urllib.error.HTTPError as e2:
+                    if e2.code in (401, 403):
+                        return None, "401"
+                    return None, f"HTTP {e2.code}"
+                except Exception as e2:
+                    return None, str(e2)[:120]
+            last_err = reason[:120]
+            _time.sleep(0.5 * (attempt + 1))   # 瞬时错误退避重试
+        except Exception as e:
+            last_err = str(e)[:120]
+            _time.sleep(0.5 * (attempt + 1))
+    return None, last_err or "网络请求失败"
 
 
 def _sn_playwright_login_and_fetch():
@@ -2653,7 +2685,7 @@ class CardWindow(QWidget):
         self._pending_refresh = False
         self._sn_cache = None
         self.source = theme_state["source"]
-        self.range = "all"
+        self.range = "today"
         self.stats = None
 
         self.bridge = RefreshBridge()
@@ -2662,6 +2694,17 @@ class CardWindow(QWidget):
         self._build_ui()
         self.apply_size_mode(theme_state.get("window_size", "default"), save=False)
         self.apply_styles()
+
+        # 周期自动刷新: 每 5 分钟一次 (商汤源保持凭证/积分新鲜, 失败后自动重试)
+        self._auto_refresh_timer = QTimer(self)
+        self._auto_refresh_timer.timeout.connect(self._auto_refresh_tick)
+        self._auto_refresh_timer.start(300_000)   # 5 分钟
+
+    def _auto_refresh_tick(self):
+        """周期刷新: 商汤源自动同步(失败也持续重试), WB/DSH 源保持数据新鲜"""
+        if self._scanning:
+            return
+        self.refresh()
 
     def _build_ui(self):
         outer = QHBoxLayout(self)
@@ -2752,7 +2795,7 @@ class CardWindow(QWidget):
         self.btn_7 = self._tab_btn("7天")
         self.btn_30 = self._tab_btn("30天")
         self.btn_all = self._tab_btn("全部")
-        self.btn_all.setChecked(True)
+        self.btn_today.setChecked(True)
         for b in (self.btn_today, self.btn_7, self.btn_30, self.btn_all):
             rb_lay.addWidget(b)
         top_bar.addWidget(self.range_box)

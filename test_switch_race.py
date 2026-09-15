@@ -38,6 +38,7 @@ wb_stats = {
     "firstDay": "2026-09-01", "lastDay": "2026-09-08",
 }
 w.stats = wb_stats
+w.range = "all"           # 显式全量: wb_stats 数据均为过去日期, 默认"今日"会过滤为空
 w.render()
 rows_before = w.model_lay.count()
 check("初始 WB 行数>1", rows_before > 2, f"rows={rows_before}")
