@@ -1494,7 +1494,7 @@ def _sn_playwright_login_and_fetch():
     token = None
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(executable_path=SN_EDGE_PATH, headless=True)
+            browser = p.chromium.launch(executable_path=SN_EDGE_PATH, headless=True, timeout=25000)
             ctx = browser.new_context(storage_state=SN_LOGIN_STATE)
             page = ctx.new_page()
 
@@ -2700,11 +2700,28 @@ class CardWindow(QWidget):
         self._auto_refresh_timer.timeout.connect(self._auto_refresh_tick)
         self._auto_refresh_timer.start(300_000)   # 5 分钟
 
+        # 刷新看门狗: work 线程卡死超时后强制恢复 UI, 避免刷新按钮永久卡在"刷新中"
+        self._scan_started = 0.0
+        self._scan_watchdog = QTimer(self)
+        self._scan_watchdog.timeout.connect(self._scan_watchdog_check)
+
     def _auto_refresh_tick(self):
         """周期刷新: 商汤源自动同步(失败也持续重试), WB/DSH 源保持数据新鲜"""
         if self._scanning:
             return
         self.refresh()
+
+    def _scan_watchdog_check(self):
+        """看门狗: work 线程超时未回时强制恢复刷新按钮, 杜绝卡死"""
+        if not self._scanning:
+            self._scan_watchdog.stop()
+            return
+        if time.time() - self._scan_started > 60:
+            self._scanning = False
+            self._pending_refresh = False
+            self._scan_watchdog.stop()
+            self.btn_refresh.setEnabled(True)
+            self.subtitle.setText("刷新超时 (数据源响应过慢)，请重试")
 
     def _build_ui(self):
         outer = QHBoxLayout(self)
@@ -3116,6 +3133,8 @@ class CardWindow(QWidget):
             self._pending_refresh = True
             return
         self._scanning = True
+        self._scan_started = time.time()
+        self._scan_watchdog.start(2000)   # 看门狗: 每 2s 检查一次, 超 60s 强制恢复
         self.btn_refresh.setEnabled(False)
         src = self.source
         if src == "dsh": self.subtitle.setText("正在读取 DSH 账本…")
@@ -3137,6 +3156,7 @@ class CardWindow(QWidget):
         threading.Thread(target=work, daemon=True).start()
 
     def _on_scan_done(self, src, s):
+        self._scan_watchdog.stop()
         self._scanning = False
         self.btn_refresh.setEnabled(True)
         if isinstance(s, dict) and "error" in s:
