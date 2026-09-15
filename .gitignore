@@ -34,6 +34,7 @@ legacy/
 /assets/pet_v5_windows.json
 
 # 体积较大的生成型检视页（可用 tools/review_*.py 重新生成）
+/docs/pet_v3_review.html
 /docs/pet_v2_green_review.html
 /docs/pet_v2_new_review.html
 /docs/pet_v4_review.html
