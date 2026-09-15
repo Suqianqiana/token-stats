@@ -21,7 +21,7 @@ sys.path.insert(0, BASE_DIR)
 import scanner  # noqa: E402
 
 from PySide6.QtCore import (Qt, QRectF, QObject, Signal, QTimer, QPoint, QRect,
-                            QPointF)
+                            QPointF, QSize)
 from PySide6.QtGui import (QColor, QFont, QPainter, QPen, QBrush, QPainterPath,
                            QLinearGradient, QImage, QGuiApplication)
 from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QVBoxLayout,
@@ -1748,6 +1748,127 @@ def _next_weekly_reset_str():
     return f"{nxt.month}月{nxt.day}日 {nxt:%H:%M}"
 
 
+def _analytics_compute(wb, dsh):
+    """融合 WorkBuddy(scanner) 与 DSH 账本数据, 计算「效能洞察」全部指标。
+
+    wb:  scanner.scan_full() 结果 (models 层含 reasoning/cached, daily 层含 requests/input/output)
+    dsh: load_dsh_stats() 结果 (daily 层含 cached/cacheWrite, 无 reasoning)
+    返回 dict: {cards, models, struct, session_trend}
+    """
+    wb = wb or {}
+    dsh = dsh or {}
+
+    # ---- 1. 全模型聚合 (融合两源, 以模型名归并) ----
+    # WorkBuddy: models 层已有聚合 (含 reasoning); 补 daily 无的字段用 models 层
+    wb_models = wb.get("models") or {}
+    dsh_models = {}
+    for dm in (dsh.get("daily") or {}).values():
+        for mk, b in dm.items():
+            if not isinstance(b, dict): continue
+            a = dsh_models.setdefault(mk, {"requests": 0, "input": 0, "output": 0,
+                                          "cached": 0, "cacheWrite": 0, "total": 0})
+            for k in a: a[k] += b.get(k, 0)
+
+    merged = {}
+    for mk, b in wb_models.items():
+        merged.setdefault(mk, {"requests": 0, "input": 0, "output": 0, "total": 0,
+                               "cached": 0, "reasoning": 0, "cacheWrite": 0})
+        m = merged[mk]
+        for k in ("requests", "input", "output", "total", "cached", "reasoning"):
+            m[k] += b.get(k, 0)
+    for mk, b in dsh_models.items():
+        m = merged.setdefault(mk, {"requests": 0, "input": 0, "output": 0, "total": 0,
+                                   "cached": 0, "reasoning": 0, "cacheWrite": 0})
+        for k in ("requests", "input", "output", "total", "cached", "cacheWrite"):
+            m[k] += b.get(k, 0)
+
+    tot = {"input": 0, "output": 0, "total": 0, "cached": 0, "reasoning": 0,
+           "requests": 0, "cacheWrite": 0}
+    for m in merged.values():
+        for k in tot: tot[k] += m.get(k, 0)
+
+    sessions = (wb.get("sessionsTotal") or 0) + (dsh.get("sessionsTotal") or 0)
+
+    # ---- 2. 顶栏 4 卡 ----
+    # ① 缓存算力节省: 缓存读取约省 85% 输入处理 (命中≈输入费 10~20%, 取中值省 85%)
+    cached_tokens = tot["cached"]
+    cache_saved_tokens = int(cached_tokens * 0.85)
+    # ② 深度思维规模: reasoning 总量 + 占总输出(思考+交付)比例
+    reasoning_tokens = tot["reasoning"]
+    think_denom = tot["reasoning"] + tot["output"]
+    think_pct = reasoning_tokens / think_denom * 100 if think_denom else 0
+    # ③ 平均会话强度: 单会话 token 体量 + 单会话平均请求轮次
+    sess_tokens = tot["total"] / sessions if sessions else 0
+    sess_rounds = tot["requests"] / sessions if sessions else 0
+    # ④ 提示词杠杆 (I/O 比)
+    io_ratio = tot["input"] / tot["output"] if tot["output"] else 0
+
+    cards = {
+        "cache_saved_tokens": cache_saved_tokens,
+        "cached_tokens": cached_tokens,
+        "cache_rate": cached_tokens / tot["input"] * 100 if tot["input"] else 0,
+        "reasoning_tokens": reasoning_tokens,
+        "think_pct": think_pct,
+        "sess_tokens": int(sess_tokens),
+        "sess_rounds": round(sess_rounds, 1),
+        "io_ratio": round(io_ratio, 2),
+        "input": tot["input"], "output": tot["output"],
+        "total": tot["total"], "requests": tot["requests"],
+    }
+
+    # ---- 3. 模型协作特性画像 ----
+    models = []
+    for mk, m in sorted(merged.items(), key=lambda kv: -kv[1].get("total", 0)):
+        o = m.get("output", 0)
+        r = m.get("reasoning", 0)
+        req = m.get("requests", 0)
+        models.append({
+            "name": mk,
+            "total": m.get("total", 0),
+            "requests": req,
+            "input": m.get("input", 0),
+            "output": o,
+            "reasoning": r,
+            "cached": m.get("cached", 0),
+            "cacheWrite": m.get("cacheWrite", 0),
+            "think_rate": r / o * 100 if o else 0,          # 思考深度率 %
+            "avg_in": m.get("input", 0) / req if req else 0,   # 单轮平均输入
+            "avg_out": o / req if req else 0,                  # 单轮平均输出
+            "cache_hit": m.get("cached", 0) / m.get("input", 0) * 100 if m.get("input", 0) else 0,  # 缓存命中率 %
+        })
+
+    # ---- 4. 思考与输出结构图 (主力模型 reasoning vs output) ----
+    struct = [{"name": m["name"], "reasoning": m["reasoning"], "output": m["output"]}
+              for m in models if (m["reasoning"] + m["output"]) > 0]
+
+    # ---- 5. 每日单会话规模走势 (daily total / daily sessions, 融合两源) ----
+    daily_tot = {}
+    for d, dm in (wb.get("daily") or {}).items():
+        for b in dm.values():
+            if isinstance(b, dict):
+                daily_tot[d] = daily_tot.get(d, 0) + b.get("input", 0) + b.get("output", 0)
+    for d, dm in (dsh.get("daily") or {}).items():
+        for b in dm.values():
+            if isinstance(b, dict):
+                daily_tot[d] = daily_tot.get(d, 0) + b.get("total", 0)
+    daily_sess = {}
+    for src in (wb, dsh):
+        for d, n in (src.get("dailySessions") or {}).items():
+            daily_sess[d] = daily_sess.get(d, 0) + (n or 0)
+    session_trend = []
+    for d in sorted(daily_tot):
+        sess = daily_sess.get(d, 0)
+        session_trend.append({
+            "date": d,
+            "total": daily_tot.get(d, 0),
+            "sessions": sess,
+            "avg": daily_tot.get(d, 0) / sess if sess else 0,
+        })
+
+    return {"cards": cards, "models": models, "struct": struct,
+            "session_trend": session_trend, "merged": merged}
+
+
 def load_sn_stats(force=False):
     import collections
     wb = _load_wb_stats()
@@ -2655,6 +2776,324 @@ class SNQuotaPage(QWidget):
         self.account_card.apply_theme()
         self.apply_size()
 
+# ============================================================ 效能洞察页 (Analytics)
+class AnalyticsModelTable(QWidget):
+    """模型协作特性画像表: 自绘紧凑表格 (思考深度率/单轮吞吐/缓存命中率)"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.rows = []   # list[dict]
+        self.setMinimumHeight(160)
+
+    def set_models(self, models):
+        self.rows = models
+        self.update()
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        m = curr_metric()
+        is_lg = theme_state.get("window_size") == "large"
+
+        if not self.rows:
+            p.setPen(TEXT3)
+            p.drawText(self.rect(), Qt.AlignCenter, "暂无模型数据")
+            return
+
+        head_h = 26
+        row_h = 30
+        # 列宽: 模型名 | 思考深度率 | 单轮输入 | 单轮输出 | 缓存命中
+        name_w = int(w * 0.30)
+        col_w = (w - name_w) / 4.0
+
+        f_head = QFont("Microsoft YaHei UI", m["row_head_pt"] if is_lg else 8.5)
+        f_head.setBold(True)
+        p.setFont(f_head)
+        p.setPen(TEXT3)
+        headers = [("模型", 0), ("思考深度率", name_w), ("单轮输入", name_w + col_w),
+                   ("单轮输出", name_w + col_w * 2), ("缓存命中", name_w + col_w * 3)]
+        for i, (txt, x) in enumerate(headers):
+            align = Qt.AlignLeft | Qt.AlignVCenter if i == 0 else Qt.AlignRight | Qt.AlignVCenter
+            cw = name_w if i == 0 else col_w
+            p.drawText(QRectF(x + 8 if i == 0 else x, 0, cw - 8, head_h), align, txt)
+        p.setPen(QPen(BORDER, 1))
+        p.drawLine(0, head_h - 1, w, head_h - 1)
+
+        f_row = QFont("Consolas", m["row_pt"] if is_lg else 8.0)
+        f_name = QFont("Microsoft YaHei UI", m["row_pt"] if is_lg else 8.5)
+        for ri, row in enumerate(self.rows):
+            y = head_h + ri * row_h
+            if ri % 2 == 1:
+                p.fillRect(QRectF(0, y, w, row_h), ZEBRA)
+            cy = y + row_h / 2
+            # 模型名
+            p.setFont(f_name)
+            p.setPen(TEXT)
+            nm = row["name"]
+            fm = p.fontMetrics()
+            elided = fm.elidedText(nm, Qt.ElideRight, int(name_w - 16))
+            p.drawText(QRectF(8, y, name_w - 16, row_h), Qt.AlignLeft | Qt.AlignVCenter, elided)
+            # 思考深度率
+            p.setFont(f_row)
+            tr = row["think_rate"]
+            tc = PURPLE if tr > 50 else (TEXT2 if tr > 0 else TEXT3)
+            p.setPen(tc)
+            p.drawText(QRectF(name_w, y, col_w - 8, row_h), Qt.AlignRight | Qt.AlignVCenter, f"{tr:.0f}%")
+            # 单轮输入
+            p.setPen(TEXT2)
+            p.drawText(QRectF(name_w + col_w, y, col_w - 8, row_h), Qt.AlignRight | Qt.AlignVCenter, fmt(row["avg_in"]))
+            # 单轮输出
+            p.setPen(TEXT2)
+            p.drawText(QRectF(name_w + col_w * 2, y, col_w - 8, row_h), Qt.AlignRight | Qt.AlignVCenter, fmt(row["avg_out"]))
+            # 缓存命中
+            ch = row["cache_hit"]
+            cc = GREEN if ch >= 50 else (YELLOW if ch > 0 else TEXT3)
+            p.setPen(cc)
+            p.drawText(QRectF(name_w + col_w * 3, y, col_w - 8, row_h), Qt.AlignRight | Qt.AlignVCenter, f"{ch:.1f}%")
+        # 底部分隔
+        p.setPen(QPen(BORDER, 1))
+        p.drawLine(0, h - 1, w, h - 1)
+
+    def sizeHint(self):
+        n = max(1, len(self.rows))
+        return QSize(560, 26 + n * 30)
+
+
+class ThinkOutputChart(QWidget):
+    """思考与输出结构图: 堆叠柱状 (reasoning vs output 各模型算力流向)"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.data = []   # [{"name","reasoning","output"}]
+        self.setMinimumHeight(150)
+
+    def set_data(self, data):
+        self.data = data[:8]
+        self.update()
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        if not self.data:
+            p.setPen(TEXT3)
+            p.drawText(self.rect(), Qt.AlignCenter, "暂无数据")
+            return
+        is_lg = theme_state.get("window_size") == "large"
+        padL, padR, padT, padB = 40 if is_lg else 36, 8, 8, 22
+        iw, ih = w - padL - padR, h - padT - padB
+        maxV = max((d["reasoning"] + d["output"]) for d in self.data) or 1
+
+        # Y 轴刻度
+        p.setFont(QFont("Consolas", 7.5 if is_lg else 7.0))
+        for k in range(3):
+            y = padT + ih - ih * k / 2
+            p.setPen(QPen(BORDER, 1))
+            p.drawLine(int(padL), int(y), int(w - padR), int(y))
+            p.setPen(TEXT3)
+            v = maxV * k / 2
+            p.drawText(QRectF(0, y - 7, padL - 4, 14), Qt.AlignRight | Qt.AlignVCenter, fmt(v))
+
+        n = len(self.data)
+        slot = iw / n
+        bw = max(6.0, min(22.0, slot * 0.55))
+        for i, d in enumerate(self.data):
+            cx = padL + slot * i + slot / 2
+            total = d["reasoning"] + d["output"]
+            y_cur = padT + ih
+            # reasoning (紫) 在下, output (蓝) 在上
+            for val, color in ((d["output"], BLUE), (d["reasoning"], PURPLE)):
+                hh = val / maxV * ih
+                p.setPen(Qt.NoPen)
+                p.setBrush(color)
+                p.drawRoundedRect(QRectF(cx - bw / 2, y_cur - hh, bw, hh), 1.5, 1.5)
+                y_cur -= hh
+            # 模型名 (截断)
+            p.setPen(TEXT3)
+            p.setFont(QFont("Microsoft YaHei UI", 6.8 if is_lg else 6.4))
+            nm = d["name"].split("/")[-1]
+            fm = p.fontMetrics()
+            el = fm.elidedText(nm, Qt.ElideRight, int(slot - 4))
+            p.drawText(QRectF(cx - slot / 2 + 2, h - padB + 2, slot - 4, padB - 2), Qt.AlignCenter, el)
+
+    def sizeHint(self):
+        return QSize(360, 150)
+
+
+class SessionTrendChart(QWidget):
+    """每日单会话规模走势: 折线 (平均单会话 token 体量)"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.data = []   # [{"date","avg","sessions","total"}]
+        self.setMinimumHeight(140)
+
+    def set_data(self, data):
+        self.data = data
+        self.update()
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        if not self.data:
+            p.setPen(TEXT3)
+            p.drawText(self.rect(), Qt.AlignCenter, "暂无数据")
+            return
+        is_lg = theme_state.get("window_size") == "large"
+        padL, padR, padT, padB = 40 if is_lg else 36, 8, 10, 20
+        iw, ih = w - padL - padR, h - padT - padB
+        avgs = [d["avg"] for d in self.data]
+        maxV = max(avgs) or 1
+
+        p.setFont(QFont("Consolas", 7.5 if is_lg else 7.0))
+        for k in range(3):
+            y = padT + ih - ih * k / 2
+            p.setPen(QPen(BORDER, 1))
+            p.drawLine(int(padL), int(y), int(w - padR), int(y))
+            p.setPen(TEXT3)
+            v = maxV * k / 2
+            p.drawText(QRectF(0, y - 7, padL - 4, 14), Qt.AlignRight | Qt.AlignVCenter, fmt(v))
+
+        n = len(self.data)
+        if n >= 2:
+            slot = iw / max(1, n - 1)
+            pts = []
+            for i, d in enumerate(self.data):
+                x = padL + slot * i
+                y = padT + ih - (d["avg"] / maxV) * ih
+                pts.append(QPointF(x, y))
+            # 折线
+            pen = QPen(BLUE, 1.6)
+            pen.setJoinStyle(Qt.RoundJoin)
+            p.setPen(pen)
+            p.setBrush(Qt.NoBrush)
+            path = QPainterPath()
+            path.moveTo(pts[0])
+            for pt in pts[1:]:
+                path.lineTo(pt)
+            p.drawPath(path)
+            # 数据点
+            p.setBrush(BLUE)
+            p.setPen(Qt.NoPen)
+            for pt in pts:
+                p.drawEllipse(pt, 2.6, 2.6)
+            # X 轴日期 (隔几个标一个)
+            step = max(1, n // 7)
+            p.setPen(TEXT3)
+            p.setFont(QFont("Consolas", 6.8 if is_lg else 6.4))
+            for i, d in enumerate(self.data):
+                if i % step == 0 or i == n - 1:
+                    p.drawText(QRectF(padL + slot * i - 20, h - padB + 2, 40, padB - 2),
+                               Qt.AlignCenter, d["date"][5:].replace("-", "/"))
+        else:
+            p.setPen(TEXT3)
+            p.drawText(self.rect(), Qt.AlignCenter, "数据不足 (需 2 天以上)")
+
+    def sizeHint(self):
+        return QSize(360, 140)
+
+
+class AnalyticsPage(QWidget):
+    """效能洞察页: 思考消耗/缓存收益/提示词杠杆三维度"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._build_ui()
+
+    def _build_ui(self):
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(10)
+
+        # 1. 顶栏: 4 列效益指标卡
+        stat_grid = QHBoxLayout()
+        stat_grid.setSpacing(10)
+        self.card_cache_save = StatCard("缓存算力节省", GREEN)
+        self.card_think = StatCard("深度思维规模", PURPLE)
+        self.card_sess = StatCard("平均会话强度", CYAN)
+        self.card_io = StatCard("提示词杠杆", YELLOW)
+        for c in (self.card_cache_save, self.card_think, self.card_sess, self.card_io):
+            stat_grid.addWidget(c, 1)
+        v.addLayout(stat_grid)
+
+        # 2. 下半区: 左右分栏
+        body = QHBoxLayout()
+        body.setSpacing(10)
+
+        # 左栏: 模型协作特性画像表
+        self.table_card = GlassPodFrame(radius=10)
+        self.table_card.setObjectName("an_table_card")
+        tv = QVBoxLayout(self.table_card)
+        tv.setContentsMargins(10, 6, 10, 6)
+        tv.setSpacing(2)
+        tv.addWidget(CardHeader("模型协作特性画像", PURPLE))
+        self.model_table = AnalyticsModelTable()
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.NoFrame)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_area.setWidget(self.model_table)
+        tv.addWidget(self.scroll_area, 1)
+        body.addWidget(self.table_card, 52)
+
+        # 右栏: 双核图表
+        right = QVBoxLayout()
+        right.setSpacing(10)
+
+        self.struct_card = GlassPodFrame(radius=10)
+        self.struct_card.setObjectName("an_struct_card")
+        sv = QVBoxLayout(self.struct_card)
+        sv.setContentsMargins(10, 6, 8, 6)
+        sv.setSpacing(2)
+        sv.addWidget(CardHeader("思考与输出结构", BLUE))
+        self.struct_chart = ThinkOutputChart()
+        sv.addWidget(self.struct_chart, 1)
+        right.addWidget(self.struct_card, 52)
+
+        self.trend_card = GlassPodFrame(radius=10)
+        self.trend_card.setObjectName("an_trend_card")
+        tcv = QVBoxLayout(self.trend_card)
+        tcv.setContentsMargins(10, 6, 8, 6)
+        tcv.setSpacing(2)
+        tcv.addWidget(CardHeader("每日单会话规模走势", GREEN))
+        self.trend_chart = SessionTrendChart()
+        tcv.addWidget(self.trend_chart, 1)
+        right.addWidget(self.trend_card, 48)
+
+        body.addLayout(right, 48)
+        v.addLayout(body, 1)
+
+    def render(self, data):
+        cards = data.get("cards", {})
+        self.card_cache_save.set_value(fmt(cards.get("cache_saved_tokens", 0)),
+                                       f"命中 {cards.get('cache_rate', 0):.1f}%")
+        self.card_think.set_value(fmt(cards.get("reasoning_tokens", 0)),
+                                  f"占输出 {cards.get('think_pct', 0):.1f}%")
+        self.card_sess.set_value(fmt(cards.get("sess_tokens", 0)),
+                                 f"{cards.get('sess_rounds', 0)} 轮/会话")
+        io = cards.get("io_ratio", 0)
+        self.card_io.set_value(f"{io:.2f}", f"输入 {fmt(cards.get('input', 0))} / 输出 {fmt(cards.get('output', 0))}")
+
+        self.model_table.set_models(data.get("models", []))
+        self.struct_chart.set_data(data.get("struct", []))
+        self.trend_chart.set_data(data.get("session_trend", []))
+        self.apply_theme()
+
+    def apply_size(self):
+        m = curr_metric()
+        for c in (self.card_cache_save, self.card_think, self.card_sess, self.card_io):
+            c.apply_size()
+        self.model_table.setMinimumHeight(160)
+        self.struct_chart.setMinimumHeight(150)
+        self.trend_chart.setMinimumHeight(140)
+        self.update()
+
+    def apply_theme(self):
+        for c in (self.table_card, self.struct_card, self.trend_card):
+            c.setStyleSheet("background:transparent; border:none;")
+        for c in (self.card_cache_save, self.card_think, self.card_sess, self.card_io):
+            c.apply_size()
+        self.update()
+
+
 class NavButton(QPushButton):
     def __init__(self, text, icon_str="", parent=None):
         super().__init__(f"  {icon_str}  {text}", parent)
@@ -2744,14 +3183,16 @@ class CardWindow(QWidget):
         self.btn_nav_wb = NavButton("WorkBuddy", "📘")
         self.btn_nav_dsh = NavButton("DSH 本地", "🗄️")
         self.btn_nav_sn = NavButton("商汤额度", "⚡")
+        self.btn_nav_an = NavButton("效能洞察", "📊")
 
-        for b in (self.btn_nav_wb, self.btn_nav_dsh, self.btn_nav_sn):
+        for b in (self.btn_nav_wb, self.btn_nav_dsh, self.btn_nav_sn, self.btn_nav_an):
             side_lay.addWidget(b)
             b.clicked.connect(lambda _=False, bb=b: self._switch_nav(bb))
 
         self.btn_nav_wb.setChecked(self.source == "wb")
         self.btn_nav_dsh.setChecked(self.source == "dsh")
         self.btn_nav_sn.setChecked(self.source == "sn")
+        self.btn_nav_an.setChecked(self.source == "an")
 
         side_lay.addStretch(1)
 
@@ -2890,6 +3331,10 @@ class CardWindow(QWidget):
         self.sn_page.cleared.connect(self._on_sn_sync_saved)
         self.stack.addWidget(self.sn_page)
 
+        # Page 2: 效能洞察页
+        self.an_page = AnalyticsPage()
+        self.stack.addWidget(self.an_page)
+
         work_lay.addWidget(self.stack, 1)
         main_layout.addWidget(self.workspace, 1)
 
@@ -2912,7 +3357,7 @@ class CardWindow(QWidget):
         self.subtitle.setFont(QFont("Microsoft YaHei UI", m["subtitle_pt"]))
         self.src_head.setFont(QFont("Microsoft YaHei UI", m["sn_date_pt"]))
 
-        for b in (self.btn_nav_wb, self.btn_nav_dsh, self.btn_nav_sn):
+        for b in (self.btn_nav_wb, self.btn_nav_dsh, self.btn_nav_sn, self.btn_nav_an):
             b.apply_size()
 
         self.btn_refresh.setFixedHeight(m["refresh_h"])
@@ -2928,6 +3373,7 @@ class CardWindow(QWidget):
         self.chart.apply_size()
         self.heat.apply_size()
         self.sn_page.apply_size()
+        self.an_page.apply_size()
 
         if self.isVisible():
             screen = QGuiApplication.screenAt(self.geometry().center()) or QApplication.primaryScreen()
@@ -3052,12 +3498,13 @@ class CardWindow(QWidget):
             f" text-align:left; padding-left:10px; }}"
             f"QPushButton:hover{{ background:{qrgba(HOVER)}; color:{qname(TEXT)}; }}"
             f"QPushButton:checked{{ background:{qrgba(BLUE, 30 if dark else 20)}; color:#3b6fe0; font-weight:700; }}")
-        for b in (self.btn_nav_wb, self.btn_nav_dsh, self.btn_nav_sn):
+        for b in (self.btn_nav_wb, self.btn_nav_dsh, self.btn_nav_sn, self.btn_nav_an):
             b.setStyleSheet(nav_style)
 
         self.model_area.setStyleSheet("background:transparent; border:none;")
         self.model_host.setStyleSheet("background:transparent;")
         self.sn_page.apply_theme()
+        self.an_page.apply_theme()
         self.update()
 
     def set_dark(self, dark):
@@ -3098,12 +3545,14 @@ class CardWindow(QWidget):
 
     def _switch_nav(self, btn):
         ChartTip.instance().hide_tip()
-        for b in (self.btn_nav_wb, self.btn_nav_dsh, self.btn_nav_sn):
+        for b in (self.btn_nav_wb, self.btn_nav_dsh, self.btn_nav_sn, self.btn_nav_an):
             b.setChecked(b is btn)
         if btn is self.btn_nav_dsh:
             self.source = "dsh"
         elif btn is self.btn_nav_sn:
             self.source = "sn"
+        elif btn is self.btn_nav_an:
+            self.source = "an"
         else:
             self.source = "wb"
         theme_state["source"] = self.source
@@ -3111,6 +3560,12 @@ class CardWindow(QWidget):
         self.load_initial()
 
     # ---------------- 异步刷新链路 ----------------
+    def _load_analytics(self):
+        """加载效能洞察页数据: 融合 WB(scanner) 与 DSH 账本"""
+        wb = scanner.scan_full()
+        dsh = load_dsh_stats()
+        return {"source": "an", "analytics": _analytics_compute(wb, dsh)}
+
     def refresh(self, force=False):
         if self._scanning:
             self._pending_refresh = True
@@ -3123,12 +3578,14 @@ class CardWindow(QWidget):
             # 进度反馈: 同步面板显示进度态, 避免更新按钮灰色像卡住
             self.sn_page.sync_panel.set_syncing("正在自动获取凭证并同步…" if force else "正在同步积分数据…")
             self.subtitle.setText("正在自动同步商汤积分 (获取凭证)…" if force else "正在同步商汤积分…")
+        elif src == "an": self.subtitle.setText("正在计算效能洞察…")
         else: self.subtitle.setText("正在扫描 WorkBuddy 会话数据…")
 
         def work():
             try:
                 if src == "dsh": s = load_dsh_stats()
                 elif src == "sn": s = load_sn_stats(force=force)
+                elif src == "an": s = self._load_analytics()
                 else: s = scanner.scan_full()
             except Exception as e:
                 s = {"error": str(e)}
@@ -3154,6 +3611,8 @@ class CardWindow(QWidget):
                 ws = time.strftime("%H:%M", time.localtime(s.get("window_start", 0)))
                 we = time.strftime("%H:%M", time.localtime(s.get("window_end", 0)))
                 self.subtitle.setText(f"商汤 · 积分额度 · 窗口 {ws}–{we} · 已更新 {time.strftime('%H:%M:%S')}")
+            elif src == "an":
+                self.subtitle.setText(f"效能洞察 · 思考消耗/缓存收益/提示词杠杆 · 已更新 {time.strftime('%H:%M:%S')}")
             else:
                 self.subtitle.setText(f"WorkBuddy · {s.get('firstDay','—')} ~ {s.get('lastDay','—')} · 真实 usage · 已更新 {time.strftime('%H:%M:%S')}")
         elif src == "sn":
@@ -3168,6 +3627,11 @@ class CardWindow(QWidget):
     def load_initial(self):
         if self.source == "sn":
             self.stats = self._sn_cache or {"source": "sn", "pools": []}
+        elif self.source == "an":
+            try:
+                self.stats = self._load_analytics()
+            except Exception:
+                self.stats = {"source": "an", "analytics": {"cards": {}, "models": [], "struct": [], "session_trend": []}}
         elif self.source == "dsh":
             self.stats = load_dsh_stats()
         else:
@@ -3203,6 +3667,12 @@ class CardWindow(QWidget):
             self.stack.setCurrentIndex(1)
             self.range_box.setVisible(False)
             self.sn_page.render(s)
+            return
+
+        if self.source == "an":
+            self.stack.setCurrentIndex(2)
+            self.range_box.setVisible(False)
+            self.an_page.render(s.get("analytics", {"cards": {}, "models": [], "struct": [], "session_trend": []}))
             return
 
         self.stack.setCurrentIndex(0)
