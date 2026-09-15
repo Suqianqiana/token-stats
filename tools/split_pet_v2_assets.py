@@ -245,9 +245,13 @@ for name, (px0, py0, px1, py1), expect in PANELS:
                     rch[ny, nx] = True; dq2.append((ny, nx))
         sil = ndimage.binary_fill_holes(f)
         sil[wy0:wy1 + 1, wx0:wx1 + 1] &= ~rch          # 白描边/背景/缝里的白料 -> 透明
-        # ---- 发丝间隙的封闭腔清除 (只在"顶部/两侧发丝区"生效, 且必须远离腿部区)
-        #   判据: 浅腔(到外轮廓距离中位<=28) + 亮 + 偏蓝不偏暖 + 腔内无描边 + 非帧内最大腔(围裙)
-        #   腿/白袜/鞋 = 位于画面下部 30% 的腔 -> 一律跳过 (避免"腿被扣没")
+        # ---- 发丝间隙的封闭腔清除 (恢复第24轮原版: 深腔保护, 保脸/眼/衣/腿) ----
+        #   候选: 浅亮冷白小腔(到外轮廓距离中位/亮度/偏蓝/低饱和/腔内无描边/非围裙)。
+        #   决策(见循环内):
+        #     · 围裙(最大腔) / 腿部区(下方30%) -> 永远跳过;
+        #     · 深腔(中位深度>28, 眼白/衣白/皮肤等角色内部特征都深) -> 跳过(保护);
+        #     · 浅腔 -> 删除(发丝缝/呆毛圈); 小腔(<120px)高 ink 护栏保留(护眼高光)。
+        #   第29轮教训: 取消 depth>28 保护会误删眼白/衣服白(深腔), 故恢复此护栏。
         ink_core = ndimage.binary_erosion(f, structure=S8, iterations=2)
         b_r = A[..., 2] - A[..., 0]
         dist_out = ndimage.distance_transform_edt(sil)
@@ -271,19 +275,29 @@ for name, (px0, py0, px1, py1), expect in PANELS:
             for j in cand:
                 m = pl == j
                 if j == biggest:                                   # 围裙 = 帧内最大腔
+                    if os.environ.get("DBG_CAVITY") == "1":
+                        print(f"        cav#{j:>3} psz={psz[j]:>5} =BIGGEST(围裙)skip")
                     continue
                 if float(np.median(dist_out[m])) > 28:             # 深腔 -> 衣物/身体内部
+                    if os.environ.get("DBG_CAVITY") == "1":
+                        print(f"        cav#{j:>3} psz={psz[j]:>5} d={float(np.median(dist_out[m])):.0f} =DEEP(>28)skip")
                     continue
                 yy, _xx = np.where(m)
-                if int(yy.mean()) > leg_y:                         # 腿部区 -> 不碰
+                cy = int(yy.mean())
+                if cy > leg_y:                                     # 腿部区 -> 不碰
+                    if os.environ.get("DBG_CAVITY") == "1":
+                        print(f"        cav#{j:>3} psz={psz[j]:>5} cy={cy} leg_y={leg_y} =LEGION skip")
                     continue
-                # 护栏: 只有**小腔**(<120px, 眼睛高光/饰品反光这种尺度) 才做"实心深色包围"
-                #   保护; 发丝缝/呆毛圈通常 >=120px, 不受此护栏影响 (上一版护栏过宽,
-                #   把 idle 组的发丝缝一起保住了 -> 回归)。
+                # 小腔护栏: 仅"小腔(<120px)"做"实心深色包围"保护(眼睛高光/饰品反光尺度);
+                #   发丝缝/呆毛圈通常 >=120px, 不受此护栏影响。(恢复第24轮原版)
                 if psz[j] < 120:
                     ring = ndimage.binary_dilation(m, structure=S8, iterations=3) & f
                     if float((ring & ink_core).sum()) / max(1, int(ring.sum())) >= 0.30:
+                        if os.environ.get("DBG_CAVITY") == "1":
+                            print(f"        cav#{j:>3} psz={psz[j]:>5} =SMALL+ink>=.30 skip(眼高光?)")
                         continue
+                if os.environ.get("DBG_CAVITY") == "1":
+                    print(f"        cav#{j:>3} psz={psz[j]:>5} =DROP")
                 drop |= m
             if drop.any():
                 print(f"      [{name}_{i+1:02d}] 删腔总像素 {int(drop.sum())}")
@@ -383,14 +397,24 @@ for name, (px0, py0, px1, py1), expect in PANELS:
         #   仍是它自己 -> 保持不变。
         bg_like = (rgb.min(axis=2) >= 226) & ((rgb.max(axis=2).astype(np.int16)
                                                - rgb.min(axis=2).astype(np.int16)) <= 28)
-        core = (a2 >= 250) & ~bg_like                      # 真角色色(实心且非底色)
+        # ★ 换色来源必须限定为**深色实心像素**(描边/头发主体): 早前用"非底色的实心像素"
+        #   会把边缘取到发丝里的**浅蓝高光**色 -> 边缘反被染浅。
+        core = (a2 >= 250) & (rgb.min(axis=2) < 210)
+        if not core.any():                                 # 兜底: 该帧没有深色实心像素
+            core = (a2 >= 250) & ~bg_like
         if core.any():
             _, idx_core = ndimage.distance_transform_edt(~core, return_indices=True)
             near_core = rgb[idx_core[0], idx_core[1]]
-            d_trans = ndimage.distance_transform_edt(a2 > 0)   # 到透明区的距离
+            # ★★ 关键: 判定"是否位于轮廓边缘"必须用**到轮廓外沿的距离**(先把空洞填实),
+            #   绝不能用"到任意透明区的距离" —— 腔(发丝缝)被删掉后头发内部遍布空洞,
+            #   那个距离在整个头发区域都很小, 会把**头发内部的高光/发丝细节也重染色**
+            #   (实测 alpha=255 像素有 70% 被误改, 表现为"发色发灰、细节糊掉")。
+            solid_sil = ndimage.binary_fill_holes(m)
+            d_out = ndimage.distance_transform_edt(solid_sil)   # 轮廓外=0
+            d_trans = ndimage.distance_transform_edt(a2 > 0)    # 到透明区(含发丝缝)
+            edge_band = (a2 > 0) & (d_out <= 1.5)               # 真·轮廓边缘带
             near_trans = (a2 > 0) & (d_trans <= 2.5)
-            fix = (a2 < 250) | (bg_like & near_trans)       # 半透明边 + 贴透明区的浅色
-            fix &= (a2 > 0)
+            fix = edge_band | (bg_like & near_trans)
             rgb[fix] = near_core[fix]
         out = Image.fromarray(np.dstack([rgb, a2]), "RGBA")
         bb = out.getbbox()

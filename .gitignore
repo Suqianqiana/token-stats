@@ -7,3 +7,34 @@ legacy/
 
 # 运行日志
 *.log
+
+# 调试与临时产物（2026-09-15 整理）
+/_*.png
+/assets/_*.png
+/%SystemDrive%/
+*.bak
+*.bak.*
+
+# 素材归档与中间产物（磁盘保留，不进版本库：仓库以「源码 + 文档」为唯一真相源）
+/assets/pet_v2_bak_preGreen/
+/assets/pet_v2_bak_preAlpha2/
+/assets/pet_v3r_bak_preV5/
+/assets/pet_*_discard/
+/assets/pet_v2_green/
+/assets/pet_v2_alpha/
+/assets/pet_v2_src/
+/assets/pet_v4_src/
+/assets/pet_v3/
+/assets/pet_v5/
+/assets/pet_v2_r24_windows.json
+/assets/pet_v2_green_qc.json
+/assets/pet_v3_qc.json
+/assets/pet_v3_windows.json
+/assets/pet_v5_qc.json
+/assets/pet_v5_windows.json
+
+# 体积较大的生成型检视页（可用 tools/review_*.py 重新生成）
+/docs/pet_v2_green_review.html
+/docs/pet_v2_new_review.html
+/docs/pet_v4_review.html
+/docs/pet_v5_review.html
