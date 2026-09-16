@@ -1,0 +1,463 @@
+{
+ "v": 1,
+ "generated": "2026-09-17",
+ "denoise": false,
+ "frames": [
+  {
+   "file": "A01.png",
+   "prefix": "A",
+   "index": 1,
+   "source": "ChatGPT Image 2026年9月17日 03_19_52 (1).png",
+   "crop": [
+    9,
+    81,
+    263,
+    498
+   ],
+   "size": [
+    255,
+    418
+   ],
+   "body_area": 67763,
+   "decorations": 3,
+   "selfcheck_bodies": 1
+  },
+  {
+   "file": "A02.png",
+   "prefix": "A",
+   "index": 2,
+   "source": "ChatGPT Image 2026年9月17日 03_19_52 (1).png",
+   "crop": [
+    274,
+    80,
+    510,
+    497
+   ],
+   "size": [
+    237,
+    418
+   ],
+   "body_area": 64570,
+   "decorations": 0,
+   "selfcheck_bodies": 1
+  },
+  {
+   "file": "A03.png",
+   "prefix": "A",
+   "index": 3,
+   "source": "ChatGPT Image 2026年9月17日 03_19_52 (1).png",
+   "crop": [
+    525,
+    77,
+    767,
+    496
+   ],
+   "size": [
+    243,
+    420
+   ],
+   "body_area": 67774,
+   "decorations": 0,
+   "selfcheck_bodies": 1
+  },
+  {
+   "file": "A04.png",
+   "prefix": "A",
+   "index": 4,
+   "source": "ChatGPT Image 2026年9月17日 03_19_52 (1).png",
+   "crop": [
+    774,
+    96,
+    1012,
+    498
+   ],
+   "size": [
+    239,
+    403
+   ],
+   "body_area": 63368,
+   "decorations": 0,
+   "selfcheck_bodies": 1
+  },
+  {
+   "file": "A05.png",
+   "prefix": "A",
+   "index": 5,
+   "source": "ChatGPT Image 2026年9月17日 03_19_52 (1).png",
+   "crop": [
+    1021,
+    85,
+    1279,
+    505
+   ],
+   "size": [
+    259,
+    421
+   ],
+   "body_area": 70708,
+   "decorations": 2,
+   "selfcheck_bodies": 1
+  },
+  {
+   "file": "A06.png",
+   "prefix": "A",
+   "index": 6,
+   "source": "ChatGPT Image 2026年9月17日 03_19_52 (1).png",
+   "crop": [
+    1298,
+    84,
+    1528,
+    499
+   ],
+   "size": [
+    231,
+    416
+   ],
+   "body_area": 64040,
+   "decorations": 0,
+   "selfcheck_bodies": 1
+  },
+  {
+   "file": "A07.png",
+   "prefix": "A",
+   "index": 7,
+   "source": "ChatGPT Image 2026年9月17日 03_19_52 (1).png",
+   "crop": [
+    13,
+    561,
+    268,
+    945
+   ],
+   "size": [
+    256,
+    385
+   ],
+   "body_area": 66235,
+   "decorations": 0,
+   "selfcheck_bodies": 1
+  },
+  {
+   "file": "A08.png",
+   "prefix": "A",
+   "index": 8,
+   "source": "ChatGPT Image 2026年9月17日 03_19_52 (1).png",
+   "crop": [
+    277,
+    605,
+    529,
+    954
+   ],
+   "size": [
+    253,
+    350
+   ],
+   "body_area": 63214,
+   "decorations": 1,
+   "selfcheck_bodies": 1
+  },
+  {
+   "file": "A09.png",
+   "prefix": "A",
+   "index": 9,
+   "source": "ChatGPT Image 2026年9月17日 03_19_52 (1).png",
+   "crop": [
+    537,
+    546,
+    772,
+    958
+   ],
+   "size": [
+    236,
+    413
+   ],
+   "body_area": 65829,
+   "decorations": 0,
+   "selfcheck_bodies": 1
+  },
+  {
+   "file": "A10.png",
+   "prefix": "A",
+   "index": 10,
+   "source": "ChatGPT Image 2026年9月17日 03_19_52 (1).png",
+   "crop": [
+    781,
+    554,
+    1028,
+    950
+   ],
+   "size": [
+    248,
+    397
+   ],
+   "body_area": 65575,
+   "decorations": 3,
+   "selfcheck_bodies": 1
+  },
+  {
+   "file": "A11.png",
+   "prefix": "A",
+   "index": 11,
+   "source": "ChatGPT Image 2026年9月17日 03_19_52 (1).png",
+   "crop": [
+    1032,
+    536,
+    1284,
+    957
+   ],
+   "size": [
+    253,
+    422
+   ],
+   "body_area": 69005,
+   "decorations": 7,
+   "selfcheck_bodies": 1
+  },
+  {
+   "file": "A12.png",
+   "prefix": "A",
+   "index": 12,
+   "source": "ChatGPT Image 2026年9月17日 03_19_52 (1).png",
+   "crop": [
+    1291,
+    545,
+    1522,
+    957
+   ],
+   "size": [
+    232,
+    413
+   ],
+   "body_area": 62693,
+   "decorations": 3,
+   "selfcheck_bodies": 1
+  },
+  {
+   "file": "B01.png",
+   "prefix": "B",
+   "index": 1,
+   "source": "ChatGPT Image 2026年9月17日 03_19_53 (2).png",
+   "crop": [
+    11,
+    128,
+    244,
+    496
+   ],
+   "size": [
+    234,
+    369
+   ],
+   "body_area": 55230,
+   "decorations": 3,
+   "selfcheck_bodies": 1
+  },
+  {
+   "file": "B02.png",
+   "prefix": "B",
+   "index": 2,
+   "source": "ChatGPT Image 2026年9月17日 03_19_53 (2).png",
+   "crop": [
+    269,
+    131,
+    501,
+    499
+   ],
+   "size": [
+    233,
+    369
+   ],
+   "body_area": 57659,
+   "decorations": 1,
+   "selfcheck_bodies": 1
+  },
+  {
+   "file": "B03.png",
+   "prefix": "B",
+   "index": 3,
+   "source": "ChatGPT Image 2026年9月17日 03_19_53 (2).png",
+   "crop": [
+    519,
+    120,
+    760,
+    498
+   ],
+   "size": [
+    242,
+    379
+   ],
+   "body_area": 57216,
+   "decorations": 1,
+   "selfcheck_bodies": 1
+  },
+  {
+   "file": "B04.png",
+   "prefix": "B",
+   "index": 4,
+   "source": "ChatGPT Image 2026年9月17日 03_19_53 (2).png",
+   "crop": [
+    776,
+    173,
+    1024,
+    490
+   ],
+   "size": [
+    249,
+    318
+   ],
+   "body_area": 55971,
+   "decorations": 1,
+   "selfcheck_bodies": 1
+  },
+  {
+   "file": "B05.png",
+   "prefix": "B",
+   "index": 5,
+   "source": "ChatGPT Image 2026年9月17日 03_19_53 (2).png",
+   "crop": [
+    1040,
+    187,
+    1277,
+    506
+   ],
+   "size": [
+    238,
+    320
+   ],
+   "body_area": 53725,
+   "decorations": 2,
+   "selfcheck_bodies": 1
+  },
+  {
+   "file": "B06.png",
+   "prefix": "B",
+   "index": 6,
+   "source": "ChatGPT Image 2026年9月17日 03_19_53 (2).png",
+   "crop": [
+    1297,
+    125,
+    1525,
+    500
+   ],
+   "size": [
+    229,
+    376
+   ],
+   "body_area": 58942,
+   "decorations": 2,
+   "selfcheck_bodies": 1
+  },
+  {
+   "file": "B07.png",
+   "prefix": "B",
+   "index": 7,
+   "source": "ChatGPT Image 2026年9月17日 03_19_53 (2).png",
+   "crop": [
+    17,
+    535,
+    248,
+    929
+   ],
+   "size": [
+    232,
+    395
+   ],
+   "body_area": 61841,
+   "decorations": 0,
+   "selfcheck_bodies": 1
+  },
+  {
+   "file": "B08.png",
+   "prefix": "B",
+   "index": 8,
+   "source": "ChatGPT Image 2026年9月17日 03_19_53 (2).png",
+   "crop": [
+    267,
+    555,
+    532,
+    929
+   ],
+   "size": [
+    266,
+    375
+   ],
+   "body_area": 60803,
+   "decorations": 2,
+   "selfcheck_bodies": 1
+  },
+  {
+   "file": "B09.png",
+   "prefix": "B",
+   "index": 9,
+   "source": "ChatGPT Image 2026年9月17日 03_19_53 (2).png",
+   "crop": [
+    531,
+    545,
+    766,
+    938
+   ],
+   "size": [
+    236,
+    394
+   ],
+   "body_area": 55698,
+   "decorations": 4,
+   "selfcheck_bodies": 1
+  },
+  {
+   "file": "B10.png",
+   "prefix": "B",
+   "index": 10,
+   "source": "ChatGPT Image 2026年9月17日 03_19_53 (2).png",
+   "crop": [
+    781,
+    549,
+    1030,
+    937
+   ],
+   "size": [
+    250,
+    389
+   ],
+   "body_area": 60370,
+   "decorations": 2,
+   "selfcheck_bodies": 1
+  },
+  {
+   "file": "B11.png",
+   "prefix": "B",
+   "index": 11,
+   "source": "ChatGPT Image 2026年9月17日 03_19_53 (2).png",
+   "crop": [
+    1043,
+    575,
+    1290,
+    941
+   ],
+   "size": [
+    248,
+    367
+   ],
+   "body_area": 60937,
+   "decorations": 2,
+   "selfcheck_bodies": 1
+  },
+  {
+   "file": "B12.png",
+   "prefix": "B",
+   "index": 12,
+   "source": "ChatGPT Image 2026年9月17日 03_19_53 (2).png",
+   "crop": [
+    1300,
+    579,
+    1528,
+    932
+   ],
+   "size": [
+    229,
+    354
+   ],
+   "body_area": 58455,
+   "decorations": 0,
+   "selfcheck_bodies": 1
+  }
+ ]
+}
