@@ -3975,6 +3975,9 @@ PET_OTHER_EVERY = (150, 420)    # 特殊待机动作触发间隔(秒)
 PET_SIDLE_DUR = (15, 60)        # 特殊待机动作持续时长(秒)
 PET_MS = {"idle": 240, "sleep": 1500, "wake": 700, "drag": 140,
           "click": 300, "sidle": 600, "pat": 600}
+# 2026-09-17 浅浅猫的想法: 桌宠"顶部 1/3"点= 摸摸头, 其余(底部 2/3)= 普通点击互动;
+# 任意位置双击 = 打开面板。判据用**实际绘制区域**的高度比例, 不是窗口高度(见 _pet_click_region)。
+PET_PAT_TOP_RATIO = 1.0 / 3.0
 APP_BUILD = "v9.1-pet-v4"        # update 2026-09-14 (第40轮): 新增 V4 主题 "deepseek娘V4Pro"
 
 
@@ -4149,6 +4152,24 @@ class BallWindow(QWidget):
             self._last_drawn = cur
             self.update()
 
+    def _pet_click_region(self, y):
+        """按"点在哪"分流互动 (浅浅猫 2026-09-17 提议):
+        角色**顶部 1/3** = 摸摸头(pat), 其余**底部 2/3** = 普通点击互动(click)
+        —— 摸头要点在"头上"才自然, 点身体是普通互动。
+
+        边界用**实际绘制区域**的高度比例, 而不是窗口高度: 矮宽的帧(如躺姿)
+        只画在窗口下半部分, 按窗口算会把"角色头顶以上的空白"也判成摸头。
+        """
+        rect = getattr(self, "_pet_draw_rect", None)
+        if rect is not None and rect.height() > 0:
+            top, hh = rect.top(), rect.height()
+        else:
+            top, hh = 0.0, float(self.height())
+        if y < top + hh * PET_PAT_TOP_RATIO:
+            self._pet_pat()
+        else:
+            self._pet_click()
+
     def _pet_click(self):
         fr = self._frames_of("click")
         i = random.randrange(len(fr)) if fr else 0
@@ -4201,7 +4222,7 @@ class BallWindow(QWidget):
             self.resize(PET_W, PET_H)
             self._idle_t = time.time()
             self._pet_state("idle")
-            self.setToolTip("DeepSeek 娘 · 单击互动 / 双击打开统计 / 右键菜单")
+            self.setToolTip("DeepSeek 娘 · 点头部 1/3 摸摸头 / 点身体单击互动 / 双击打开统计 / 右键菜单")
         else:
             self.resize(54, 54)
             self.setToolTip("Token 统计 — 单击打开面板 / 右键菜单")
@@ -4227,7 +4248,9 @@ class BallWindow(QWidget):
             iw, ih = img.width(), img.height()
             scale = min(138.0 / ih, (PET_W - 10.0) / iw)
             dw, dh = iw * scale, ih * scale
-            p.drawImage(QRectF((PET_W - dw) / 2.0, PET_H - 4 - dh, dw, dh), img)
+            rect = QRectF((PET_W - dw) / 2.0, PET_H - 4 - dh, dw, dh)
+            self._pet_draw_rect = rect      # 供点击分区判断"角色头顶 1/3"用
+            p.drawImage(rect, img)
             return
 
         w = self.width()
@@ -4309,7 +4332,8 @@ class BallWindow(QWidget):
             self._idle_t = time.time()
             dur_ms = (time.time() - self._press_time) * 1000
             if not self._moved and dur_ms < 250:
-                self._pet_click()
+                # 按点击高度分流: 顶部 1/3 = 摸摸头, 底部 2/3 = 点击互动
+                self._pet_click_region(ev.position().y())
             else:
                 self._pet_state("idle")
             return
@@ -4505,7 +4529,7 @@ class TrayIcon(QObject):
         theme_menu.triggered.connect(
             lambda a: a.data() in PET_THEMES and self.ball.set_pet_theme(a.data()))
 
-        a_pat = m.addAction("🤗  摸摸头")
+        a_pat = m.addAction("🤗  摸摸头（点头部 1/3 也行）")
         a_pat.triggered.connect(self.ball._pet_pat)
         m.addSeparator()
 

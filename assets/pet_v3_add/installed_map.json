@@ -1,0 +1,31 @@
+{
+ "v": 1,
+ "excluded": [
+  "A07"
+ ],
+ "map": {
+  "A05": "sidle/sidle_04.png",
+  "A06": "sidle/sidle_05.png",
+  "A08": "sidle/sidle_06.png",
+  "A09": "sidle/sidle_07.png",
+  "B05": "sidle/sidle_08.png",
+  "B06": "sidle/sidle_09.png",
+  "B07": "sidle/sidle_10.png",
+  "B08": "sidle/sidle_11.png",
+  "B11": "sidle/sidle_12.png",
+  "A02": "idle/idle_06.png",
+  "A04": "idle/idle_07.png",
+  "B04": "idle/idle_08.png",
+  "A01": "click/click_05.png",
+  "A03": "click/click_06.png",
+  "A11": "click/click_07.png",
+  "A12": "click/click_08.png",
+  "B01": "click/click_09.png",
+  "B02": "click/click_10.png",
+  "B09": "click/click_11.png",
+  "B10": "click/click_12.png",
+  "A10": "pat/pat_04.png",
+  "B03": "pat/pat_05.png",
+  "B12": "pat/pat_06.png"
+ }
+}

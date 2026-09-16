@@ -530,6 +530,71 @@ check("待机实际展示以静止为主 (取帧跟随 _seq)", len(shown) == 90 
       f"nonstatic={nonstatic}/90")
 ball.set_pet(False)
 check("切回悬浮球形态", ball.pet is False and ball.width() == 54)
+
+# ---- 2026-09-17: V3 补充素材入库 + 点击分区（顶部 1/3 摸摸头 / 底部 2/3 点击互动）----
+from PySide6.QtCore import QRectF  # noqa: E402
+
+check("v3 各场景帧数（含 09-17 补充素材）",
+      fr3 and [len(fr3[k]) for k in ("idle", "sleep", "wake", "drag", "click", "sidle", "pat")]
+      == [8, 3, 2, 4, 12, 12, 6],
+      str({k: len(v) for k, v in fr3.items()}) if fr3 else "-")
+check("v3 待机序列 n=8 不越界且静止为主",
+      (lambda s: bool(s) and all(0 <= x < 8 for x in s)
+       and sum(1 for x in s if x != 0) <= len(s) * 0.4)(ca._pet_idle_seq(8)))
+
+ca.theme_state["pet_theme"] = "v3"
+w6 = ca.BallWindow(None)
+w6.set_pet(True)
+check("v3 桌宠共加载 47 帧", w6.pet_frames is not None
+      and sum(len(v) for v in w6.pet_frames.values()) == 47,
+      str(sum(len(v) for v in (w6.pet_frames or {}).values())))
+
+w6._pet_draw_rect = QRectF(0, 20, 118, 120)          # 模拟实际绘制区域 y=20..140
+w6._pet_click_region(20 + 120 * 0.2)                 # 顶部 20% → 摸头区
+check("点角色顶部 1/3 → 摸摸头", w6._state == "pat", w6._state)
+w6._pet_click_region(20 + 120 * 0.8)                 # 底部 → 点击区
+check("点角色底部 2/3 → 点击互动", w6._state == "click", w6._state)
+w6._pet_click_region(20 + 120 / 3.0)                 # 正好在分界线 → 归点击
+check("分界线(正好 1/3)归点击互动", w6._state == "click", w6._state)
+w6._pet_click_region(20)                             # 绘制区最顶 → 摸头
+check("绘制区最顶 → 摸摸头", w6._state == "pat", w6._state)
+w6._pet_draw_rect = None                             # 没有绘制区域时退回窗口高度
+w6._pet_click_region(1)
+check("无绘制区域时按窗口高度判断", w6._state == "pat", w6._state)
+w6._pet_click_region(w6.height() - 2)
+check("无绘制区域时底部 → 点击", w6._state == "click", w6._state)
+
+# 双击 = 打开面板（桌宠/悬浮球两种形态都保留）
+_ball_pop = w6._trigger_popup
+_pop_calls = {"n": 0}
+w6._trigger_popup = lambda: _pop_calls.__setitem__("n", _pop_calls["n"] + 1)
+w6.mouseDoubleClickEvent(None)
+check("桌宠双击 → 打开面板", _pop_calls["n"] == 1, f"n={_pop_calls['n']}")
+w6.set_pet(False)
+w6.mouseDoubleClickEvent(None)
+check("悬浮球双击 → 打开面板", _pop_calls["n"] == 2, f"n={_pop_calls['n']}")
+w6._trigger_popup = _ball_pop
+
+# 抽帧自检: 新入库帧每帧只含 1 个"本体级"连通域（没裁断/没带邻居）
+import numpy as _np  # noqa: E402
+from PIL import Image as _Img  # noqa: E402
+from scipy import ndimage as _ndi  # noqa: E402
+_S8 = _np.ones((3, 3), bool)
+_new = ([("sidle", "sidle_%02d.png" % i) for i in range(4, 13)]
+        + [("idle", "idle_%02d.png" % i) for i in (6, 7, 8)]
+        + [("click", "click_%02d.png" % i) for i in range(5, 13)]
+        + [("pat", "pat_%02d.png" % i) for i in (4, 5, 6)])
+_new = list(_new)
+_bad = []
+for _sc, _fn in _new:
+    _p = os.path.join(ca.BASE_DIR, "assets", "pet_v3r", _sc, _fn)
+    _a = _np.asarray(_Img.open(_p).convert("RGBA"))
+    _l, _n = _ndi.label(_a[..., 3] > 128, _S8)
+    _sz = _ndi.sum(_a[..., 3] > 128, _l, range(1, _n + 1)) if _n else []
+    if len([v for v in _sz if v >= 20000]) != 1:
+        _bad.append("%s/%s" % (_sc, _fn))
+check("新入库 %d 帧均只含 1 个本体连通域" % len(_new), not _bad, str(_bad))
+
 ca.theme_state.clear(); ca.theme_state.update(_user_theme)
 ca.save_settings()
 
