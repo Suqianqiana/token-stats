@@ -45,3 +45,5 @@ legacy/
 
 # 饱和度实验区（可用 tools/enhance_pet_saturation.py 重新生成）
 /assets/pet_v3_sat/
+# 饱和度替换前的素材备份（体积大；git 历史里同样留有替换前的原素材，可回退）
+/assets/pet_v3r_bak_preSat_*/

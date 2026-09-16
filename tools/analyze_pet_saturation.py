@@ -115,8 +115,9 @@ def main():
         print("%-10s 帧数=%-3d 像素=%7d | 头发 S: 均%6.1f 中位%6.1f (25%%~75%%: %.0f~%.0f) | V: 均%6.1f"
               % (k, len(vs), len(S_all), sm, sd, s25, s75, vm))
     print("=" * 78)
+    # 注意: groups 里存的是 (S, V) 两个数组 —— 之前误写成 v[1](取到 V), 打印出"中位 161"很误导
     S_new = np.concatenate([v[0] for v in groups["新素材帧"]])
-    S_old = np.concatenate([v[1] for v in groups["原 V3 帧"]])
+    S_old = np.concatenate([v[0] for v in groups["原 V3 帧"]])
     print("饱和度差距: 原 V3 中位 %.1f vs 新素材中位 %.1f → 需增益 ×%.3f 才对等"
           % (np.median(S_old), np.median(S_new), np.median(S_old) / max(1e-6, np.median(S_new))))
     print()

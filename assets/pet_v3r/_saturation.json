@@ -1,0 +1,33 @@
+{
+ "k": 1.2,
+ "lift": 0.16,
+ "at": "2026-09-17 07:08:17",
+ "tool": "tools/apply_pet_saturation.py",
+ "backup_dir": "assets\\pet_v3r_bak_preSat_20260917_0708",
+ "frames": [
+  "click/click_03.png",
+  "idle/idle_06.png",
+  "click/click_04.png",
+  "idle/idle_07.png",
+  "sidle/sidle_04.png",
+  "sidle/sidle_05.png",
+  "sidle/sidle_06.png",
+  "sidle/sidle_07.png",
+  "pat/pat_04.png",
+  "click/click_05.png",
+  "click/click_06.png",
+  "click/click_07.png",
+  "click/click_08.png",
+  "pat/pat_05.png",
+  "idle/idle_08.png",
+  "sidle/sidle_08.png",
+  "sidle/sidle_09.png",
+  "sidle/sidle_10.png",
+  "sidle/sidle_11.png",
+  "click/click_09.png",
+  "click/click_10.png",
+  "sidle/sidle_12.png",
+  "pat/pat_06.png"
+ ],
+ "failed": []
+}
