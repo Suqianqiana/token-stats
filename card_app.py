@@ -1438,9 +1438,11 @@ SN_USE_PLAYWRIGHT = True   # 真自动抓取开关 (测试环境置 False 走 cU
 SN_CRED_HOST_OK = "sensenova.cn"     # cURL 凭据必须指向商汤域名, 否则视为无效并归档
 SN_HTTP_TIMEOUT = 8                  # 快路径单次 HTTP 超时 (原 15s × 最坏 3 次 → 40s+, 严重拖慢刷新)
 SN_HTTP_TRIES = 2                    # 瞬时网络错误重试次数
+SN_401_TRIES = 2                     # 瞬时 401 重试次数 (实测存在"同一 token 一会儿 401 一会儿 200")
 SN_TOKEN_MIN_TTL = 120               # token 剩余寿命低于此值 → 直接续期, 省掉一次注定 401 的往返
-SN_TOKEN_REFRESH_MARGIN = 900        # 剩余寿命低于此值 → 周期刷新时提前续期, 用户几乎不会撞上慢路径
-SN_CRED_RESP_WAIT = 25               # 控制台页面等待额度响应上限 (秒, 事件驱动: 一到就走)
+SN_TOKEN_REFRESH_MARGIN = 900        # 剩余寿命低于此值 → 周期刷新时提前续期
+SN_CRED_RESP_WAIT = 25               # 控制台页面等待额度响应总上限 (秒, 事件驱动: 一到就走)
+SN_CRED_RESP_FAST = 8                # 先快等这么久; 还没到就用页面里的 token 自己直连(见下)
 _sn_edge_mem = {"path": None, "ts": 0.0}
 _sn_tok_mem = {"tok": None, "exp": None}
 
@@ -1760,6 +1762,12 @@ def _sn_playwright_login_and_fetch():
 
             page.on("response", on_response)
 
+            def _grab_token():
+                try:
+                    return page.evaluate("() => localStorage.getItem('access_token')")
+                except Exception:
+                    return None
+
             def _wait_data(limit):
                 """事件驱动等待: 额度响应一到立刻返回, 而不是死等固定秒数"""
                 end = time.time() + limit
@@ -1778,12 +1786,30 @@ def _sn_playwright_login_and_fetch():
                 return bool(captured.get("data"))
 
             try:
+                # commit 级导航: SPA 的 load/domcontentloaded 可能很慢, 而额度请求在 JS 起来后
+                # 就会发出 → 用 commit + 轮询可以比原来省 3~7s
                 page.goto(SN_CONSOLE_URL, wait_until="commit", timeout=20000)
             except Exception:
                 pass
-            _wait_data(SN_CRED_RESP_WAIT)
 
+            # ① 先快等页面自己发的额度响应 (常见 2~4s)
+            _wait_data(SN_CRED_RESP_FAST)
+
+            # ② 页面额度请求迟迟没发(SPA 慢/改版) → 用页面里的 token 自己直连一次。
+            #    实测控制台 SPA 冷启动慢时, 页面自己的请求可能 25s 都不出现, 而 localStorage
+            #    里的 token 早就可用了 —— 这一步能把那种情况从 25s+ 压到 ~8s。
+            if not captured.get("data") and "/login" not in (page.url or ""):
+                _tk = _grab_token()
+                if _tk:
+                    _d, _e = _sn_direct_fetch(_tk)
+                    if _d is not None and _d.get("pools"):
+                        captured["data"] = _d
+                        token = _tk
+                        _sn_cred_log("browser", "页面额度请求未到, 改用页面 token 直连成功")
+
+            # ③ 还没拿到 → 继续等满, 然后按"是否在登录页"分流
             if not captured.get("data"):
+                _wait_data(max(0, SN_CRED_RESP_WAIT - SN_CRED_RESP_FAST))
                 on_login = "/login" in (page.url or "")
                 if on_login:
                     if not username or not password:
@@ -1808,10 +1834,8 @@ def _sn_playwright_login_and_fetch():
                 if not captured.get("data"):
                     return None, None, "未捕获到积分数据 (控制台响应超时或页面改版)"
 
-            try:
-                token = page.evaluate("() => localStorage.getItem('access_token')")
-            except Exception:
-                pass
+            if not token:
+                token = _grab_token()
 
             try:
                 ctx.storage_state(path=SN_LOGIN_STATE)
@@ -1851,7 +1875,17 @@ def sn_playwright_fetch(force_login=False, proactive=False):
     if tok and not need_browser:
         if ttl is None or ttl > SN_TOKEN_MIN_TTL:
             t0 = time.perf_counter()
-            data, err = _sn_direct_fetch(tok)
+            data, err = None, None
+            for attempt in range(SN_401_TRIES + 1):
+                data, err = _sn_direct_fetch(tok)
+                if data is not None or err != "401":
+                    break
+                # 实测存在"同一 token 一会儿 401 一会儿 200"(服务端瞬时抖动/多节点不一致)。
+                # 直接升级到浏览器要 5~30s, 而在这里多试一次只要 <1s —— 非常划算。
+                if attempt < SN_401_TRIES:
+                    _sn_cred_log("token-401", "瞬时 401, %.1fs 后重试 (%d/%d)"
+                                 % (0.6 * (attempt + 1), attempt + 1, SN_401_TRIES))
+                    time.sleep(0.6 * (attempt + 1))
             if data is not None:
                 values = _sn_parse_pool_data(data)
                 if values:

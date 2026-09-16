@@ -9,6 +9,10 @@ import os, sys, json, time, base64, datetime, tempfile
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# --- 禁止生成 .pyc: 火绒把 __pycache__/card_app.cpython-313.pyc 误判为
+#     Trojan/Python.ShellLoader.am 并删除+结束进程(实测 12 次)。不写字节码 = 不触发。
+import sys as _sys
+_sys.dont_write_bytecode = True
 import card_app as ca
 
 # cURL 凭据/日志走临时目录 (诊断不该改写真实配置)

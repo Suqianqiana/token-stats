@@ -7,6 +7,10 @@ import os, sys, time, tempfile
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# --- 禁止生成 .pyc: 火绒把 __pycache__/card_app.cpython-313.pyc 误判为
+#     Trojan/Python.ShellLoader.am 并删除+结束进程(实测 12 次)。不写字节码 = 不触发。
+import sys as _sys
+_sys.dont_write_bytecode = True
 import card_app as ca
 from PySide6.QtWidgets import QApplication
 
@@ -14,6 +18,7 @@ from PySide6.QtWidgets import QApplication
 _TMP = tempfile.mkdtemp(prefix="tstats_diag_")
 ca.SN_AUTOSYNC_FILE = os.path.join(_TMP, "sn_autosync.json")
 ca.SN_CRED_LOG = os.path.join(_TMP, "sn_cred.log")
+ca.SETTINGS_FILE = os.path.join(_TMP, "settings.json")   # 同理: 别覆盖用户的 source/主题/桌宠
 ca.SN_USE_PLAYWRIGHT = False     # 不真拉浏览器
 
 app = QApplication.instance() or QApplication([])

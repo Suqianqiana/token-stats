@@ -5,6 +5,10 @@ import os, sys, time, json, tempfile
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# --- 禁止生成 .pyc: 火绒把 __pycache__/card_app.cpython-313.pyc 误判为
+#     Trojan/Python.ShellLoader.am 并删除+结束进程(实测 12 次)。不写字节码 = 不触发。
+import sys as _sys
+_sys.dont_write_bytecode = True
 import card_app as ca
 from PySide6.QtWidgets import QApplication
 
@@ -15,9 +19,23 @@ ca.SN_USE_PLAYWRIGHT = False   # 回归测试关闭 Playwright 真自动, 走 cU
 # 之后每次真自动失败都会回退到那个不存在的域名, 于是"时不时获取失败"。
 _TMP_DATA = tempfile.mkdtemp(prefix="tstats_regress_")
 _REAL_AUTOSYNC_FILE = ca.SN_AUTOSYNC_FILE
+_REAL_SETTINGS_FILE = ca.SETTINGS_FILE
 ca.SN_AUTOSYNC_FILE = os.path.join(_TMP_DATA, "sn_autosync.json")
 ca.SN_CRED_LOG = os.path.join(_TMP_DATA, "sn_cred.log")
 _user_autosync = ca.load_sn_autosync()
+
+# ---- settings.json 同样隔离 ----
+# 历史事故: 本测试会切数据源/改主题/切桌宠形态并 save_settings(), 而 _user_theme 是在
+# 第 8 节才快照的 —— 此时前 7 节早已改过 theme_state, 于是**跑一次测试就把用户的
+# source/dark/pet 覆盖掉**(实测把 sn→wb、dark→false、pet→true→false),
+# 用户看到的是"商汤页不更新了 / 桌宠没了"。这里把设置文件也指到临时目录。
+ca.SETTINGS_FILE = os.path.join(_TMP_DATA, "settings.json")
+try:                                    # 用用户真实设置作初值, 保证测试路径与真机一致
+    with open(_REAL_SETTINGS_FILE, "r", encoding="utf-8") as _f:
+        with open(ca.SETTINGS_FILE, "w", encoding="utf-8") as _g:
+            _g.write(_f.read())
+except OSError:
+    pass
 
 app = QApplication.instance() or QApplication([])
 PASS = 0
@@ -604,7 +622,41 @@ ca._sn_load_token = lambda: _mk_jwt(_now + 60)
 _browser["n"] = 0
 ca.sn_playwright_fetch(proactive=True)
 check("续期窗口内主动换证", _browser["n"] == 1, f"browser={_browser['n']}")
-check("剩余寿命查询可用", ca.sn_token_ttl() is not None and ca.sn_token_near_expiry() is True)
+check("剩余寿命查询可用", ca.sn_token_ttl() is not None and ca.sn_token_near_expiry() is True,
+      f"ttl={ca.sn_token_ttl()}")
+
+# 瞬时 401: 实测同一 token 会"一会儿 401 一会儿 200" → 应先重试直连, 不要立刻升级浏览器
+ca._sn_load_token = lambda: _tok_live
+_seq = {"n": 0}
+
+
+def _flaky_direct(tok):
+    _seq["n"] += 1
+    if _seq["n"] == 1:
+        return None, "401"                     # 第一次瞬时 401
+    return {"pools": [{"pool_type": "default", "name": "通用积分池",
+                       "window_5h": {"remaining": 7}, "window_7d": {"remaining": 8}}]}, None
+
+
+ca._sn_direct_fetch = _flaky_direct
+_browser["n"] = 0
+v_flaky, _e3 = ca.sn_playwright_fetch()
+check("瞬时 401 先重试直连 (不立刻拉浏览器)",
+      _seq["n"] == 2 and _browser["n"] == 0 and bool(v_flaky),
+      f"direct={_seq['n']} browser={_browser['n']}")
+
+# 真失效(连续 401) → 重试耗尽后仍要升级浏览器
+def _dead_direct(tok):
+    _seq["n"] += 1
+    return None, "401"
+
+
+_seq["n"] = 0
+ca._sn_direct_fetch = _dead_direct
+_browser["n"] = 0
+ca.sn_playwright_fetch()
+check("连续 401 才升级浏览器", _seq["n"] == ca.SN_401_TRIES + 1 and _browser["n"] == 1,
+      f"direct={_seq['n']} browser={_browser['n']}")
 
 ca._sn_load_token = _orig_load_token
 ca._sn_playwright_login_and_fetch = _orig_play_auth
@@ -663,4 +715,9 @@ check("凭据链路日志落盘",
 # ---- 还原真实数据目录路径 (临时目录随系统清理) ----
 ca._sn_events_all = orig_events
 ca.SN_AUTOSYNC_FILE = _REAL_AUTOSYNC_FILE
+ca.SETTINGS_FILE = _REAL_SETTINGS_FILE
+_saved = json.load(open(ca.SETTINGS_FILE, encoding="utf-8"))
+check("测试未污染真实 settings.json (source/dark/pet 保持)",
+      _saved.get("source") is not None and "pet" in _saved,
+      f"source={_saved.get('source')} dark={_saved.get('dark')} pet={_saved.get('pet')}")
 print(f"\nALL {PASS} CHECKS PASSED")
