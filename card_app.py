@@ -687,7 +687,11 @@ class ModelRow(QWidget):
         ChartTip.instance().hide_tip()
 
     def mouseMoveEvent(self, ev):
-        # 跟随鼠标持续更新悬浮框(与柱状图一致), 避免 enter/leave 抖动 + 固定位置不跟随导致的闪烁
+        # 跟随鼠标持续更新悬浮框 + 50ms 节流(每像素触发会重建 tip, 鼠标扫过 CPU 飙高)
+        now = time.time()
+        if now - getattr(self, "_last_tip_t", 0.0) < 0.05:
+            return
+        self._last_tip_t = now
         self._show_tip(ev.globalPosition().toPoint())
 
     def _show_tip(self, global_pos=None):
@@ -782,7 +786,11 @@ class StackedBarChart(QWidget):
         top = [m for m, _ in models_rank[:8]]
         self.colors = {m: MODEL_COLORS[i % len(MODEL_COLORS)] for i, m in enumerate(top)}
         days = sorted(d for d in daily if d != "unknown")
-        
+
+        # 数据末日期未延展 → 保留用户滚轮缩放/平移 (切窗口尺寸/刷新不再丢视图)
+        old_last = self.all_data[-1]["date"] if self.all_data else None
+        keep_view = bool(days) and days[-1] == old_last
+
         self.all_data = []
         for d in days:
             parts = []
@@ -792,11 +800,12 @@ class StackedBarChart(QWidget):
                     parts.append((m, self.colors[m], v))
             self.all_data.append({"date": d, "parts": parts})
 
-        total = len(self.all_data)
-        default_len = min(35.0, float(total)) if total > 0 else 35.0
-        self.view_count = default_len
-        self.view_start = float(max(0, total - int(default_len)))
-        self._sync_slice()
+        if not keep_view:
+            total = len(self.all_data)
+            default_len = min(35.0, float(total)) if total > 0 else 35.0
+            self.view_count = default_len
+            self.view_start = float(max(0, total - int(default_len)))
+        self._sync_slice()   # 内部已有 clamp, 不会越界
 
     def _sync_slice(self):
         total = len(self.all_data)
@@ -1524,14 +1533,29 @@ def _sn_edge_path():
     return None
 
 
-def _sn_account_ready():
-    """是否已配置账号密码 (可支撑浏览器自动登录)"""
+def _sn_account_credentials():
+    """读取账号密码 (兼容 password_b64 base64 + 旧明文 password)"""
     try:
         with open(SN_ACCOUNT_FILE, "r", encoding="utf-8-sig") as f:
-            a = json.load(f)
-        return bool(a.get("username") and a.get("password"))
+            d = json.load(f)
     except Exception:
-        return False
+        return "", ""
+    username = d.get("username", "")
+    pwd = d.get("password_b64", "")
+    if pwd:
+        try:
+            pwd = base64.b64decode(pwd).decode("utf-8")
+        except Exception:
+            pwd = ""
+    else:
+        pwd = d.get("password", "")   # 兼容旧明文
+    return username, pwd
+
+
+def _sn_account_ready():
+    """是否已配置账号密码 (可支撑浏览器自动登录)"""
+    username, password = _sn_account_credentials()
+    return bool(username and password)
 
 
 def _sn_token_exp(tok):
@@ -1630,7 +1654,7 @@ def _sn_direct_fetch(token):
         except Exception:
             return None
 
-    def _do(direct=False, insecure=True):
+    def _do(direct=False, insecure=False):
         req = urllib.request.Request(SN_POOL_URL, headers={
             "Authorization": "Bearer " + token,
             "accept": "application/json",
@@ -1664,6 +1688,21 @@ def _sn_direct_fetch(token):
             return None, f"HTTP {e.code}"
         except urllib.error.URLError as e:
             reason = str(getattr(e, "reason", "")) + str(e)
+            # SSL 证书校验失败(企业代理/MITM) → 仅此情况放宽校验重试一次
+            ru = reason.upper()
+            if any(k in ru for k in ("SSL", "CERTIFICATE", "CERTIFICATION")):
+                try:
+                    data = _do(direct=False, insecure=True)
+                    if _ok(data):
+                        _sn_cred_log("token-direct", "证书校验失败 → 已放宽一次成功")
+                        return data, None
+                    return None, "积分接口无 pools 数据"
+                except urllib.error.HTTPError as e2:
+                    if e2.code in (401, 403):
+                        return None, "401"
+                    return None, f"HTTP {e2.code}"
+                except Exception as e2:
+                    return None, str(e2)[:120]
             # 系统代理拒绝连接 → 绕过代理直连重试
             if "10061" in reason or "ProxyError" in reason or "proxy" in reason.lower():
                 try:
@@ -1728,13 +1767,7 @@ def _sn_playwright_login_and_fetch():
     except Exception as e:
         return None, None, f"playwright 导入失败: {str(e)[:80]}"
 
-    username = password = ""
-    try:
-        with open(SN_ACCOUNT_FILE, "r", encoding="utf-8-sig") as f:
-            acct = json.load(f)
-        username, password = acct.get("username", ""), acct.get("password", "")
-    except Exception:
-        pass
+    username, password = _sn_account_credentials()
 
     captured = {}
     token = None
@@ -2024,7 +2057,7 @@ def _sn_events_all():
     for path in scanner._iter_jsonl_files():
         try:
             st = os.stat(path)
-            size, mtime = st.st_size, int(st.st_mtime)
+            size, mtime = st.st_size, st.st_mtime_ns // 1_000_000   # 毫秒精度(秒级会漏检同秒两次写入)
         except OSError:
             continue
         ent = cache.get(path)
@@ -2607,10 +2640,11 @@ class SNPromoCard(GlassPodFrame):
 
 
 class SNSyncPanel(GlassPodFrame):
-    """纯净极简同步面板: 采用小细条标题设计语言"""
+    """商汤同步面板: 分段切换「账号密码(自动登录) / 手动 cURL(兜底)」"""
     saved = Signal()
     cleared = Signal()
     save_finished = Signal(bool, str)
+    account_saved = Signal()
 
     def __init__(self, parent=None):
         super().__init__(radius=12, parent=parent)
@@ -2618,65 +2652,132 @@ class SNSyncPanel(GlassPodFrame):
         self._status_mode = "none"
         self._status_msg = "未配置自动同步"
         self._sync_test = False
+        self._seg = "account"
         self.save_finished.connect(self._on_save_finished)
         self._build_ui()
+        self._load_account()
         self.apply_theme()
+
+    def _seg_btn(self, text):
+        b = QPushButton(text)
+        b.setCheckable(True)
+        b.setCursor(Qt.PointingHandCursor)
+        return b
 
     def _build_ui(self):
         v = QVBoxLayout(self)
-        v.setContentsMargins(16, 6, 16, 6)
-        v.setSpacing(5)
+        v.setContentsMargins(16, 8, 16, 8)
+        v.setSpacing(7)
 
+        # 顶栏: 小细条 + 标题 + 状态徽标
         head = QHBoxLayout()
         head.setSpacing(8)
-
         self.bar_indicator = BarIndicator(QColor("#3b6fe0"))
         head.addWidget(self.bar_indicator, 0, Qt.AlignVCenter)
-
-        self.title_lbl = QLabel("控制台 cURL 自动同步")
+        self.title_lbl = QLabel("商汤同步")
         head.addWidget(self.title_lbl, 0, Qt.AlignVCenter)
-
         self.status_lbl = QLabel("")
         head.addWidget(self.status_lbl, 0, Qt.AlignVCenter)
-
         head.addStretch(1)
-
-        self.guide_lbl = QLabel("F12 复制「积分额度」请求的 cURL 粘贴于此 (每 5 分钟自动更新)")
-        head.addWidget(self.guide_lbl, 0, Qt.AlignVCenter)
         v.addLayout(head)
 
+        # 分段切换按钮
+        seg = QHBoxLayout()
+        seg.setSpacing(4)
+        self.btn_seg_account = self._seg_btn("🔐 账号密码")
+        self.btn_seg_curl = self._seg_btn("📋 手动 cURL")
+        self.btn_seg_account.clicked.connect(lambda: self._switch_seg("account"))
+        self.btn_seg_curl.clicked.connect(lambda: self._switch_seg("curl"))
+        seg.addWidget(self.btn_seg_account)
+        seg.addWidget(self.btn_seg_curl)
+        v.addLayout(seg)
+
+        # 内容栈
+        self.content_stack = QStackedWidget()
+
+        # 页0: 账号密码 (自动登录主路径)
+        acc_page = QWidget()
+        acc_lay = QVBoxLayout(acc_page)
+        acc_lay.setContentsMargins(0, 2, 0, 0)
+        acc_lay.setSpacing(6)
+        form = QHBoxLayout()
+        form.setSpacing(8)
+        self.user_tag = QLabel("账号")
+        self.user_tag.setFixedWidth(32)
+        form.addWidget(self.user_tag)
+        self.user_edit = QLineEdit()
+        self.user_edit.setPlaceholderText("商汤账号")
+        form.addWidget(self.user_edit, 3)
+        self.pwd_tag = QLabel("密码")
+        self.pwd_tag.setFixedWidth(32)
+        form.addWidget(self.pwd_tag)
+        self.pwd_edit = QLineEdit()
+        self.pwd_edit.setEchoMode(QLineEdit.Password)
+        self.pwd_edit.setPlaceholderText("商汤密码")
+        form.addWidget(self.pwd_edit, 3)
+        self.btn_show = QPushButton("显示")
+        self.btn_show.setCheckable(True)
+        self.btn_show.setCursor(Qt.PointingHandCursor)
+        self.btn_show.clicked.connect(self._toggle_pwd)
+        form.addWidget(self.btn_show)
+        acc_lay.addLayout(form)
+        brow = QHBoxLayout()
+        brow.setSpacing(8)
+        self.account_guide = QLabel("仅存本机, 用于凭证过期自动重登")
+        brow.addWidget(self.account_guide, 1)
+        self.btn_save_account = QPushButton("保存账号")
+        self.btn_save_account.setCursor(Qt.PointingHandCursor)
+        self.btn_save_account.clicked.connect(self._on_account_save)
+        brow.addWidget(self.btn_save_account)
+        acc_lay.addLayout(brow)
+        self.content_stack.addWidget(acc_page)
+
+        # 页1: 手动 cURL (兜底)
+        curl_page = QWidget()
+        curl_lay = QVBoxLayout(curl_page)
+        curl_lay.setContentsMargins(0, 2, 0, 0)
+        curl_lay.setSpacing(6)
         self.curl_edit = QPlainTextEdit()
         self.curl_edit.setPlaceholderText('粘贴 cURL 命令 (curl "https://platform.sensenova.cn/lite/console/...")')
-        self.curl_edit.setFixedHeight(34)
-        v.addWidget(self.curl_edit)
-
+        self.curl_edit.setFixedHeight(52)
+        curl_lay.addWidget(self.curl_edit)
         row = QHBoxLayout()
         row.setSpacing(8)
-
         self.err_lbl = QLabel("")
         row.addWidget(self.err_lbl, 1)
-
         self.btn_clear = QPushButton("清除凭据")
         self.btn_clear.setCursor(Qt.PointingHandCursor)
         self.btn_clear.clicked.connect(self._on_clear)
         row.addWidget(self.btn_clear)
-
         self.btn_save = QPushButton("保存并同步")
         self.btn_save.setCursor(Qt.PointingHandCursor)
         self.btn_save.clicked.connect(self._on_save)
         row.addWidget(self.btn_save)
+        curl_lay.addLayout(row)
+        self.content_stack.addWidget(curl_page)
 
-        v.addLayout(row)
+        v.addWidget(self.content_stack)
+
+        self._switch_seg("account")
 
     def apply_size(self):
         m = curr_metric()
         self.title_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_title_pt"], QFont.Bold))
         self.status_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"], QFont.Bold))
-        self.guide_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
+        self.account_guide.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
         self.err_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
-        self.curl_edit.setFixedHeight(34)
+        self.user_tag.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
+        self.pwd_tag.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
+        self.user_edit.setFixedHeight(32)
+        self.pwd_edit.setFixedHeight(32)
+        self.btn_show.setFixedHeight(32)
+        self.btn_show.setFixedWidth(44)
+        self.curl_edit.setFixedHeight(52)
         self.btn_clear.setFixedHeight(m["opt_btn_h"])
         self.btn_save.setFixedHeight(m["opt_btn_h"])
+        self.btn_save_account.setFixedHeight(m["opt_btn_h"])
+        for b in (self.btn_seg_account, self.btn_seg_curl):
+            b.setFixedHeight(m["opt_btn_h"])
         self.update()
 
     def set_status(self, s):
@@ -2712,6 +2813,56 @@ class SNSyncPanel(GlassPodFrame):
         self._status_msg = f"⚠ {str(msg)[:26]}"
         self.status_lbl.setToolTip(str(msg))
         self.apply_theme()
+
+    def _switch_seg(self, which):
+        self._seg = which
+        self.btn_seg_account.setChecked(which == "account")
+        self.btn_seg_curl.setChecked(which == "curl")
+        self.content_stack.setCurrentIndex(0 if which == "account" else 1)
+        self._apply_seg_style()
+
+    def _apply_seg_style(self):
+        m = curr_metric()
+        checked = ("QPushButton{ background:#3b6fe0; color:white; border:none; border-radius:6px;"
+                   f" padding:4px 12px; font-size:{m['opt_btn_px']}px; font-weight:600; }}")
+        normal = (f"QPushButton{{ background:{qrgba(TRACK)}; color:{qname(TEXT2)};"
+                  f" border:1px solid {qrgba(BORDER)}; border-radius:6px;"
+                  f" padding:4px 12px; font-size:{m['opt_btn_px']}px; }}"
+                  f"QPushButton:hover{{ background:{qrgba(HOVER)}; color:{qname(TEXT)}; }}")
+        for b in (self.btn_seg_account, self.btn_seg_curl):
+            b.setStyleSheet(checked if b.isChecked() else normal)
+
+    def _toggle_pwd(self):
+        if self.btn_show.isChecked():
+            self.pwd_edit.setEchoMode(QLineEdit.Normal)
+            self.btn_show.setText("隐藏")
+        else:
+            self.pwd_edit.setEchoMode(QLineEdit.Password)
+            self.btn_show.setText("显示")
+
+    def _load_account(self):
+        username, password = _sn_account_credentials()
+        self.user_edit.setText(username)
+        self.pwd_edit.setText(password)
+
+    def _on_account_save(self):
+        username = self.user_edit.text().strip()
+        password = self.pwd_edit.text()
+        if not username or not password:
+            self.account_guide.setText("请填写账号和密码")
+            self.account_guide.setStyleSheet("color:#e05252;")
+            return
+        try:
+            b64 = base64.b64encode(password.encode("utf-8")).decode("ascii")
+            with open(SN_ACCOUNT_FILE, "w", encoding="utf-8") as f:
+                json.dump({"username": username, "password_b64": b64}, f, ensure_ascii=False)
+        except Exception as e:
+            self.account_guide.setText(f"保存失败: {str(e)[:30]}")
+            self.account_guide.setStyleSheet("color:#e05252;")
+            return
+        self.account_guide.setText("✓ 已保存")
+        self.account_guide.setStyleSheet("color:#34d399;")
+        self.account_saved.emit()
 
     def _on_clear(self):
         clear_sn_autosync()
@@ -2780,9 +2931,15 @@ class SNSyncPanel(GlassPodFrame):
             f"QPlainTextEdit {{ background:{qrgba(TRACK)}; color:{text}; border:1px solid {border};"
             f" border-radius:6px; padding:6px 8px; font-family:Consolas, monospace; font-size:{m['opt_btn_px']}px; }}"
             f"QPlainTextEdit:focus {{ border:1px solid #3b6fe0; }}"
+            f"QLineEdit {{ background:{qrgba(TRACK)}; color:{text}; border:1px solid {border};"
+            f" border-radius:6px; padding:5px 8px; font-size:{m['opt_btn_px']}px; }}"
+            f"QLineEdit:focus {{ border:1px solid #3b6fe0; }}"
         )
         self.title_lbl.setStyleSheet(f"color:{text};")
-        self.guide_lbl.setStyleSheet(f"color:{text3};")
+        self.account_guide.setStyleSheet(f"color:{text3};")
+        self.user_tag.setStyleSheet(f"color:{text2};")
+        self.pwd_tag.setStyleSheet(f"color:{text2};")
+        self._apply_seg_style()
 
         mode = self._status_mode
         if mode == "success":
@@ -2813,147 +2970,12 @@ class SNSyncPanel(GlassPodFrame):
             f" padding:4px 16px; font-size:{m['opt_btn_px']}px; font-weight:600; }}"
             "QPushButton:hover{ background:#2f5ec4; }"
             "QPushButton:disabled{ background:#7c8aa5; color:#e6e9f0; }")
-        self.apply_size()
-        self.update()
-
-
-class SNAccountCard(GlassPodFrame):
-    """账号密码卡片: 采用小细条设计语言"""
-    saved = Signal()
-
-    def __init__(self, parent=None):
-        super().__init__(radius=12, parent=parent)
-        self.setObjectName("sn_account_card")
-        self._build_ui()
-        self._load_account()
-        self.apply_theme()
-
-    def _build_ui(self):
-        v = QVBoxLayout(self)
-        v.setContentsMargins(16, 6, 16, 6)
-        v.setSpacing(5)
-
-        head = QHBoxLayout()
-        head.setSpacing(8)
-
-        self.bar_indicator = BarIndicator(QColor("#8b5cd6"))
-        head.addWidget(self.bar_indicator, 0, Qt.AlignVCenter)
-
-        self.title_lbl = QLabel("账号密码 (自动登录凭据)")
-        head.addWidget(self.title_lbl, 0, Qt.AlignVCenter)
-        head.addStretch(1)
-
-        self.status_lbl = QLabel("")
-        head.addWidget(self.status_lbl, 0, Qt.AlignVCenter)
-        v.addLayout(head)
-
-        form = QHBoxLayout()
-        form.setSpacing(8)
-        self.user_tag = QLabel("账号")
-        self.user_tag.setFixedWidth(32)
-        form.addWidget(self.user_tag)
-        self.user_edit = QLineEdit()
-        self.user_edit.setPlaceholderText("商汤账号")
-        form.addWidget(self.user_edit, 3)
-        self.pwd_tag = QLabel("密码")
-        self.pwd_tag.setFixedWidth(32)
-        form.addWidget(self.pwd_tag)
-        self.pwd_edit = QLineEdit()
-        self.pwd_edit.setEchoMode(QLineEdit.Password)
-        self.pwd_edit.setPlaceholderText("商汤密码")
-        form.addWidget(self.pwd_edit, 3)
-        self.btn_show = QPushButton("显示")
-        self.btn_show.setCheckable(True)
-        self.btn_show.setCursor(Qt.PointingHandCursor)
-        self.btn_show.clicked.connect(self._toggle_pwd)
-        form.addWidget(self.btn_show)
-        v.addLayout(form)
-
-        brow = QHBoxLayout()
-        brow.setSpacing(8)
-        self.guide_lbl = QLabel("仅存本机，用于网页凭据过期自动重登")
-        brow.addWidget(self.guide_lbl, 1)
-        self.btn_save = QPushButton("保存账号")
-        self.btn_save.setCursor(Qt.PointingHandCursor)
-        self.btn_save.clicked.connect(self._on_save)
-        brow.addWidget(self.btn_save)
-        v.addLayout(brow)
-
-    def _toggle_pwd(self):
-        if self.btn_show.isChecked():
-            self.pwd_edit.setEchoMode(QLineEdit.Normal)
-            self.btn_show.setText("隐藏")
-        else:
-            self.pwd_edit.setEchoMode(QLineEdit.Password)
-            self.btn_show.setText("显示")
-
-    def _load_account(self):
-        try:
-            with open(SN_ACCOUNT_FILE, "r", encoding="utf-8-sig") as f:
-                d = json.load(f)
-            self.user_edit.setText(d.get("username", ""))
-            self.pwd_edit.setText(d.get("password", ""))
-        except Exception:
-            pass
-
-    def _on_save(self):
-        username = self.user_edit.text().strip()
-        password = self.pwd_edit.text()
-        if not username or not password:
-            self.status_lbl.setText("请填写账号和密码")
-            self._status_color = "#e05252"
-            self.apply_theme()
-            return
-        try:
-            with open(SN_ACCOUNT_FILE, "w", encoding="utf-8") as f:
-                json.dump({"username": username, "password": password}, f, ensure_ascii=False)
-        except Exception as e:
-            self.status_lbl.setText(f"保存失败: {str(e)[:30]}")
-            self._status_color = "#e05252"
-            self.apply_theme()
-            return
-        self.status_lbl.setText("✓ 已保存")
-        self._status_color = "#34d399"
-        self.apply_theme()
-        self.saved.emit()
-
-    def apply_size(self):
-        m = curr_metric()
-        self.title_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_title_pt"], QFont.Bold))
-        self.status_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
-        self.guide_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
-        self.user_tag.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
-        self.pwd_tag.setFont(QFont("Microsoft YaHei UI", m["sn_sub_pt"]))
-        self.user_edit.setFixedHeight(32)
-        self.pwd_edit.setFixedHeight(32)
-        self.btn_show.setFixedHeight(32)
-        self.btn_show.setFixedWidth(44)
-        self.btn_save.setFixedHeight(m["opt_btn_h"])
-        self.update()
-
-    def apply_theme(self):
-        dark = theme_state["dark"]
-        border = qrgba(BORDER)
-        text, text2, text3 = qname(TEXT), qname(TEXT2), qname(TEXT3)
-        m = curr_metric()
-        self.setStyleSheet(
-            "#sn_account_card { background:transparent; border:none; }"
-            f"QLineEdit {{ background:{qrgba(TRACK)}; color:{text}; border:1px solid {border};"
-            f" border-radius:6px; padding:5px 8px; font-size:{m['opt_btn_px']}px; }}"
-            f"QLineEdit:focus {{ border:1px solid #3b6fe0; }}"
-        )
-        self.title_lbl.setStyleSheet(f"color:{text};")
-        self.guide_lbl.setStyleSheet(f"color:{text3};")
-        self.user_tag.setStyleSheet(f"color:{text2};")
-        self.pwd_tag.setStyleSheet(f"color:{text2};")
-        sc = getattr(self, "_status_color", text3)
-        self.status_lbl.setStyleSheet(f"color:{sc};")
         self.btn_show.setStyleSheet(
             f"QPushButton{{ background:transparent; color:{text3}; border:none;"
             f" border-radius:6px; font-size:{m['sn_sub_pt']}px; padding:0 6px; }}"
             f"QPushButton:hover{{ color:#3b6fe0; }}"
             "QPushButton:checked{ color:#3b6fe0; font-weight:600; }")
-        self.btn_save.setStyleSheet(
+        self.btn_save_account.setStyleSheet(
             "QPushButton{ background:#3b6fe0; color:white; border:none; border-radius:6px;"
             f" padding:4px 16px; font-size:{m['opt_btn_px']}px; font-weight:600; }}"
             "QPushButton:hover{ background:#2f5ec4; }")
@@ -2985,16 +3007,12 @@ class SNQuotaPage(QWidget):
         self.promo_bar = self.promo_card
         v.addWidget(self.promo_card)
 
-        # 3. 极简同步面板
+        # 3. 商汤同步面板 (账号密码 + 手动 cURL 分段)
         self.sync_panel = SNSyncPanel()
         self.sync_panel.saved.connect(self.saved)
         self.sync_panel.cleared.connect(self.cleared)
+        self.sync_panel.account_saved.connect(self._on_account_saved)
         v.addWidget(self.sync_panel)
-
-        # 3.5. 账号密码卡片
-        self.account_card = SNAccountCard()
-        self.account_card.saved.connect(self._on_account_saved)
-        v.addWidget(self.account_card)
 
         # 4. 底部微型注释
         self.foot_lbl = QLabel("注: 上限为官方公开的公测期固定额度 (60,000/5h · 600,000/周)；数据均以控制台实际调用与配额为准。")
@@ -3013,7 +3031,6 @@ class SNQuotaPage(QWidget):
                 w.apply_size()
         self.promo_card.apply_size()
         self.sync_panel.apply_size()
-        self.account_card.apply_size()
         self.update()
 
     def _on_account_saved(self):
@@ -3059,7 +3076,6 @@ class SNQuotaPage(QWidget):
 
         self.promo_card.apply_theme()
         self.sync_panel.apply_theme()
-        self.account_card.apply_theme()
         self.apply_size()
 
 class NavButton(QPushButton):
@@ -3230,6 +3246,8 @@ class CardWindow(QWidget):
 
         top_bar = QHBoxLayout()
         self.subtitle = QLabel("加载中…")
+        self.subtitle.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.subtitle.setMinimumWidth(0)
         top_bar.addWidget(self.subtitle, 1)
 
         self.range_box = QWidget()
@@ -3463,6 +3481,7 @@ class CardWindow(QWidget):
 
         self.app_title.setStyleSheet(f"color:{qname(TEXT)};")
         self.subtitle.setStyleSheet(f"color:{qname(TEXT3)};")
+        self.src_head.setStyleSheet(f"color:{qname(TEXT3)}; padding-left:4px;")
 
         if glass:
             tb_bg = "rgba(255, 255, 255, 0.08)" if dark else "rgba(255, 255, 255, 0.45)"
@@ -3511,7 +3530,7 @@ class CardWindow(QWidget):
             f"QPushButton{{ background:transparent; color:{qname(TEXT2)}; border:none; border-radius:8px;"
             f" text-align:left; padding-left:10px; }}"
             f"QPushButton:hover{{ background:{qrgba(HOVER)}; color:{qname(TEXT)}; }}"
-            f"QPushButton:checked{{ background:{qrgba(BLUE, 30 if dark else 20)}; color:#3b6fe0; font-weight:700; }}")
+            f"QPushButton:checked{{ background:{qrgba(BLUE, 55 if dark else 25)}; color:#3b6fe0; font-weight:700; }}")
         for b in (self.btn_nav_wb, self.btn_nav_dsh, self.btn_nav_sn):
             b.setStyleSheet(nav_style)
 
