@@ -16,16 +16,36 @@
   "A02": "idle/idle_06.png",
   "A04": "idle/idle_07.png",
   "B04": "idle/idle_08.png",
-  "A01": "click/click_05.png",
-  "A03": "click/click_06.png",
-  "A11": "click/click_07.png",
-  "A12": "click/click_08.png",
-  "B01": "click/click_09.png",
-  "B02": "click/click_10.png",
-  "B09": "click/click_11.png",
-  "B10": "click/click_12.png",
+  "A01": "click/click_03.png",
+  "A03": "click/click_04.png",
+  "A11": "click/click_05.png",
+  "A12": "click/click_06.png",
+  "B01": "click/click_07.png",
+  "B02": "click/click_08.png",
+  "B09": "click/click_09.png",
+  "B10": "click/click_10.png",
   "A10": "pat/pat_04.png",
   "B03": "pat/pat_05.png",
   "B12": "pat/pat_06.png"
- }
+ },
+ "renumber_log": [
+  {
+   "at": "2026-09-17 06:01:56",
+   "scene": "click",
+   "retired": [
+    "click_03.png",
+    "click_04.png"
+   ],
+   "rename": {
+    "click_05.png": "click_03.png",
+    "click_06.png": "click_04.png",
+    "click_07.png": "click_05.png",
+    "click_08.png": "click_06.png",
+    "click_09.png": "click_07.png",
+    "click_10.png": "click_08.png",
+    "click_11.png": "click_09.png",
+    "click_12.png": "click_10.png"
+   }
+  }
+ ]
 }

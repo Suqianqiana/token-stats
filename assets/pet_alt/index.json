@@ -1,0 +1,22 @@
+{
+ "v": 1,
+ "note": "备选素材库: 从主库退役的帧原样保留在这里, 可随时取回",
+ "items": [
+  {
+   "scene": "click",
+   "orig_name": "click_03.png",
+   "file": "click/old_click_03.png",
+   "was": "pet_v3r/click/click_03.png",
+   "retired_at": "2026-09-17 06:01:56",
+   "reason": "点击反馈效果不理想"
+  },
+  {
+   "scene": "click",
+   "orig_name": "click_04.png",
+   "file": "click/old_click_04.png",
+   "was": "pet_v3r/click/click_04.png",
+   "retired_at": "2026-09-17 06:01:56",
+   "reason": "点击反馈效果不理想"
+  }
+ ]
+}

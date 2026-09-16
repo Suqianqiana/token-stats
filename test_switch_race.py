@@ -534,9 +534,9 @@ check("切回悬浮球形态", ball.pet is False and ball.width() == 54)
 # ---- 2026-09-17: V3 补充素材入库 + 点击分区（顶部 1/3 摸摸头 / 底部 2/3 点击互动）----
 from PySide6.QtCore import QRectF  # noqa: E402
 
-check("v3 各场景帧数（含 09-17 补充素材）",
+check("v3 各场景帧数（含 09-17 补充素材，click 已退役 2 帧）",
       fr3 and [len(fr3[k]) for k in ("idle", "sleep", "wake", "drag", "click", "sidle", "pat")]
-      == [8, 3, 2, 4, 12, 12, 6],
+      == [8, 3, 2, 4, 10, 12, 6],
       str({k: len(v) for k, v in fr3.items()}) if fr3 else "-")
 check("v3 待机序列 n=8 不越界且静止为主",
       (lambda s: bool(s) and all(0 <= x < 8 for x in s)
@@ -545,8 +545,8 @@ check("v3 待机序列 n=8 不越界且静止为主",
 ca.theme_state["pet_theme"] = "v3"
 w6 = ca.BallWindow(None)
 w6.set_pet(True)
-check("v3 桌宠共加载 47 帧", w6.pet_frames is not None
-      and sum(len(v) for v in w6.pet_frames.values()) == 47,
+check("v3 桌宠共加载 45 帧", w6.pet_frames is not None
+      and sum(len(v) for v in w6.pet_frames.values()) == 45,
       str(sum(len(v) for v in (w6.pet_frames or {}).values())))
 
 w6._pet_draw_rect = QRectF(0, 20, 118, 120)          # 模拟实际绘制区域 y=20..140
@@ -576,24 +576,63 @@ check("悬浮球双击 → 打开面板", _pop_calls["n"] == 2, f"n={_pop_calls[
 w6._trigger_popup = _ball_pop
 
 # 抽帧自检: 新入库帧每帧只含 1 个"本体级"连通域（没裁断/没带邻居）
+# 注意: 不要硬编码编号 —— 帧可能被退役/重排(如 click 退役 2 帧后 12→10), 硬编码会随编号漂移失效。
+# 改用 installed_map.json 反查"哪些文件来自 09-17 那批素材"。
 import numpy as _np  # noqa: E402
 from PIL import Image as _Img  # noqa: E402
 from scipy import ndimage as _ndi  # noqa: E402
 _S8 = _np.ones((3, 3), bool)
-_new = ([("sidle", "sidle_%02d.png" % i) for i in range(4, 13)]
-        + [("idle", "idle_%02d.png" % i) for i in (6, 7, 8)]
-        + [("click", "click_%02d.png" % i) for i in range(5, 13)]
-        + [("pat", "pat_%02d.png" % i) for i in (4, 5, 6)])
-_new = list(_new)
+with open(os.path.join(ca.BASE_DIR, "assets", "pet_v3_add", "installed_map.json"),
+          encoding="utf-8") as _f:
+    _imap = json.load(_f).get("map") or {}
+_new = []
+for _orig, _rel in sorted(_imap.items()):
+    _sc, _, _fn = _rel.partition("/")
+    _p = os.path.join(ca.BASE_DIR, "assets", "pet_v3r", _sc, _fn)
+    if os.path.exists(_p):          # 已退役的帧不在主库, 跳过
+        _new.append((_sc, _fn, _orig))
 _bad = []
-for _sc, _fn in _new:
+for _sc, _fn, _orig in _new:
     _p = os.path.join(ca.BASE_DIR, "assets", "pet_v3r", _sc, _fn)
     _a = _np.asarray(_Img.open(_p).convert("RGBA"))
     _l, _n = _ndi.label(_a[..., 3] > 128, _S8)
     _sz = _ndi.sum(_a[..., 3] > 128, _l, range(1, _n + 1)) if _n else []
     if len([v for v in _sz if v >= 20000]) != 1:
-        _bad.append("%s/%s" % (_sc, _fn))
+        _bad.append("%s/%s(%s)" % (_sc, _fn, _orig))
 check("新入库 %d 帧均只含 1 个本体连通域" % len(_new), not _bad, str(_bad))
+
+# 退役 = 移动到备选库, 不是删除 —— 退役帧必须仍在备选库里可随时取回
+with open(os.path.join(ca.BASE_DIR, "assets", "pet_alt", "index.json"), encoding="utf-8") as _f:
+    _alt_items = json.load(_f).get("items") or []
+_alt_lost = [it["file"] for it in _alt_items
+             if not os.path.exists(os.path.join(ca.BASE_DIR, "assets", "pet_alt",
+                                                *it["file"].split("/")))]
+check("备选素材库留存 %d 个退役帧可随时取回" % len(_alt_items),
+      bool(_alt_items) and not _alt_lost, str(_alt_lost))
+# 退役帧的**内容**不应再出现在主库 —— 用哈希判断, 不能用文件名:
+# 退役后剩余帧会重排编号, click_03.png 这个文件名会被新内容复用, 按名字判断必然误报。
+import hashlib as _hl  # noqa: E402
+
+
+def _sha(_p):
+    with open(_p, "rb") as _fp:
+        return _hl.sha256(_fp.read()).hexdigest()
+
+
+_alt_hash = {}
+for _it in _alt_items:
+    _fp = os.path.join(ca.BASE_DIR, "assets", "pet_alt", *_it["file"].split("/"))
+    if os.path.exists(_fp):
+        _alt_hash[_sha(_fp)] = _it["file"]
+_hit = []
+for _sc in ("idle", "sleep", "wake", "drag", "click", "sidle", "pat"):
+    _d = os.path.join(ca.BASE_DIR, "assets", "pet_v3r", _sc)
+    if not os.path.isdir(_d):
+        continue
+    for _fn in os.listdir(_d):
+        if _fn.endswith(".png") and _sha(os.path.join(_d, _fn)) in _alt_hash:
+            _hit.append("%s/%s" % (_sc, _fn))
+check("退役帧内容已不在主库（重排后同编号≠同内容）", not _hit, str(_hit))
 
 ca.theme_state.clear(); ca.theme_state.update(_user_theme)
 ca.save_settings()
