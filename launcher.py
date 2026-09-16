@@ -78,9 +78,19 @@ def main():
         fatal("找不到 Python 运行环境（pythonw.exe）。\n\n"
               "它属于本工具的依赖，路径为：\n" + "\n".join(PYTHONW_CANDIDATES))
     try:
+        # 剥掉 PyInstaller 引导器注入的环境变量: 我们本身就是 onefile 子进程, 这些变量会被
+        # pythonw 继承再往下传 —— 将来主程序"一键重启"再拉起本 exe 时, 引导器会校验
+        # 「父进程可执行文件是否与自己一致」而拒绝启动 (Security validation failure:
+        # parent process has different executable!)。
+        env = dict(os.environ)
+        for k in list(env):
+            if k in ("_PYI_APPLICATION_HOME_DIR", "_PYI_ARCHIVE_FILE",
+                     "_PYI_PARENT_PROCESS_LEVEL", "_PYI_SPLASH_IPC", "_MEIPASS2") \
+                    or k.startswith("PYINSTALLER_"):
+                env.pop(k, None)
         subprocess.Popen(
             [pythonw, script],
-            cwd=project,
+            cwd=project, env=env,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=0x00000008 | 0x00000200 | 0x08000000,   # DETACHED|NEW_GROUP|NO_WINDOW
         )

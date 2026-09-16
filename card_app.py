@@ -1768,6 +1768,26 @@ def _sn_playwright_login_and_fetch():
                 except Exception:
                     return None
 
+            def _wait_leave_login(limit):
+                """等待页面离开 /login (登录提交后跳转需要时间)。
+
+                ★ 这是 45 轮引入的回归修复: 原实现登录提交后调 _wait_data(), 而 _wait_data
+                一看到 URL 还含 /login 就立刻返回 False —— 可提交后那一两秒必然还在登录页,
+                于是续签永远失败("未捕获到积分数据", 而且每次都几秒内失败)。
+                """
+                end = time.time() + limit
+                while time.time() < end:
+                    try:
+                        if "/login" not in (page.url or ""):
+                            return True
+                    except Exception:
+                        pass
+                    try:
+                        page.wait_for_timeout(200)
+                    except Exception:
+                        return False
+                return False
+
             def _wait_data(limit):
                 """事件驱动等待: 额度响应一到立刻返回, 而不是死等固定秒数"""
                 end = time.time() + limit
@@ -1823,7 +1843,12 @@ def _sn_playwright_login_and_fetch():
                         page.get_by_role("button", name="登录", exact=True).click(timeout=8000)
                     except Exception as e:
                         return None, None, f"自动重登失败: {str(e)[:100]}"
-                    _sn_cred_log("relogin", "登录态失效 → 已自动提交账号密码")
+                    _sn_cred_log("relogin", "已提交账号密码, 等待跳转…")
+                    # 先等页面真正离开 /login, 再等额度响应 (顺序不能反, 见 _wait_leave_login 注释)
+                    if not _wait_leave_login(30):
+                        return None, None, ("自动登录未成功 (30s 后仍停留在登录页: "
+                                            "密码可能有误或出现了验证码)")
+                    _sn_cred_log("relogin", "已离开登录页, 等待额度响应")
                     _wait_data(SN_CRED_RESP_WAIT)
                 else:
                     try:
@@ -4361,11 +4386,27 @@ def _restart_app():
     try:
         import subprocess
         # 打包后 argv 就是 exe 自己；开发时是 pythonw + 脚本（见 _launch_argv）
-        subprocess.Popen(_launch_argv(), cwd=APP_DIR,
+        subprocess.Popen(_launch_argv(), cwd=APP_DIR, env=_clean_spawn_env(),
                          creationflags=0x00000008 | 0x00000200)
     except Exception: pass
     # 150ms 足够新实例完成 pid 接管(_kill_stale_instance 兜底杀旧进程), 又远快于 300ms
     QTimer.singleShot(150, os._exit, 0)
+
+
+# PyInstaller 6.x onefile 引导器会校验「父进程可执行文件是否与自己一致」
+# (Security validation failure: parent process has different executable!)。
+# 我们的一键重启是 pythonw.exe → 拉起 TokenStats.exe, 父进程对不上, 引导器直接拒绝启动
+# → 拉起子进程时把这些引导器环境变量剥掉, 让新 exe 像"从资源管理器双击"一样干净启动。
+_PYI_ENV_KEYS = ("_PYI_APPLICATION_HOME_DIR", "_PYI_ARCHIVE_FILE",
+                 "_PYI_PARENT_PROCESS_LEVEL", "_PYI_SPLASH_IPC", "_MEIPASS2")
+
+
+def _clean_spawn_env():
+    env = os.environ.copy()
+    for k in list(env):
+        if k in _PYI_ENV_KEYS or k.startswith("PYINSTALLER_"):
+            env.pop(k, None)
+    return env
 
 
 # ============================================================ 单实例治理与启动
