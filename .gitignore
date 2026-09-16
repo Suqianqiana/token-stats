@@ -42,3 +42,6 @@ legacy/
 /docs/pet_v3_add_review.png
 /docs/pet_v3r_review.png
 /docs/*_review.png
+
+# 饱和度实验区（可用 tools/enhance_pet_saturation.py 重新生成）
+/assets/pet_v3_sat/
