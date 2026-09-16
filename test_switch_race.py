@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """offscreen 验证: 切页 race 防护 + 商汤积分自动同步 + 事件缓存."""
-import os, sys, time, json
+import os, sys, time, json, tempfile
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -9,11 +9,18 @@ import card_app as ca
 from PySide6.QtWidgets import QApplication
 
 ca.SN_USE_PLAYWRIGHT = False   # 回归测试关闭 Playwright 真自动, 走 cURL mock 路径
+
+# ---- 数据目录隔离: 商汤凭据文件全部改到临时目录, 绝不碰真实配置 ----
+# 历史事故: 测试曾把 mock 配置(api.example.com)写进真实数据目录且还原条件失效,
+# 之后每次真自动失败都会回退到那个不存在的域名, 于是"时不时获取失败"。
+_TMP_DATA = tempfile.mkdtemp(prefix="tstats_regress_")
+_REAL_AUTOSYNC_FILE = ca.SN_AUTOSYNC_FILE
+ca.SN_AUTOSYNC_FILE = os.path.join(_TMP_DATA, "sn_autosync.json")
+ca.SN_CRED_LOG = os.path.join(_TMP_DATA, "sn_cred.log")
+_user_autosync = ca.load_sn_autosync()
+
 app = QApplication.instance() or QApplication([])
 PASS = 0
-
-# ---- 备份用户真实自动同步配置 (测试过程会读写/清除这些文件, 结束后恢复) ----
-_user_autosync = ca.load_sn_autosync()
 
 
 def check(name, cond, detail=""):
@@ -26,7 +33,7 @@ def check(name, cond, detail=""):
 # ========== 1. 切页 race 防护 ==========
 print("== 1. 切页跨源渲染竞争 ==")
 w = ca.CardWindow()
-w.refresh = lambda: None          # 关自动刷新, 隔离变量
+w.refresh = lambda *a, **k: None          # 关自动刷新, 隔离变量
 
 wb_stats = {
     "source": "wb",
@@ -102,7 +109,7 @@ _orig_fetch = ca.sn_autosync_fetch
 ca._autosync_mem.update(ts=sync_ts,
                         values={"general_w": 590000.0, "general_5h": 55000.0,
                                 "promo": 100.0}, error=None)
-ca.sn_autosync_fetch = lambda force=False: ca._autosync_mem["values"]
+ca.sn_autosync_fetch = lambda force=False, **k: ca._autosync_mem["values"]
 
 s = ca.load_sn_stats()
 g = next(p for p in s["pools"] if p["id"] == "general")
@@ -134,20 +141,20 @@ ca._autosync_mem.update(ts=0.0, values=None, error=None)
 
 # ========== 3. cURL 解析 + 指纹识别 + 自动同步 ==========
 print("== 3. cURL 自动同步 ==")
-CURL_BASH = ("curl 'https://api.example.com/console/points?x=1' \\\n"
+CURL_BASH = ("curl 'https://platform.sensenova.cn/lite/console/v1/tokenplan/pool-usage?x=1' \\\n"
              "  -H 'Cookie: SESSION=abc123' \\\n"
              "  -H 'User-Agent: Mozilla/5.0' \\\n"
              "  --compressed")
-CURL_CMD = ('curl "https://api.example.com/console/points?x=1" ^\n'
+CURL_CMD = ('curl "https://platform.sensenova.cn/lite/console/v1/tokenplan/pool-usage?x=1" ^\n'
             '  -H "Cookie: SESSION=abc123" ^\n'
             '  -H "Content-Type: application/json" ^\n'
             '  --data-raw "{\\"query\\":1}"')
 r1 = ca.parse_curl(CURL_BASH)
 r2 = ca.parse_curl(CURL_CMD)
-check("bash cURL 解析", r1 and r1["url"] == "https://api.example.com/console/points?x=1"
+check("bash cURL 解析", r1 and r1["url"] == "https://platform.sensenova.cn/lite/console/v1/tokenplan/pool-usage?x=1"
       and r1["headers"].get("Cookie") == "SESSION=abc123"
       and r1["method"] == "GET", str(r1)[:100])
-check("cmd cURL 解析", r2 and r2["url"].endswith("/points?x=1")
+check("cmd cURL 解析", r2 and r2["url"].endswith("pool-usage?x=1")
       and r2["headers"].get("Cookie") == "SESSION=abc123"
       and r2["method"] == "POST" and r2["body"] == '{"query":1}', str(r2)[:100])
 
@@ -173,7 +180,7 @@ def fake_http(req):
 
 ca._http_json = fake_http
 cfg_ok = ca.save_sn_autosync({
-    "v": 1, "url": "https://api.example.com/x", "method": "GET",
+    "v": 1, "url": "https://platform.sensenova.cn/lite/console/v1/tokenplan/pool-usage", "method": "GET",
     "headers": {"Cookie": "SESSION=abc"}, "body": None,
     "paths": {"general_w": "data.user.generalPool.weekRemain",
               "general_5h": "data.user.generalPool.windowRemain",
@@ -280,7 +287,7 @@ check("启发式补全 reset_at/grant", paths5.get("general_reset5") == "pools[0
       and paths5.get("flash_resetw") == "pools[1].window_7d.reset_at"
       and paths5.get("promo") == "pools[0].grant_balance",
       str(paths5)[:200])
-ca.save_sn_autosync({"v": 1, "url": "https://api.example.com/x", "method": "GET",
+ca.save_sn_autosync({"v": 1, "url": "https://platform.sensenova.cn/lite/console/v1/tokenplan/pool-usage", "method": "GET",
                      "headers": {"Cookie": "SESSION=abc"}, "body": None,
                      "paths": paths5, "fingerprint": fps, "saved_ts": time.time()})
 ca._autosync_mem.update(ts=0.0, values=None, error=None)
@@ -362,7 +369,7 @@ RENDER_POOLS = [
      "synced": True, "sync_time": "01:10"},
 ]
 w2 = ca.CardWindow()
-w2.refresh = lambda: None
+w2.refresh = lambda *a, **k: None
 w2._sn_cache = {"source": "sn", "synced": True, "sync_time": "01:10",
                 "sync_src": "auto", "autosync_error": None,
                 "window_start": time.time() - 3600, "window_end": time.time() + 3600,
@@ -510,9 +517,150 @@ ca.save_settings()
 
 ca.clear_sn_autosync()
 
-# ---- 恢复用户真实自动同步配置 (测试前备份的) ----
-if _user_autosync:
-    ca.save_sn_autosync(_user_autosync)
+# ========== 9. 商汤凭据链路优化 (第45轮) ==========
+print("== 9. 凭据链路: 域名校验 / JWT 过期预判 / Edge 发现 / 状态自愈 ==")
+import base64 as _b64
 
+# 9.1 cURL 凭据域名校验 + 投毒自愈 (历史残留的 api.example.com 必须被归档)
+check("非商汤域名凭据被拒存", ca.save_sn_autosync(
+    {"v": 1, "url": "https://api.example.com/x", "paths": {}}) is False)
+io_ok = ca.save_sn_autosync(
+    {"v": 1, "url": "https://platform.sensenova.cn/lite/console/v1/tokenplan/pool-usage",
+     "paths": {"general_5h": "pools[0].window_5h.remaining"}})
+check("商汤域名凭据保存成功", io_ok and ca.load_sn_autosync() is not None)
+_dist = os.path.join(_TMP_DATA, "sn_autosync.json")
+with open(_dist, "w", encoding="utf-8") as fh:      # 手动投毒(模拟测试残留)
+    json.dump({"v": 1, "url": "https://api.example.com/console/points", "paths": {}}, fh)
+check("投毒配置不被采用", ca.load_sn_autosync() is None)
+check("投毒配置被归档", os.path.exists(os.path.join(_TMP_DATA, "sn_autosync.invalid.json"))
+      and not os.path.exists(_dist))
+ca.clear_sn_autosync()
+
+# 9.2 JWT 过期本地预判 (商汤 access_token 是标准 JWT, 载荷自带 exp)
+
+
+def _mk_jwt(exp, iat=None):
+    def _seg(d):
+        return _b64.urlsafe_b64encode(json.dumps(d).encode()).decode().rstrip("=")
+    return _seg({"alg": "RS256", "typ": "JWT"}) + "." + _seg(
+        {"exp": exp, "iat": iat or (exp - 10800)}) + ".sig"
+
+
+_now = int(time.time())
+_tok_live = _mk_jwt(_now + 3000)
+_tok_dead = _mk_jwt(_now - 60)
+check("JWT exp 本地解析", ca._sn_token_exp(_tok_live) == _now + 3000
+      and ca._sn_token_exp(_tok_dead) == _now - 60)
+check("非 JWT 令牌解析容错", ca._sn_token_exp("not-a-jwt") is None
+      and ca._sn_token_exp("") is None)
+
+_orig_load_token = ca._sn_load_token
+_orig_direct = ca._sn_direct_fetch
+_orig_play_auth = ca._sn_playwright_login_and_fetch
+_direct_calls = {"n": 0}
+
+
+def _counting_direct(tok):
+    _direct_calls["n"] += 1
+    return None, "should-not-be-called"
+
+
+ca._sn_load_token = lambda: _tok_dead
+ca._sn_direct_fetch = _counting_direct
+ca._sn_playwright_login_and_fetch = lambda: (
+    {"pools": [{"pool_type": "default", "name": "通用积分池",
+                "window_5h": {"remaining": 1}, "window_7d": {"remaining": 2}}]}, "t", None)
+v_exp, _e1 = ca.sn_playwright_fetch()
+check("过期令牌跳过直连直接续期", _direct_calls["n"] == 0 and bool(v_exp),
+      f"direct={_direct_calls['n']}")
+
+# 有效令牌 → 走直连快路径 (不拉浏览器)
+ca._sn_load_token = lambda: _tok_live
+_calls2 = {"n": 0}
+
+
+def _counting_direct2(tok):
+    _calls2["n"] += 1
+    return {"pools": [{"pool_type": "default", "name": "通用积分池",
+                       "window_5h": {"remaining": 100}, "window_7d": {"remaining": 200}}]}, None
+
+
+ca._sn_direct_fetch = _counting_direct2
+_browser = {"n": 0}
+
+
+def _count_browser():
+    _browser["n"] += 1
+    return None, None, "no"
+
+
+ca._sn_playwright_login_and_fetch = _count_browser
+v_live, _e2 = ca.sn_playwright_fetch()
+check("有效令牌走直连快路径 (不拉浏览器)", _calls2["n"] == 1 and _browser["n"] == 0 and bool(v_live),
+      f"direct={_calls2['n']} browser={_browser['n']}")
+
+# proactive: 进入续期窗口 → 主动换证(走浏览器)
+ca._sn_load_token = lambda: _mk_jwt(_now + 60)
+_browser["n"] = 0
+ca.sn_playwright_fetch(proactive=True)
+check("续期窗口内主动换证", _browser["n"] == 1, f"browser={_browser['n']}")
+check("剩余寿命查询可用", ca.sn_token_ttl() is not None and ca.sn_token_near_expiry() is True)
+
+ca._sn_load_token = _orig_load_token
+ca._sn_playwright_login_and_fetch = _orig_play_auth
+ca._sn_direct_fetch = _orig_direct
+_edge = ca._sn_edge_path()
+check("Edge 动态发现返回可执行路径", _edge is None or os.path.exists(_edge), str(_edge))
+check("playwright 可用性与 Edge 发现一致",
+      ca._sn_playwright_ready() == (_edge is not None))
+
+# 9.3 失败/超时后同步面板必须退出 syncing 态 (原实现会永久转圈)
+panel_f = ca.SNSyncPanel()
+panel_f.set_syncing("正在自动获取凭证并同步…")
+check("面板进入 syncing 态", panel_f._status_mode == "syncing")
+panel_f.set_failed("同步超时，请重试")
+check("失败后退出 syncing 态", panel_f._status_mode == "error"
+      and "超时" in panel_f.status_lbl.text(), panel_f.status_lbl.text())
+panel_f.set_status({"autosync_error": "未捕获到积分数据", "last_ok_time": "08:10"})
+check("失败态带出上次成功时间", "上次成功 08:10" in panel_f.status_lbl.text(),
+      panel_f.status_lbl.text())
+panel_f.set_status({"sync_src": "auto", "sync_time": "08:30"})
+check("成功态恢复为自动同步", panel_f._status_mode == "success"
+      and "08:30" in panel_f.status_lbl.text(), panel_f.status_lbl.text())
+
+# 9.4 刷新合并时 force 不被吞 + 代次防护
+w4 = ca.CardWindow()
+w4.refresh = lambda *a, **k: None
+w4.source = "sn"
+w4._scanning = True
+ca.CardWindow.refresh(w4, force=True)
+check("合并请求保留 force", w4._pending_refresh is True and w4._pending_force is True)
+w4._scanning = False
+ca.CardWindow._kick_pending(w4)
+check("kick 后 force 一并清位", w4._pending_refresh is False and w4._pending_force is False)
+w4._scanning = True
+w4._scan_gen = 7
+_base_sub = w4.subtitle.text()
+ca.CardWindow._on_scan_done(w4, "sn", SN_POOLS, 3)     # 迟到(旧代次)的结果
+check("旧代次结果被丢弃", w4._scanning is True and w4.subtitle.text() == _base_sub
+      and w4._sn_cache is None, f"scanning={w4._scanning}")
+ca.CardWindow._on_scan_done(w4, "sn", SN_POOLS, 7)
+check("当前代次结果被采纳", w4._scanning is False and w4._sn_cache is SN_POOLS)
+check("刷新按钮恢复文案", w4.btn_refresh.isEnabled() and "刷新数据" in w4.btn_refresh.text(),
+      w4.btn_refresh.text())
+w4._scanning = True
+ca.CardWindow._on_scan_done(w4, "sn", {"error": "模拟崩溃"}, 7)
+check("异常结果也复位按钮与面板", w4._scanning is False and w4.btn_refresh.isEnabled()
+      and w4.sn_page.sync_panel._status_mode == "error",
+      w4.sn_page.sync_panel.status_lbl.text())
+
+# 9.5 凭据链路日志可写 (排障依据)
+ca._sn_cred_log("selftest", "回归自检写入")
+check("凭据链路日志落盘",
+      os.path.exists(ca.SN_CRED_LOG)
+      and "回归自检写入" in open(ca.SN_CRED_LOG, encoding="utf-8").read())
+
+# ---- 还原真实数据目录路径 (临时目录随系统清理) ----
 ca._sn_events_all = orig_events
+ca.SN_AUTOSYNC_FILE = _REAL_AUTOSYNC_FILE
 print(f"\nALL {PASS} CHECKS PASSED")

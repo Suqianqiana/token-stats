@@ -9,9 +9,11 @@ Token 统计卡片 V8.7 — iOS 27 液态玻璃 (Pure Crystal Glass) + 精致双
   - 重构舒适大窗口 (1180×730) 字体层级体系，字重与行高开阔舒展，拒绝粗暴放大
   - 三档玻璃通透度无级调谐 + 右键多入口切换 + 每日柱状图鼠标锚点滚轮缩放与平移
 """
+import base64
 import json
 import os
 import random
+import shutil
 import sys
 import threading
 import time
@@ -1133,19 +1135,56 @@ SN_POOL_WEEKLY_QUOTA = 600000
 SN_AUTOSYNC_FILE = os.path.join(scanner.PLUGIN_DATA_DIR, "sn_autosync.json")
 SN_AUTOSYNC_TTL = 300
 _autosync_mem = {"ts": 0.0, "values": None, "error": None}
+_sn_cred_mem = {"last_ok_ts": 0.0, "last_ok_values": None}
+
+
+def _sn_curl_host_ok(url):
+    """cURL 凭据是否指向商汤域名 (非商汤一律视为无效配置)"""
+    try:
+        from urllib.parse import urlparse
+        h = (urlparse(str(url)).hostname or "").lower()
+        return bool(h) and (h == SN_CRED_HOST_OK or h.endswith("." + SN_CRED_HOST_OK))
+    except Exception:
+        return False
+
+
+def _sn_quarantine_curl(url):
+    """把无效 cURL 配置挪到 sn_autosync.invalid.json。
+
+    历史遗留: 回归测试曾把 mock 配置(api.example.com)写进真实数据目录且没还原,
+    之后每次 Playwright 失败都会回退到这台不存在的域名 → 报一个与真实原因无关的
+    DNS 错误, 让人误以为"同步坏了"。这里做一次性自愈。
+    """
+    dst = SN_AUTOSYNC_FILE.replace(".json", ".invalid.json")
+    try:
+        shutil.move(SN_AUTOSYNC_FILE, dst)
+        _sn_cred_log("curl-invalid", "凭据域名非商汤(%s) → 已归档 %s" % (str(url)[:48], os.path.basename(dst)))
+    except Exception:
+        try:
+            with open(SN_AUTOSYNC_FILE, "w", encoding="utf-8") as f:
+                f.write("{}")
+        except Exception:
+            pass
 
 
 def load_sn_autosync():
     try:
         with open(SN_AUTOSYNC_FILE, encoding="utf-8") as f:
             d = json.load(f)
-        return d if isinstance(d, dict) and d.get("url") else None
+        if not (isinstance(d, dict) and d.get("url")):
+            return None
+        if not _sn_curl_host_ok(d["url"]):
+            _sn_quarantine_curl(d.get("url"))
+            return None
+        return d
     except Exception:
         return None
 
 
 def save_sn_autosync(d):
     try:
+        if not _sn_curl_host_ok((d or {}).get("url")):
+            return False
         with open(SN_AUTOSYNC_FILE, "w", encoding="utf-8") as f:
             json.dump(d, f, ensure_ascii=False)
         return True
@@ -1380,14 +1419,139 @@ def _http_json(req):
 
 
 # ============================================================ 商汤积分自动同步 (Playwright 持久登录态 + token 直连)
-SN_EDGE_PATH = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+# 2026-09-16 第45轮: 凭据链路优化 —— ①Edge 多候选自动发现 ②本地 JWT 过期预判(免注定 401 的往返)
+#   ③事件驱动等待额度响应(替代固定 sleep 5s) ④统一超时/重试收敛最坏耗时 ⑤凭据域名校验(清除测试残留投毒)
+SN_EDGE_CANDIDATES = [
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+]
+SN_EDGE_PATH = SN_EDGE_CANDIDATES[0]   # 兼容旧引用; 实际一律走 _sn_edge_path() 动态探测
 SN_LOGIN_STATE = os.path.join(scanner.PLUGIN_DATA_DIR, "sn_login_state.json")
 SN_ACCOUNT_FILE = os.path.join(scanner.PLUGIN_DATA_DIR, "sn_account.json")
 SN_TOKEN_FILE = os.path.join(scanner.PLUGIN_DATA_DIR, "sn_token.json")
+SN_CRED_LOG = os.path.join(scanner.PLUGIN_DATA_DIR, "sn_cred.log")
 SN_POOL_API = "/lite/console/v1/tokenplan/pool-usage"
 SN_POOL_URL = "https://platform.sensenova.cn" + SN_POOL_API
 SN_CONSOLE_URL = "https://platform.sensenova.cn/console"
 SN_USE_PLAYWRIGHT = True   # 真自动抓取开关 (测试环境置 False 走 cURL mock)
+
+SN_CRED_HOST_OK = "sensenova.cn"     # cURL 凭据必须指向商汤域名, 否则视为无效并归档
+SN_HTTP_TIMEOUT = 8                  # 快路径单次 HTTP 超时 (原 15s × 最坏 3 次 → 40s+, 严重拖慢刷新)
+SN_HTTP_TRIES = 2                    # 瞬时网络错误重试次数
+SN_TOKEN_MIN_TTL = 120               # token 剩余寿命低于此值 → 直接续期, 省掉一次注定 401 的往返
+SN_TOKEN_REFRESH_MARGIN = 900        # 剩余寿命低于此值 → 周期刷新时提前续期, 用户几乎不会撞上慢路径
+SN_CRED_RESP_WAIT = 25               # 控制台页面等待额度响应上限 (秒, 事件驱动: 一到就走)
+_sn_edge_mem = {"path": None, "ts": 0.0}
+_sn_tok_mem = {"tok": None, "exp": None}
+
+
+def _sn_cred_log(tag, msg, sec=None):
+    """凭据链路轻量日志 (16/32/64... 超 64KB 自动保留最后 200 行)。
+
+    "时不时失败"这类问题没有日志就只能靠猜 —— 记下每次走的哪条路径、耗时、结果,
+    事后一眼能看出是凭据过期、网络抖动还是页面改版。
+    """
+    try:
+        line = "%s  %-13s %s%s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), tag,
+                                    ("%5.2fs  " % sec) if sec is not None else "", msg)
+        try:
+            if os.path.getsize(SN_CRED_LOG) > 65536:
+                with open(SN_CRED_LOG, encoding="utf-8", errors="replace") as f:
+                    keep = f.readlines()[-200:]
+                with open(SN_CRED_LOG, "w", encoding="utf-8") as f:
+                    f.writelines(keep)
+        except OSError:
+            pass
+        with open(SN_CRED_LOG, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        pass
+
+
+def _sn_edge_path():
+    """动态定位系统 Edge (固定候选 → 注册表 App Paths → PATH 兜底), 结果缓存。
+
+    旧实现把路径写死成 x86 Edge: 一旦 Edge 装到 x64 目录/换盘/卸载重装,
+    _sn_playwright_ready() 直接 False → 整条真自动链路**静默失效**并退化到 cURL,
+    表面症状就是"时不时获取失败"。
+    """
+    now = time.time()
+    p = _sn_edge_mem["path"]
+    if p and os.path.exists(p):
+        return p
+    if p is None and now - _sn_edge_mem["ts"] < 60:
+        return None                       # 刚探测过且没找到 → 60s 内不重复扫盘
+    cands = list(SN_EDGE_CANDIDATES)
+    la = os.environ.get("LOCALAPPDATA")
+    if la:
+        cands.append(os.path.join(la, r"Microsoft\Edge\Application\msedge.exe"))
+    try:
+        import winreg
+        for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+            try:
+                with winreg.OpenKey(root, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe") as k:
+                    v = winreg.QueryValue(k, None)
+                    if v:
+                        cands.append(v.strip('"'))
+            except OSError:
+                pass
+    except Exception:
+        pass
+    for name in ("msedge", "msedge.exe"):
+        try:
+            w = shutil.which(name)
+            if w:
+                cands.append(w)
+        except Exception:
+            pass
+    found = None
+    for c in cands:
+        try:
+            if c and os.path.exists(c):
+                found = c
+                break
+        except Exception:
+            continue
+    if found:
+        _sn_edge_mem.update(path=found, ts=now)
+        if found != SN_EDGE_CANDIDATES[0]:
+            _sn_cred_log("edge", "使用非默认路径 Edge: %s" % found)
+        return found
+    _sn_edge_mem.update(path=None, ts=now)
+    _sn_cred_log("edge", "未找到系统 Edge (候选 %d 个)" % len(cands))
+    return None
+
+
+def _sn_account_ready():
+    """是否已配置账号密码 (可支撑浏览器自动登录)"""
+    try:
+        with open(SN_ACCOUNT_FILE, "r", encoding="utf-8-sig") as f:
+            a = json.load(f)
+        return bool(a.get("username") and a.get("password"))
+    except Exception:
+        return False
+
+
+def _sn_token_exp(tok):
+    """本地解析 JWT 的 exp (秒级时间戳), 解析不了返回 None。
+
+    商汤 access_token 是标准 JWT(RS256), 载荷自带 iat/exp → 完全可以在本地判断
+    凭据是否还有效, 不必先打一次注定 401 的网络请求才发现过期。
+    """
+    if not tok:
+        return None
+    if _sn_tok_mem["tok"] == tok:
+        return _sn_tok_mem["exp"]
+    exp = None
+    try:
+        part = tok.split(".")[1]
+        part += "=" * (-len(part) % 4)
+        v = json.loads(base64.urlsafe_b64decode(part)).get("exp")
+        exp = float(v) if v else None
+    except Exception:
+        exp = None
+    _sn_tok_mem.update(tok=tok, exp=exp)
+    return exp
 
 
 def _sn_load_token():
@@ -1436,36 +1600,42 @@ def _sn_parse_pool_data(data):
 
 
 def _sn_playwright_ready():
-    """Playwright 是否可用(已安装 + 系统 Edge 存在)"""
+    """Playwright 是否可用(已安装 + 能找到系统 Edge)"""
     try:
         import playwright  # noqa: F401
-        return os.path.exists(SN_EDGE_PATH)
     except Exception:
         return False
+    return _sn_edge_path() is not None
 
 
 def _sn_direct_fetch(token):
     """用 access_token urllib 直连 pool-usage, 返回 (data_dict, error)。401 返回 (None, '401')
 
-    健壮性: ①系统代理失败(10061)自动绕过直连重试 ②瞬时网络错误重试 2 次(间隔递增)。
+    健壮性/速度: ①单次超时收敛到 SN_HTTP_TIMEOUT(8s) ②瞬时网络错误最多重试 SN_HTTP_TRIES
+    次(短退避) ③系统代理拒绝连接(10061)自动绕过代理直连重试 ④401/403 立即返回, 不做无意义重试
+    ⑤SSL 校验失败(企业代理/MITM)自动放宽一次。最坏耗时由 45s+ 收敛到 ~18s。
     """
     import urllib.request, urllib.error, time as _time
-    ctx = None
-    try:
-        import ssl
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-    except Exception:
-        pass
 
-    def _do(direct=False):
+    def _mk_ctx(insecure):
+        try:
+            import ssl
+            c = ssl.create_default_context()
+            if insecure:
+                c.check_hostname = False
+                c.verify_mode = ssl.CERT_NONE
+            return c
+        except Exception:
+            return None
+
+    def _do(direct=False, insecure=True):
         req = urllib.request.Request(SN_POOL_URL, headers={
             "Authorization": "Bearer " + token,
             "accept": "application/json",
             "User-Agent": "Mozilla/5.0",
         })
-        kwargs = {"timeout": 15}
+        kwargs = {"timeout": SN_HTTP_TIMEOUT}
+        ctx = _mk_ctx(insecure)
         if ctx is not None:
             kwargs["context"] = ctx
         if direct:
@@ -1476,11 +1646,14 @@ def _sn_direct_fetch(token):
         body = resp.read(2_000_000).decode("utf-8", "replace")
         return json.loads(body)
 
+    def _ok(data):
+        return isinstance(data, dict) and bool(data.get("pools"))
+
     last_err = ""
-    for attempt in range(3):
+    for attempt in range(SN_HTTP_TRIES):
         try:
-            data = _do(direct=False)
-            if isinstance(data, dict) and data.get("pools"):
+            data = _do()
+            if _ok(data):
                 return data, None
             return None, "积分接口无 pools 数据"
         except urllib.error.HTTPError as e:
@@ -1490,10 +1663,11 @@ def _sn_direct_fetch(token):
         except urllib.error.URLError as e:
             reason = str(getattr(e, "reason", "")) + str(e)
             # 系统代理拒绝连接 → 绕过代理直连重试
-            if "10061" in reason:
+            if "10061" in reason or "ProxyError" in reason or "proxy" in reason.lower():
                 try:
                     data = _do(direct=True)
-                    if isinstance(data, dict) and data.get("pools"):
+                    if _ok(data):
+                        _sn_cred_log("token-direct", "系统代理不可用 → 已直连成功")
                         return data, None
                     return None, "积分接口无 pools 数据"
                 except urllib.error.HTTPError as e2:
@@ -1503,19 +1677,50 @@ def _sn_direct_fetch(token):
                 except Exception as e2:
                     return None, str(e2)[:120]
             last_err = reason[:120]
-            _time.sleep(0.5 * (attempt + 1))   # 瞬时错误退避重试
+            if attempt < SN_HTTP_TRIES - 1:
+                _time.sleep(0.4 * (attempt + 1))   # 短退避重试
         except Exception as e:
             last_err = str(e)[:120]
-            _time.sleep(0.5 * (attempt + 1))
+            if attempt < SN_HTTP_TRIES - 1:
+                _time.sleep(0.4 * (attempt + 1))
     return None, last_err or "网络请求失败"
 
 
+def sn_token_ttl():
+    """当前 access_token 剩余有效秒数 (判断不了返回 None)"""
+    tok = _sn_load_token()
+    if not tok:
+        return None
+    exp = _sn_token_exp(tok)
+    if exp is None:
+        return None
+    return exp - time.time()
+
+
+def sn_token_near_expiry():
+    """token 是否已进入提前续期窗口。
+
+    商汤 access_token 寿命 3h(实测 iat→exp = 10800s), 周期刷新每 5min 一次 ——
+    进入窗口就顺手换一张新证, 用户几乎永远不会正好撞上"过期才续期"的慢路径。
+    """
+    ttl = sn_token_ttl()
+    return ttl is not None and ttl < SN_TOKEN_REFRESH_MARGIN
+
+
 def _sn_playwright_login_and_fetch():
-    """Playwright 登录(必要时自动填账号密码) → 刷新 access_token → 抓取数据。返回 (data, token, error)"""
-    if not _sn_playwright_ready():
-        return None, None, "playwright 未安装或未找到系统 Edge"
-    if not os.path.exists(SN_LOGIN_STATE):
-        return None, None, "未登录 (请在商汤页填写账号密码或运行 sn_login.py)"
+    """Edge 持久登录态抓额度 (事件驱动等待)。返回 (data, token, error)
+
+    2026-09-16 提速/稳健:
+      · 不再固定 sleep 5s —— 改为轮询等待额度响应, 一拿到就返回, 未拿到最多等 SN_CRED_RESP_WAIT
+      · goto 用 wait_until="commit" (SPA 的 load 很慢, 而额度请求在 JS 起来后就会发出)
+      · 登录态文件缺失时用干净上下文直接尝试账号密码登录 (首次运行也能全自动, 原实现直接判"未登录")
+      · 非登录页但没抓到 → reload 一次给二次机会 (页面改版/首次加载慢)
+      · 全程 try/finally 保证关浏览器 (原实现多处提前 return 不 close, 会残留无头 msedge,
+        累积后拖慢甚至卡死后续抓取)
+    """
+    edge = _sn_edge_path()
+    if not edge:
+        return None, None, "未找到系统 Edge (请确认 Edge 已安装)"
     try:
         from playwright.sync_api import sync_playwright
     except Exception as e:
@@ -1525,17 +1730,22 @@ def _sn_playwright_login_and_fetch():
     try:
         with open(SN_ACCOUNT_FILE, "r", encoding="utf-8-sig") as f:
             acct = json.load(f)
-        username = acct.get("username", "")
-        password = acct.get("password", "")
+        username, password = acct.get("username", ""), acct.get("password", "")
     except Exception:
         pass
 
     captured = {}
     token = None
+    t0 = time.perf_counter()
+    browser = None
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(executable_path=SN_EDGE_PATH, headless=True, timeout=25000)
-            ctx = browser.new_context(storage_state=SN_LOGIN_STATE)
+            browser = p.chromium.launch(
+                executable_path=edge, headless=True, timeout=20000,
+                args=["--no-first-run", "--no-default-browser-check",
+                      "--disable-sync", "--disable-background-networking"])
+            _st = SN_LOGIN_STATE if os.path.exists(SN_LOGIN_STATE) else None
+            ctx = browser.new_context(storage_state=_st)
             page = ctx.new_page()
 
             def on_response(resp):
@@ -1549,70 +1759,116 @@ def _sn_playwright_login_and_fetch():
                         captured["data"] = d
 
             page.on("response", on_response)
-            page.goto(SN_CONSOLE_URL, timeout=30000)
-            page.wait_for_timeout(5000)
 
-            # 登录态失效 → 自动重登
-            if not captured.get("data") and "/login" in page.url:
-                if not username or not password:
-                    browser.close()
-                    return None, None, "登录态已过期且未配置账号密码"
-                try:
-                    page.get_by_text("账号密码登录", exact=True).click(timeout=8000)
-                    page.wait_for_timeout(1500)
-                    page.get_by_placeholder("请设置用户名").fill(username)
-                    page.get_by_placeholder("请输入密码").fill(password)
-                    page.wait_for_timeout(400)
-                    page.get_by_role("button", name="登录", exact=True).click(timeout=8000)
-                    page.wait_for_timeout(8000)
-                except Exception as e:
-                    browser.close()
-                    return None, None, f"自动重登失败: {str(e)[:100]}"
+            def _wait_data(limit):
+                """事件驱动等待: 额度响应一到立刻返回, 而不是死等固定秒数"""
+                end = time.time() + limit
+                while time.time() < end:
+                    if captured.get("data"):
+                        return True
+                    try:
+                        if "/login" in (page.url or ""):
+                            return False
+                    except Exception:
+                        pass
+                    try:
+                        page.wait_for_timeout(150)
+                    except Exception:
+                        return bool(captured.get("data"))
+                return bool(captured.get("data"))
 
-            # 提取 access_token
+            try:
+                page.goto(SN_CONSOLE_URL, wait_until="commit", timeout=20000)
+            except Exception:
+                pass
+            _wait_data(SN_CRED_RESP_WAIT)
+
+            if not captured.get("data"):
+                on_login = "/login" in (page.url or "")
+                if on_login:
+                    if not username or not password:
+                        return None, None, "登录态已过期且未配置账号密码"
+                    try:
+                        page.get_by_text("账号密码登录", exact=True).click(timeout=8000)
+                        page.wait_for_timeout(1200)
+                        page.get_by_placeholder("请设置用户名").fill(username)
+                        page.get_by_placeholder("请输入密码").fill(password)
+                        page.wait_for_timeout(300)
+                        page.get_by_role("button", name="登录", exact=True).click(timeout=8000)
+                    except Exception as e:
+                        return None, None, f"自动重登失败: {str(e)[:100]}"
+                    _sn_cred_log("relogin", "登录态失效 → 已自动提交账号密码")
+                    _wait_data(SN_CRED_RESP_WAIT)
+                else:
+                    try:
+                        page.reload(wait_until="commit", timeout=15000)
+                    except Exception:
+                        pass
+                    _wait_data(min(12, SN_CRED_RESP_WAIT))
+                if not captured.get("data"):
+                    return None, None, "未捕获到积分数据 (控制台响应超时或页面改版)"
+
             try:
                 token = page.evaluate("() => localStorage.getItem('access_token')")
             except Exception:
                 pass
 
-            if not captured.get("data"):
-                browser.close()
-                return None, token, "未捕获到积分数据"
-
-            # 保存刷新后的登录态 + token 缓存
             try:
                 ctx.storage_state(path=SN_LOGIN_STATE)
             except Exception:
                 pass
             if token:
                 _sn_save_token(token)
-            browser.close()
     except Exception as e:
+        _sn_cred_log("browser", "异常: %s" % str(e)[:90], time.perf_counter() - t0)
         return None, None, f"playwright 抓取异常: {str(e)[:120]}"
+    finally:
+        try:
+            if browser is not None:
+                browser.close()
+        except Exception:
+            pass
 
     data = captured.get("data")
+    if data is not None:
+        _sn_cred_log("browser", "抓取成功 (token=%s)" % ("有" if token else "无"),
+                     time.perf_counter() - t0)
     return data, token, None
 
 
-def sn_playwright_fetch():
-    """商汤积分真自动抓取: token 直连优先(快) → 401 时 Playwright 重登刷新(慢兜底)。
+def sn_playwright_fetch(force_login=False, proactive=False):
+    """商汤积分真自动抓取: token 直连优先(0.2~0.8s) → 需要时浏览器续期(秒级)。返回 (values, error)
 
-    返回 (values_dict, error)。
+    2026-09-16: 加入本地 JWT 过期预判 —— token 已过期/即将过期时不再浪费一次注定 401 的
+    网络往返(可能还要等 8s 超时), 直接走浏览器续期; proactive=True 时进入续期窗口
+    (SN_TOKEN_REFRESH_MARGIN) 就主动换证, 让用户几乎不会撞上慢路径。
     """
-    # 快路径: 用缓存 access_token 直连
-    token = _sn_load_token()
-    if token:
-        data, err = _sn_direct_fetch(token)
-        if data is not None:
-            values = _sn_parse_pool_data(data)
-            if values:
-                _sn_save_token(token)   # 缓存 token, 避免每次从 login_state 解析
-                return values, None
-        # 401 或解析失败 → 走 Playwright 重登刷新
-    elif not os.path.exists(SN_LOGIN_STATE):
+    tok = _sn_load_token()
+    exp = _sn_token_exp(tok) if tok else None
+    ttl = (exp - time.time()) if exp is not None else None
+    need_browser = bool(force_login) or (
+        proactive and ttl is not None and ttl < SN_TOKEN_REFRESH_MARGIN)
+    if tok and not need_browser:
+        if ttl is None or ttl > SN_TOKEN_MIN_TTL:
+            t0 = time.perf_counter()
+            data, err = _sn_direct_fetch(tok)
+            if data is not None:
+                values = _sn_parse_pool_data(data)
+                if values:
+                    _sn_save_token(tok)   # 缓存 token, 避免每次从 login_state 解析
+                    _sn_cred_log("token-direct", "直连成功", time.perf_counter() - t0)
+                    return values, None
+            _sn_cred_log("token-direct",
+                         "凭据已失效(401) → 浏览器续期" if err == "401" else f"失败: {err}",
+                         time.perf_counter() - t0)
+        else:
+            _sn_cred_log("token-stale", "剩余 %.0fs → 跳过直连, 直接浏览器续期" % ttl)
+    elif tok and need_browser and proactive and not force_login:
+        _sn_cred_log("token-renew", "剩余 %.0fs 进入续期窗口 → 主动换证" % ttl)
+    elif not tok and not os.path.exists(SN_LOGIN_STATE) and not _sn_account_ready():
         return None, "未登录 (请在商汤页填写账号密码完成首次登录)"
 
-    # 慢路径: Playwright 登录/重登 + 抓取
+    # 慢路径: 浏览器续期 + 抓取
     data, new_token, err = _sn_playwright_login_and_fetch()
     if data is None:
         return None, err or "抓取失败"
@@ -1623,29 +1879,44 @@ def sn_playwright_fetch():
 
 
 
-def sn_autosync_fetch(force=False):
-    # 优先 Playwright 真自动抓取 (持久登录态, 免 3h 手动抓包)
-    if SN_USE_PLAYWRIGHT and _sn_playwright_ready() and os.path.exists(SN_LOGIN_STATE):
-        now = time.time()
-        if not force and now - _autosync_mem["ts"] < SN_AUTOSYNC_TTL and _autosync_mem["values"] is not None:
-            return _autosync_mem["values"]
-        vals, err = sn_playwright_fetch()
-        if vals:
-            _autosync_mem.update(ts=now, values=vals, error=None)
-            return vals
-        # Playwright 失败则回退 cURL (旧半自动方案兜底)
-        _autosync_mem.update(ts=now, values=None, error=err)
-    cfg = load_sn_autosync()
-    if not cfg: return None
+def sn_autosync_fetch(force=False, proactive=False):
+    """商汤额度自动获取总入口。
+
+    顺序: ①活跃内存值(5min 频控, 省重复请求) ②真自动(token 直连 → 浏览器续期)
+    ③磁盘 cURL 凭据回退。失败原因写入 _autosync_mem["error"] 供 UI 明确展示。
+
+    2026-09-16: 不再要求"登录态文件必须存在"才走真自动 —— 缺文件时浏览器会用账号密码
+    直接登录一次(首次运行也能全自动), 原实现这种情况直接判死并悄悄退化成 cURL。
+    """
     now = time.time()
-    if not force and now - _autosync_mem["ts"] < SN_AUTOSYNC_TTL and _autosync_mem["values"] is not None:
+    if not force and _autosync_mem["values"] is not None and now - _autosync_mem["ts"] < SN_AUTOSYNC_TTL:
         return _autosync_mem["values"]
+
+    # ① 真自动: token 直连优先, 需要时浏览器续期
+    if SN_USE_PLAYWRIGHT and _sn_playwright_ready():
+        vals, err = sn_playwright_fetch(proactive=proactive)
+        if vals:
+            _autosync_mem.update(ts=time.time(), values=vals, error=None)
+            _sn_cred_mem.update(last_ok_ts=time.time(), last_ok_values=vals)
+            return vals
+        _autosync_mem.update(ts=now, values=None, error=err)
+        if err != "401":
+            _sn_cred_log("autosync", "真自动失败: %s" % err)
+
+    # ② cURL 凭据回退 (半自动兜底)
+    cfg = load_sn_autosync()
+    if not cfg:
+        if not _autosync_mem["error"]:
+            _autosync_mem.update(ts=now, values=None, error="未配置有效凭据 (可粘贴控制台 cURL)")
+        return None
     paths = cfg.get("paths") or {}
     if not paths:
         _autosync_mem.update(ts=now, values=None, error="未配置字段路径")
         return None
+    t0 = time.perf_counter()
     status, data, err = _http_json(cfg)
     if err:
+        _sn_cred_log("curl", "调用失败: %s" % err, time.perf_counter() - t0)
         _autosync_mem.update(ts=now, values=None, error=f"{err} (凭据过期? 重新抓包)")
         return None
     values = {}
@@ -1656,7 +1927,9 @@ def sn_autosync_fetch(force=False):
     if not values:
         _autosync_mem.update(ts=now, values=None, error="接口响应结构变化")
         return None
+    _sn_cred_log("curl", "调用成功", time.perf_counter() - t0)
     _autosync_mem.update(ts=now, values=values, error=None)
+    _sn_cred_mem.update(last_ok_ts=now, last_ok_values=values)
     cfg["last_ok_ts"] = now
     cfg["last_values"] = values
     save_sn_autosync(cfg)
@@ -1788,7 +2061,7 @@ def _next_weekly_reset_str():
     return f"{nxt.month}月{nxt.day}日 {nxt:%H:%M}"
 
 
-def load_sn_stats(force=False):
+def load_sn_stats(force=False, proactive=False):
     import collections
     wb = _load_wb_stats()
     candidates = {sn_canonical(n) for n in SN_KNOWN_QUOTA}
@@ -1809,7 +2082,7 @@ def load_sn_stats(force=False):
     canon_win_since = collections.defaultdict(int)
     sync = None
     sync_src = None
-    auto_vals = sn_autosync_fetch(force=force)
+    auto_vals = sn_autosync_fetch(force=force, proactive=proactive)
     if auto_vals:
         sync = {"ts": _autosync_mem["ts"],
                 "general_w": auto_vals.get("general_w"),
@@ -1927,10 +2200,23 @@ def load_sn_stats(force=False):
          "total_balance": promo_total, "nearest_expire": promo_expire,
          "synced": sync is not None, "sync_time": sync_time_str},
     ]
+    last_ok_time = None
+    if _sn_cred_mem.get("last_ok_ts"):
+        try:
+            last_ok_time = time.strftime("%H:%M", time.localtime(_sn_cred_mem["last_ok_ts"]))
+        except Exception:
+            last_ok_time = None
+    elif _autosync_mem.get("values") is not None:
+        try:
+            last_ok_time = time.strftime("%H:%M", time.localtime(_autosync_mem["ts"]))
+        except Exception:
+            last_ok_time = None
+
     return {
         "source": "sn", "window_start": ws, "window_end": we,
         "pools": pools, "synced": sync is not None, "sync_time": sync_time_str,
         "sync_src": sync_src, "autosync_error": _autosync_mem["error"],
+        "last_ok_time": last_ok_time,
     }
 
 
@@ -2337,7 +2623,10 @@ class SNSyncPanel(GlassPodFrame):
     def set_status(self, s):
         if s.get("autosync_error"):
             self._status_mode = "error"
-            self._status_msg = f"⚠ 同步异常: {s['autosync_error'][:22]}"
+            self._status_msg = f"⚠ {s['autosync_error'][:26]}"
+            # 同步失败时补上"上次成功时间", 让人一眼分清"数据是新的但拉取失败"与"从没成功过"
+            if s.get("last_ok_time"):
+                self._status_msg += f" · 上次成功 {s['last_ok_time']}"
         elif s.get("sync_src") == "auto":
             self._status_mode = "success"
             t = s.get("sync_time", time.strftime("%H:%M"))
@@ -2345,11 +2634,24 @@ class SNSyncPanel(GlassPodFrame):
         else:
             self._status_mode = "none"
             self._status_msg = "未配置自动同步"
+        self.status_lbl.setToolTip(str(s.get("autosync_error") or ""))
         self.apply_theme()
 
     def set_syncing(self, msg="正在同步积分…"):
         self._status_mode = "syncing"
         self._status_msg = f"⟳ {msg}"
+        self.status_lbl.setToolTip("")
+        self.apply_theme()
+
+    def set_failed(self, msg):
+        """扫描失败/超时时强制把面板从 syncing 态拉回来。
+
+        原实现失败路径只改副标题, 面板会永久停在「⟳ 正在自动获取凭证并同步…」——
+        看起来就是"点了没反应/一直转圈"。
+        """
+        self._status_mode = "error"
+        self._status_msg = f"⚠ {str(msg)[:26]}"
+        self.status_lbl.setToolTip(str(msg))
         self.apply_theme()
 
     def _on_clear(self):
@@ -2369,8 +2671,7 @@ class SNSyncPanel(GlassPodFrame):
             self.err_lbl.setText("解析失败: 未找到有效 URL")
             return
         self.err_lbl.setText("正在连接接口…")
-        self.btn_save.setEnabled(False)
-        self.btn_clear.setEnabled(False)
+        self._set_busy(True, "同步中…")
 
         def worker():
             try:
@@ -2397,9 +2698,14 @@ class SNSyncPanel(GlassPodFrame):
             return
         threading.Thread(target=worker, daemon=True).start()
 
+    def _set_busy(self, busy, label="保存并同步"):
+        """忙碌态: 按钮禁用 + 文案变化 (原实现只是静默 disable, 视觉上看不出被点过)"""
+        self.btn_save.setEnabled(not busy)
+        self.btn_clear.setEnabled(not busy)
+        self.btn_save.setText(label if busy else "保存并同步")
+
     def _on_save_finished(self, ok, msg):
-        self.btn_save.setEnabled(True)
-        self.btn_clear.setEnabled(True)
+        self._set_busy(False)
         self.err_lbl.setText(msg)
         if ok:
             self.saved.emit()
@@ -2441,11 +2747,13 @@ class SNSyncPanel(GlassPodFrame):
         self.btn_clear.setStyleSheet(
             f"QPushButton{{ background:transparent; color:{text2}; border:1px solid {border};"
             f" border-radius:6px; padding:3px 12px; font-size:{m['opt_btn_px']}px; }}"
-            f"QPushButton:hover{{ background:{qrgba(HOVER)}; color:{text}; }}")
+            f"QPushButton:hover{{ background:{qrgba(HOVER)}; color:{text}; }}"
+            f"QPushButton:disabled{{ color:{text3}; border-color:{border}; }}")
         self.btn_save.setStyleSheet(
             "QPushButton{ background:#3b6fe0; color:white; border:none; border-radius:6px;"
             f" padding:4px 16px; font-size:{m['opt_btn_px']}px; font-weight:600; }}"
-            "QPushButton:hover{ background:#2f5ec4; }")
+            "QPushButton:hover{ background:#2f5ec4; }"
+            "QPushButton:disabled{ background:#7c8aa5; color:#e6e9f0; }")
         self.apply_size()
         self.update()
 
@@ -2710,7 +3018,8 @@ class NavButton(QPushButton):
 
 # ============================================================ 刷新信号桥
 class RefreshBridge(QObject):
-    done = Signal(str, object)
+    # 第三个参数是扫描代次: 看门狗超时后线程若才回, 结果已作废 (不覆盖新状态)
+    done = Signal(str, object, int)
 
 
 # ============================================================ 主窗口 (双尺寸自适应架构)
@@ -2727,6 +3036,8 @@ class CardWindow(QWidget):
         self._drag = None
         self._scanning = False
         self._pending_refresh = False
+        self._pending_force = False
+        self._scan_gen = 0
         self._sn_cache = None
         self.source = theme_state["source"]
         self.range = "today"
@@ -2750,10 +3061,20 @@ class CardWindow(QWidget):
         self._scan_watchdog.timeout.connect(self._scan_watchdog_check)
 
     def _auto_refresh_tick(self):
-        """周期刷新: 商汤源自动同步(失败也持续重试), WB/DSH 源保持数据新鲜"""
+        """周期刷新: 商汤源自动同步(失败也持续重试), WB/DSH 源保持数据新鲜。
+
+        商汤凭据进入续期窗口(剩余 < SN_TOKEN_REFRESH_MARGIN)时主动换证 + 强制取数,
+        这样用户手动点刷新时基本永远是 0.2s 的快路径。
+        """
         if self._scanning:
             return
-        self.refresh()
+        pro = False
+        if self.source == "sn":
+            try:
+                pro = sn_token_near_expiry()
+            except Exception:
+                pro = False
+        self.refresh(force=pro, proactive=pro)
 
     def _scan_watchdog_check(self):
         """看门狗: work 线程超时未回时强制恢复刷新按钮, 杜绝卡死"""
@@ -2763,9 +3084,13 @@ class CardWindow(QWidget):
         if time.time() - self._scan_started > 60:
             self._scanning = False
             self._pending_refresh = False
+            self._pending_force = False
+            self._scan_gen += 1          # 作废在途结果, 避免迟到的返回值覆盖新状态
             self._scan_watchdog.stop()
-            self.btn_refresh.setEnabled(True)
+            self._btn_busy(False)
             self.subtitle.setText("刷新超时 (数据源响应过慢)，请重试")
+            if self.source == "sn":
+                self.sn_page.sync_panel.set_failed("同步超时，请重试")
 
     def _build_ui(self):
         outer = QHBoxLayout(self)
@@ -3187,14 +3512,24 @@ class CardWindow(QWidget):
         self.load_initial()
 
     # ---------------- 异步刷新链路 ----------------
-    def refresh(self, force=False):
+    def _btn_busy(self, busy):
+        """刷新按钮忙碌态: 文案 + 禁用 + 视觉一致 (原来只是 disable, 点下去像没反应)"""
+        self.btn_refresh.setEnabled(not busy)
+        self.btn_refresh.setText("⟳  同步中…" if busy else "⟳  刷新数据")
+
+    def refresh(self, force=False, proactive=False):
         if self._scanning:
+            # 合并重复请求: force 必须一起记下来, 否则用户在自动刷新期间点按钮,
+            # 后续补刷新会退化成 force=False 而命中 TTL 缓存 → 数据看着"没更新"
             self._pending_refresh = True
+            self._pending_force = self._pending_force or force
             return
         self._scanning = True
+        self._scan_gen += 1
+        gen = self._scan_gen
         self._scan_started = time.time()
         self._scan_watchdog.start(2000)   # 看门狗: 每 2s 检查一次, 超 60s 强制恢复
-        self.btn_refresh.setEnabled(False)
+        self._btn_busy(True)
         src = self.source
         if src == "dsh": self.subtitle.setText("正在读取 DSH 账本…")
         elif src == "sn":
@@ -3206,21 +3541,26 @@ class CardWindow(QWidget):
         def work():
             try:
                 if src == "dsh": s = load_dsh_stats()
-                elif src == "sn": s = load_sn_stats(force=force)
+                elif src == "sn": s = load_sn_stats(force=force, proactive=proactive)
                 else: s = scanner.scan_full()
             except Exception as e:
                 s = {"error": str(e)}
-            self.bridge.done.emit(src, s)
+            self.bridge.done.emit(src, s, gen)
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _on_scan_done(self, src, s):
+    def _on_scan_done(self, src, s, gen=None):
+        # 代次校验: 看门狗超时后线程若才回来, 其结果已作废, 不能覆盖新状态
+        if gen is not None and gen != self._scan_gen:
+            return
         self._scan_watchdog.stop()
         self._scanning = False
-        self.btn_refresh.setEnabled(True)
+        self._btn_busy(False)
         if isinstance(s, dict) and "error" in s:
             if src == self.source:
                 self.subtitle.setText(f"加载失败: {s['error'][:50]}")
+                if src == "sn":
+                    self.sn_page.sync_panel.set_failed(f"加载失败: {s['error'][:40]}")
             self._kick_pending()
             return
         if src == self.source:
@@ -3242,7 +3582,8 @@ class CardWindow(QWidget):
     def _kick_pending(self):
         if self._pending_refresh and not self._scanning:
             self._pending_refresh = False
-            QTimer.singleShot(0, self.refresh)
+            f, self._pending_force = self._pending_force, False
+            QTimer.singleShot(0, lambda: self.refresh(force=f))
 
     def load_initial(self):
         if self.source == "sn":
