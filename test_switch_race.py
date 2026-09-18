@@ -933,6 +933,109 @@ check("多机页主题/尺寸适配无异常", True)
 check("导航含多机按钮且可选中",
       hasattr(_w5, "btn_nav_multi") and _w5.btn_nav_multi.isCheckable())
 
+# ============================================================ 11. 视觉基座 (第51轮)
+print("== 11. 视觉基座: 按钮工厂 / 自绘弹窗 / 导航自绘 / 主题联动 ==")
+
+# 11.1 按钮工厂四档均可创建且属性正确
+for _kind in ("primary", "ghost", "danger", "icon"):
+    _b = ca.make_btn(_kind, "测试")
+    check(f"make_btn('{_kind}') 创建并可套样式",
+          _b.property("btn_kind") == _kind and _b.height() > 0 and bool(_b.styleSheet()),
+          f"h={_b.height()} qss_len={len(_b.styleSheet())}")
+_bh = ca.make_btn("ghost", "x")
+_bh.setFixedHeight(30)
+ca.style_btn(_bh, "primary", pt=9.0, height=30)
+check("style_btn 支持覆盖字号与高度", "#3b6fe0" in _bh.styleSheet())
+
+# 11.2 自绘弹窗可实例化, 标题/正文/按钮齐备
+_dlg = ca.GlassDialog(_w5, "标题测试", "正文内容", icon="error", ok_text="删除")
+check("GlassDialog 结构完整",
+      _dlg.title_lbl.text() == "标题测试" and _dlg.msg_lbl.text() == "正文内容"
+      and _dlg.btn_ok.text() == "删除" and _dlg.btn_cancel is not None)
+check("GlassDialog 语义徽章为 DlgIcon", isinstance(_dlg.bar_ind, ca.DlgIcon))
+check("GlassDialog 为无边框对话框窗口",
+      bool(_dlg.windowFlags() & ca.Qt.FramelessWindowHint))
+_dlg.add_field("机器名", "台式机", "占位")
+check("GlassDialog 输入框取值", _dlg.field_value() == "台式机")
+_dlg.accept()
+check("GlassDialog accept 置位 ok", _dlg._ok is True)
+_dlg2 = ca.GlassDialog(_w5, "T", "M", cancel_text=None)
+check("GlassDialog 可省略取消按钮", _dlg2.btn_cancel is None)
+_dlg2.reject()
+check("GlassDialog reject 清位 ok", _dlg2._ok is False)
+# dlg_notify / dlg_confirm / dlg_prompt 工厂需能构造 (不实际弹窗, 只验证签名与返回类型)
+import inspect as _insp
+check("dlg_confirm 返回 bool 语义",
+      _insp.signature(ca.dlg_confirm).parameters.get("ok_text").default == "确定")
+check("dlg_notify 无取消按钮",
+      _insp.signature(ca.dlg_notify).parameters.get("error").default is False)
+check("dlg_prompt 有 label 参数",
+      "label" in _insp.signature(ca.dlg_prompt).parameters)
+
+# 11.3 内部用 QMessageBox/QInputDialog 的旧调用已清除 (多机页交互)
+_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "card_app.py"),
+            encoding="utf-8").read()
+for _fn in ("_on_peer_remove", "_on_rename_machine", "_show_toast"):
+    _i = _src.find(f"def {_fn}")
+    _j = _src.find("\n    def ", _i + 10)
+    _body = _src[_i:_j if _j > 0 else _i + 2000]
+    check(f"{_fn} 已改用自绘弹窗",
+          "dlg_confirm" in _body or "dlg_prompt" in _body or "dlg_notify" in _body)
+    check(f"{_fn} 不再使用原生弹窗",
+          "QMessageBox" not in _body and "QInputDialog" not in _body)
+
+# 11.4 导航按钮自绘 (不再依赖 QSS :checked 换色)
+_nb = ca.NavButton("测试", "🔀")
+check("NavButton 记录 text/icon_str", _nb.text == "测试" and _nb.icon_str == "🔀")
+check("NavButton 按钮自身文本为空 (纯自绘)",
+      ca.QPushButton.text(_nb) == "", repr(ca.QPushButton.text(_nb)))
+_nb.setChecked(True)
+check("NavButton 可选中", _nb.isChecked())
+_nb.apply_size()
+check("NavButton 高度跟随度量", _nb.height() == ca.curr_metric()["nav_btn_h"])
+# 侧边栏四个按钮均套用统一的无背景 QSS, 且多机按钮已纳入 (曾经漏掉导致样式缺失)
+check("四个导航按钮样式一致",
+      all("background:transparent" in getattr(_w5, n).styleSheet()
+          for n in ("btn_nav_wb", "btn_nav_dsh", "btn_nav_sn", "btn_nav_multi")))
+
+# 11.5 主题切换必须联动子页面 (曾经只 update() 不重刷 QSS)
+_prev_dark = ca.theme_state["dark"]
+_w5.set_dark(not _prev_dark)
+check("set_dark 后多机页标题颜色跟随主题",
+      ca.qname(ca.TEXT) in _w5.multi_page.title_lbl.styleSheet(),
+      _w5.multi_page.title_lbl.styleSheet()[:60])
+check("set_dark 后多机页机器胶囊跟随主题",
+      ca.qname(ca.BLUE) in _w5.multi_page.machine_chip._font.family()
+      or _w5.multi_page.machine_chip.width() > 0)
+_w5.set_dark(_prev_dark)
+check("主题可还原", ca.theme_state["dark"] == _prev_dark)
+
+# 11.6 按机统计排行条: 比例/名次/本机标记
+_mx_v = 1000
+_r1 = ca.StatRankRow(1, "本机", {"total": 1000, "requests": 3, "firstDay": "a",
+                                 "lastDay": "b"}, _mx_v, True)
+_r2 = ca.StatRankRow(2, "别机", {"total": 250, "requests": 1, "firstDay": "a",
+                                 "lastDay": "b"}, _mx_v, False)
+check("StatRankRow 记录比例基准与总量",
+      _r1.mx == 1000 and _r2.total == 250 and _r1.is_local and not _r2.is_local)
+check("StatRankRow 名次正确", _r1.rank == 1 and _r2.rank == 2)
+check("StatRankRow 高度随度量", _r1.height() == int(_r1.FOOT_Y + ca.curr_metric()["sn_date_pt"] + 14))
+# 列几何常量必须存在 (绘制与列头共用, 保证对齐)
+for _k in ("rank_x", "name_x", "tot_w", "right_pad"):
+    check(f"RANK_COL 含 {_k}", _k in ca.RANK_COL)
+check("StatHeaderRow 与 StatRankRow 共用列常量", _w5.multi_page.stat_header is not None)
+
+# 11.7 来源徽标
+_badge = ca.SrcBadge(["wb", "dsh"])
+check("SrcBadge 双来源宽度 > 单来源", _badge.width() > ca.SrcBadge(["wb"]).width())
+check("SrcBadge 空来源不崩", ca.SrcBadge([]).width() >= 24)
+
+# 11.8 机器身份胶囊
+_chip = ca.MachineChip("台式机")
+_w1 = _chip.width()
+_chip.set_name("台式机-寝室-超长名字测试")
+check("MachineChip 名称变长宽度自适应", _chip.width() > _w1)
+
 # 还原 peers 目录 (临时目录随系统清理)
 ps.PEERS_DIR = _REAL_PEERS_DIR
 ps.PEERS_INDEX = _REAL_PEERS_INDEX

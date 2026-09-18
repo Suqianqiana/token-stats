@@ -423,6 +423,299 @@ class GlassPodFrame(QFrame):
             p.drawPath(path)
 
 
+# ============================================================ 通用按钮工厂 (2026-09-19 第51轮)
+# 统一「主态 / 幽灵态 / 图标态」三档按钮样式, 让全程序按钮语言收敛为同一套:
+#   · primary  — 实心蓝底, 用于每个面板的主操作 (导出 / 保存)
+#   · ghost    — 透明底 + 描边, 用于次要操作 (改名 / 覆盖更新)
+#   · danger   — 幽灵态, hover 转红, 用于破坏性操作 (删除)
+#   · icon     — 极简无边框, 用于标题栏右上的轻量开关
+BTN_GEOM = {"h": 26, "radius": 7, "pad_x": 12, "icon_pad": 10}
+
+
+def make_btn(kind="ghost", text="", parent=None, compact=False):
+    """按统一视觉语言创建按钮。kind ∈ {primary, ghost, danger, icon}"""
+    b = QPushButton(text, parent)
+    b.setCursor(Qt.PointingHandCursor)
+    b.setProperty("btn_kind", kind)
+    b.setFixedHeight(BTN_GEOM["icon_pad"] + 2 if compact else BTN_GEOM["h"])
+    if compact:
+        b.setFixedWidth(BTN_GEOM["icon_pad"] + 14)
+    style_btn(b)
+    return b
+
+
+def style_btn(b, kind=None, pt=None, height=None):
+    """(重新)套用按钮样式。切换主题/字号后需重调。pt 单位为 pt, 默认跟随度量。"""
+    kind = kind or b.property("btn_kind") or "ghost"
+    m = curr_metric()
+    pt = pt or (m["sn_sub_pt"] + 0.4)
+    r = 7 if not height else max(6, int(height / 3.6))
+    pad = "3px 14px" if height is None else "2px 12px"
+
+    if kind == "primary":
+        qss = (f"QPushButton{{ background:#3b6fe0; color:#ffffff; border:none;"
+               f" border-radius:{r}px; padding:{pad}; font-size:{pt}pt; font-weight:600; }}"
+               f"QPushButton:hover{{ background:#2f5ec4; }}"
+               f"QPushButton:pressed{{ background:#28529f; }}"
+               f"QPushButton:disabled{{ background:{qrgba(TRACK)}; color:{qname(TEXT3)}; }}")
+    elif kind == "danger":
+        qss = (f"QPushButton{{ background:transparent; color:{qname(TEXT3)};"
+               f" border:1px solid {qrgba(BORDER)}; border-radius:{r}px; padding:{pad};"
+               f" font-size:{pt}pt; }}"
+               f"QPushButton:hover{{ background:rgba(224,82,82,0.10); color:#e05252;"
+               f" border-color:rgba(224,82,82,0.42); }}"
+               f"QPushButton:pressed{{ background:rgba(224,82,82,0.18); }}")
+    elif kind == "icon":
+        qss = (f"QPushButton{{ background:transparent; color:{qname(TEXT3)}; border:none;"
+               f" border-radius:6px; padding:0 7px; font-size:{pt}pt; }}"
+               f"QPushButton:hover{{ background:{qrgba(HOVER)}; color:{qname(TEXT)}; }}")
+    else:  # ghost
+        qss = (f"QPushButton{{ background:transparent; color:{qname(TEXT2)};"
+               f" border:1px solid {qrgba(BORDER)}; border-radius:{r}px; padding:{pad};"
+               f" font-size:{pt}pt; }}"
+               f"QPushButton:hover{{ background:{qrgba(HOVER)}; color:{qname(BLUE)};"
+               f" border-color:rgba(59,111,224,0.38); }}"
+               f"QPushButton:pressed{{ background:rgba(59,111,224,0.14); }}"
+               f"QPushButton:disabled{{ color:{qname(TEXT3)}; }}")
+    b.setStyleSheet(qss)
+    return b
+
+
+# ============================================================ 自绘弹窗 (2026-09-19 第51轮)
+# 系统 QMessageBox / QInputDialog 的字体、圆角、阴影与卡片语言完全不搭。
+# 这里统一改为自绘玻璃卡片弹窗: 与主卡片同款圆角 + 描边 + 彩点标题 + 拖拽移动。
+class DlgIcon(QWidget):
+    """弹窗标题前的语义徽章: 圆形淡底 + 居中符号 (替代过粗的 BarIndicator)"""
+
+    GLYPH = {"warn": "!", "error": "!", "ok": "✓", "ask": "?", "info": "i"}
+
+    def __init__(self, kind="info", parent=None):
+        super().__init__(parent)
+        self.kind = kind
+        self.setFixedSize(20, 20)
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        col = {"warn": QColor("#e0813f"), "error": RED,
+               "ok": GREEN, "ask": PURPLE}.get(self.kind, BLUE)
+        bg = QColor(col)
+        bg.setAlpha(48 if theme_state["dark"] else 34)
+        p.setPen(Qt.NoPen)
+        p.setBrush(bg)
+        p.drawEllipse(QRectF(0.5, 0.5, 19, 19))
+        p.setBrush(col)
+        p.drawEllipse(QRectF(4.5, 4.5, 11, 11))
+        p.setPen(QColor("#ffffff"))
+        f = QFont("Microsoft YaHei UI", 7.5, QFont.Bold)
+        p.setFont(f)
+        p.drawText(QRectF(0, 0, 20, 20), Qt.AlignCenter, self.GLYPH.get(self.kind, "i"))
+
+
+class GlassDialog(GlassPodFrame):
+    """程序内统一弹窗: 模态等待 + 玻璃卡片 + 底部按钮区。
+
+    用法:
+        dlg = GlassDialog(window, "标题", "正文", icon="warn")
+        dlg.add_field("机器名", text="台式机")          # 可选输入框
+        if dlg.exec_ok(): ...
+    """
+
+    def __init__(self, parent, title, message="", icon="info", accent=None,
+                 ok_text="确定", cancel_text="取消", width=380):
+        super().__init__(radius=14, parent=None)
+        self.setObjectName("glass_dialog")
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self._icon_kind = icon
+        self._accent = accent or {"warn": QColor("#e0813f"), "error": RED,
+                                  "ok": GREEN, "ask": PURPLE}.get(icon, BLUE)
+        self._parent_win = parent
+        self._drag = None
+        self._ok = False
+        self._field = None
+        self._loop = None
+        self._width = width
+        self._build(title, message, ok_text, cancel_text, icon)
+        if parent is not None:
+            self._center_on(parent)
+        self.apply_theme()
+
+    # ---------- 构建 ----------
+    def _build(self, title, message, ok_text, cancel_text, icon="info"):
+        v = QVBoxLayout(self)
+        v.setContentsMargins(20, 16, 20, 16)
+        v.setSpacing(4)
+
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        self.bar_ind = DlgIcon(icon)
+        head.addWidget(self.bar_ind, 0, Qt.AlignVCenter)
+        self.title_lbl = QLabel(title)
+        head.addWidget(self.title_lbl, 0, Qt.AlignVCenter)
+        head.addStretch(1)
+        self.btn_x = QPushButton("✕")
+        self.btn_x.setCursor(Qt.PointingHandCursor)
+        self.btn_x.setFixedSize(22, 22)
+        self.btn_x.clicked.connect(lambda: self.reject())
+        head.addWidget(self.btn_x, 0, Qt.AlignTop)
+        v.addLayout(head)
+
+        self.wrap = QWidget()
+        self.wrap.setFixedWidth(self._width - 40)
+        wv = QVBoxLayout(self.wrap)
+        wv.setContentsMargins(0, 2, 0, 2)
+        wv.setSpacing(10)
+        self.msg_lbl = QLabel(message)
+        self.msg_lbl.setWordWrap(True)
+        self.msg_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        wv.addWidget(self.msg_lbl)
+        self._wrap_lay = wv
+        v.addWidget(self.wrap)
+        v.addSpacing(4)
+
+        brow = QHBoxLayout()
+        brow.setSpacing(8)
+        brow.addStretch(1)
+        self.btn_cancel = None
+        if cancel_text:
+            self.btn_cancel = make_btn("ghost", cancel_text)
+            self.btn_cancel.clicked.connect(lambda: self.reject())
+            brow.addWidget(self.btn_cancel)
+        self.btn_ok = make_btn("primary", ok_text)
+        self.btn_ok.clicked.connect(lambda: self.accept())
+        self.btn_ok.setDefault(True)
+        brow.addWidget(self.btn_ok)
+        v.addLayout(brow)
+        self._brow = brow
+
+    def add_field(self, label, text="", placeholder="", password=False):
+        """在正文下方追加一个带标签的输入框 (用于「改名」等场景)。"""
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        tag = QLabel(label)
+        tag.setFixedWidth(52)
+        tag.setObjectName("dlg_tag")
+        row.addWidget(tag, 0, Qt.AlignVCenter)
+        edit = QLineEdit()
+        edit.setText(text)
+        edit.setPlaceholderText(placeholder)
+        if password:
+            edit.setEchoMode(QLineEdit.Password)
+        edit.selectAll()
+        row.addWidget(edit, 1)
+        self._wrap_lay.addLayout(row)
+        self._field = edit
+        return edit
+
+    def field_value(self):
+        return self._field.text().strip() if self._field is not None else ""
+
+    # ---------- 交互 ----------
+    def _center_on(self, parent):
+        try:
+            pg = parent.window().frameGeometry()
+        except Exception:
+            return
+        self.adjustSize()
+        g = self.frameGeometry()
+        g.moveCenter(pg.center())
+        self.move(g.topLeft())
+
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.LeftButton and ev.position().y() < 46:
+            self._drag = ev.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            ev.accept()
+        else:
+            super().mousePressEvent(ev)
+
+    def mouseMoveEvent(self, ev):
+        if self._drag is not None and ev.buttons() & Qt.LeftButton:
+            self.move(ev.globalPosition().toPoint() - self._drag)
+            ev.accept()
+
+    def mouseReleaseEvent(self, ev):
+        self._drag = None
+
+    def keyPressEvent(self, ev):
+        if ev.key() == Qt.Key_Escape:
+            self.reject()
+        elif ev.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self.accept()
+        else:
+            super().keyPressEvent(ev)
+
+    def accept(self):
+        self._ok = True
+        self.close()
+
+    def reject(self):
+        self._ok = False
+        self.close()
+
+    def closeEvent(self, ev):
+        if self._loop is not None:
+            self._loop.quit()
+        ev.accept()
+
+    def exec_ok(self):
+        """模态显示并等待用户响应, 返回是否确认。"""
+        from PySide6.QtCore import QEventLoop
+        self._loop = QEventLoop()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        if self._field is not None:
+            self._field.setFocus()
+        self._loop.exec()
+        self._loop = None
+        return self._ok
+
+    # ---------- 外观 ----------
+    def apply_theme(self):
+        m = curr_metric()
+        self.title_lbl.setStyleSheet(f"color:{qname(TEXT)}; font-weight:700;"
+                                     f" font-size:{m['sn_title_pt'] + 0.3}pt;")
+        self.msg_lbl.setStyleSheet(f"color:{qname(TEXT2)}; font-size:{m['sn_sub_pt'] + 0.3}pt;")
+        self.btn_x.setStyleSheet(
+            "QPushButton{ background:transparent; color:%s; border:none;"
+            " border-radius:6px; font-size:11px; }"
+            "QPushButton:hover{ background:rgba(224,82,82,0.14); color:#e05252; }" % qname(TEXT3))
+        if self._field is not None:
+            tag = self.findChild(QLabel, "dlg_tag")
+            if tag is not None:
+                tag.setStyleSheet(f"color:{qname(TEXT3)}; font-size:{m['sn_sub_pt'] + 0.3}pt;")
+            self._field.setStyleSheet(
+                f"QLineEdit{{ background:{qrgba(TRACK)}; color:{qname(TEXT)};"
+                f" border:1px solid {qrgba(BORDER)}; border-radius:7px; padding:5px 9px;"
+                f" font-size:{m['opt_btn_px']}px; }}"
+                f"QLineEdit:focus{{ border:1px solid #3b6fe0; }}")
+        style_btn(self.btn_ok, "primary")
+        if self.btn_cancel is not None:
+            style_btn(self.btn_cancel, "ghost")
+        self.bar_ind.update()
+        self.update()
+
+
+def dlg_confirm(parent, title, message, ok_text="确定", icon="ask"):
+    """自绘确认框 → bool"""
+    return GlassDialog(parent, title, message, icon=icon, ok_text=ok_text).exec_ok()
+
+
+def dlg_notify(parent, title, message, error=False):
+    """自绘通知框 (单按钮, 无取消) → bool"""
+    return GlassDialog(parent, title, message, icon="error" if error else "ok",
+                       ok_text="知道了", cancel_text=None).exec_ok()
+
+
+def dlg_prompt(parent, title, message, default="", label="", placeholder=""):
+    """自绘输入框 → (text, ok)"""
+    d = GlassDialog(parent, title, message, icon="ask", ok_text="保存")
+    d.add_field(label or "内容", default, placeholder)
+    ok = d.exec_ok()
+    return (d.field_value(), ok)
+
+
 # ============================================================ 头部组件
 class CardHeader(QWidget):
     def __init__(self, text, accent=BLUE, parent=None):
@@ -3081,6 +3374,61 @@ class SNQuotaPage(QWidget):
         self.apply_size()
 
 # ============================================================ 多机数据源页 (2026-09-19 第50轮)
+# 第51轮视觉重做: 机器行改双列信息卡 + 来源胶囊徽标 + 图标态操作按钮;
+#               按机统计改自绘排行条; 页面整体走「面板头 / 内容」统一栅格。
+SRC_META = {
+    "wb": ("WorkBuddy", QColor("#3b6fe0")),
+    "dsh": ("DSH", QColor("#7c67ff")),
+}
+
+# 按机统计列的几何常量 (绘制与列头共用, 保证像素级对齐)
+RANK_COL = dict(rank_x=6.0, rank_d=18.0, name_x=32.0, name_w=132.0, bar_gap=10.0,
+                right_pad=6.0, tot_w=110.0, req_w=74.0, day_w=158.0)
+
+
+class SrcBadge(QWidget):
+    """来源胶囊徽标: 圆点 + 文字, 自绘圆角底 (替代原来的纯文本 ' · ' 拼接)"""
+
+    def __init__(self, srcs, parent=None):
+        super().__init__(parent)
+        self.srcs = list(srcs or [])
+        m = curr_metric()
+        self.setFixedHeight(m["sn_date_pt"] + 12)
+        self._font = QFont("Microsoft YaHei UI", m["sn_date_pt"] + 0.2)
+        p = QPainter(self)
+        p.setFont(self._font)
+        fm = p.fontMetrics()
+        w = 0
+        for s in self.srcs:
+            label = SRC_META.get(s, (s.upper(), GRAY))[0]
+            w += 9 + fm.horizontalAdvance(label) + 12
+        self.setFixedWidth(max(24, w))
+        p.end()
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setFont(self._font)
+        fm = p.fontMetrics()
+        h = self.height()
+        x = 0.0
+        dark = theme_state["dark"]
+        for s in self.srcs:
+            label, col = SRC_META.get(s, (s.upper(), GRAY))
+            tw = fm.horizontalAdvance(label)
+            cw = 9 + tw + 12
+            bg = QColor(col)
+            bg.setAlpha(46 if dark else 28)
+            p.setPen(Qt.NoPen)
+            p.setBrush(bg)
+            p.drawRoundedRect(QRectF(x, 0.5, cw, h - 1.0), (h - 1.0) / 2.0, (h - 1.0) / 2.0)
+            p.setBrush(col)
+            p.drawEllipse(QRectF(x + 5.5, h / 2.0 - 2.0, 4.0, 4.0))
+            p.setPen(col)
+            p.drawText(QRectF(x + 13.5, 0, tw + 2, h), Qt.AlignLeft | Qt.AlignVCenter, label)
+            x += cw + 5
+
+
 class MachineRow(GlassPodFrame):
     """别机列表中的一行: 机器名 / 来源徽标 / token 总量 / 请求 / 日期跨度 / 导入时间 + 操作。"""
 
@@ -3088,7 +3436,7 @@ class MachineRow(GlassPodFrame):
     replace = Signal(str)
 
     def __init__(self, item, parent=None):
-        super().__init__(radius=10, parent=parent)
+        super().__init__(radius=11, parent=parent)
         self.item = item
         self.machine = item.get("machine", "")
         self._build_ui()
@@ -3096,50 +3444,56 @@ class MachineRow(GlassPodFrame):
 
     def _build_ui(self):
         v = QVBoxLayout(self)
-        v.setContentsMargins(14, 10, 14, 10)
-        v.setSpacing(6)
+        v.setContentsMargins(14, 11, 14, 11)
+        v.setSpacing(8)
 
+        # ---- 顶行: 指示条 + 机器名 ............... 总量 + tokens
         top = QHBoxLayout()
         top.setSpacing(8)
-        self.bar = BarIndicator(BLUE)
+        self.bar = BarIndicator(PURPLE)
         top.addWidget(self.bar, 0, Qt.AlignVCenter)
 
         self.name_lbl = QLabel(self.machine)
-        self.name_lbl.setFont(QFont("Microsoft YaHei UI", 10.0, QFont.Bold))
-        top.addWidget(self.name_lbl, 0, Qt.AlignVCenter)
-
-        # 来源徽标: 哪些源来自这台机器
-        srcs = self.item.get("sources") or []
-        self.src_lbl = QLabel(" · ".join(
-            {"wb": "WorkBuddy", "dsh": "DSH"}.get(s, s) for s in srcs) or "—")
-        top.addWidget(self.src_lbl, 0, Qt.AlignVCenter)
-        top.addStretch(1)
+        self.name_lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.name_lbl.setMinimumWidth(40)
+        top.addWidget(self.name_lbl, 1)
 
         dig = self.item.get("digest") or {}
-        self.total_lbl = QLabel(f"{fmt_full(dig.get('total_tokens', 0))} tokens")
+        self.total_lbl = QLabel(fmt_full(dig.get("total_tokens", 0)))
         top.addWidget(self.total_lbl, 0, Qt.AlignVCenter)
+        self.unit_lbl = QLabel("tokens")
+        self.unit_lbl.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        top.addWidget(self.unit_lbl, 0, Qt.AlignVCenter)
         v.addLayout(top)
 
+        # ---- 中行: 来源徽标
+        self.badge = SrcBadge(self.item.get("sources") or [])
+        v.addWidget(self.badge, 0, Qt.AlignLeft)
+
+        # ---- 底行: 元信息 ............................. 操作按钮组
+        # 两行式: 上=请求+区间, 下=按钮组 → 窄面板下不会互相挤压截断
+        self.meta_lbl = QLabel(self._meta_text(dig))
+        self.meta_lbl.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        self.meta_lbl.setToolTip(self._meta_text(dig))
+        v.addWidget(self.meta_lbl, 0, Qt.AlignLeft)
+
         bot = QHBoxLayout()
-        bot.setSpacing(10)
-        self.meta_lbl = QLabel(
-            f"请求 {dig.get('requests', 0):,} · "
-            f"{dig.get('first_day', '—') or '—'} ~ {dig.get('last_day', '—') or '—'} · "
-            f"导入 {self._short_time(self.item.get('imported_at', ''))}")
-        bot.addWidget(self.meta_lbl, 1)
-
-        self.btn_replace = QPushButton("覆盖更新")
-        self.btn_replace.setCursor(Qt.PointingHandCursor)
-        self.btn_replace.setFixedHeight(24)
+        bot.setSpacing(6)
+        bot.addStretch(1)
+        self.btn_replace = make_btn("ghost", "覆盖更新")
+        self.btn_replace.setToolTip("用新数据包覆盖这台机器的旧快照")
         self.btn_replace.clicked.connect(lambda: self.replace.emit(self.machine))
-        bot.addWidget(self.btn_replace)
+        bot.addWidget(self.btn_replace, 0, Qt.AlignVCenter)
 
-        self.btn_remove = QPushButton("删除")
-        self.btn_remove.setCursor(Qt.PointingHandCursor)
-        self.btn_remove.setFixedHeight(24)
+        self.btn_remove = make_btn("danger", "删除")
+        self.btn_remove.setToolTip("删除本机保存的这台机器的快照")
         self.btn_remove.clicked.connect(lambda: self.remove.emit(self.machine))
-        bot.addWidget(self.btn_remove)
+        bot.addWidget(self.btn_remove, 0, Qt.AlignVCenter)
         v.addLayout(bot)
+
+    def _meta_text(self, dig):
+        return (f"{dig.get('requests', 0):,} 请求  ·  "
+                f"{dig.get('first_day', '—') or '—'} ~ {dig.get('last_day', '—') or '—'}")
 
     @staticmethod
     def _short_time(s):
@@ -3148,24 +3502,229 @@ class MachineRow(GlassPodFrame):
 
     def apply_size(self):
         m = curr_metric()
-        self.name_lbl.setFont(QFont("Microsoft YaHei UI", m["row_pt"] + 0.6, QFont.Bold))
-        for w, pt in ((self.src_lbl, m["row_head_pt"]), (self.total_lbl, m["row_pt"]),
-                      (self.meta_lbl, m["row_head_pt"])):
+        self.name_lbl.setFont(QFont("Microsoft YaHei UI", m["row_pt"] + 0.8, QFont.Bold))
+        self.total_lbl.setFont(QFont("Consolas", m["row_pt"] + 1.4, QFont.Bold))
+        for w, pt in ((self.meta_lbl, m["row_head_pt"] - 0.3), (self.unit_lbl, m["sn_date_pt"])):
             w.setFont(QFont("Microsoft YaHei UI", pt))
+        bh = m["row_h"] - 2
         for b in (self.btn_replace, self.btn_remove):
-            b.setFixedHeight(m["row_h"] - 2)
+            b.setFixedHeight(bh)
+            style_btn(b, None, pt=m["sn_sub_pt"] - 0.2, height=bh)
+        self.badge.update()
+        self.update()
 
     def apply_theme(self):
         self.name_lbl.setStyleSheet(f"color:{qname(TEXT)};")
-        self.src_lbl.setStyleSheet(f"color:{qname(TEXT3)};")
         self.total_lbl.setStyleSheet(f"color:{qname(BLUE)};")
         self.meta_lbl.setStyleSheet(f"color:{qname(TEXT3)};")
-        btn_qss = (f"QPushButton{{background:transparent; border:1px solid {qrgba(BORDER)};"
-                   f" border-radius:6px; padding:2px 10px; color:{qname(TEXT2)};}}"
-                   f"QPushButton:hover{{background:{qrgba(HOVER)}; color:{qname(BLUE)};}}")
-        for b in (self.btn_replace, self.btn_remove):
-            b.setStyleSheet(btn_qss)
+        self.unit_lbl.setStyleSheet(f"color:{qname(TEXT3)}; margin-right:2px;")
+        style_btn(self.btn_replace, "ghost")
+        style_btn(self.btn_remove, "danger")
         self.update()
+
+
+class StatRankRow(QWidget):
+    """按机统计的一行 (第51轮视觉重做)
+
+    布局为**两行式**, 避免窄面板下横向列互相挤压:
+      · 上行: 名次徽标 + 机器名 (+本机圆点) ............ Token 总量 (右, 加大)
+      · 下行: 用量占比条 (从名次后通栏铺到右侧)
+      · 底行: 请求数 · 数据区间 (小字, 右对齐)
+    """
+
+    def __init__(self, rank, machine, d, mx, is_local, parent=None):
+        super().__init__(parent)
+        self.rank = rank
+        self.machine = machine
+        self.total = d.get("total", 0)
+        self.mx = mx or 1
+        self.is_local = is_local
+        self.requests = d.get("requests", 0)
+        self.first_day = d.get("firstDay", "") or "—"
+        self.last_day = d.get("lastDay", "") or "—"
+        self.by_source = d.get("bySource") or {}
+        self._hover = False
+        self.setMouseTracking(True)
+        m = curr_metric()
+        self.ROW_TOP_H = 20.0
+        self.BAR_Y = 35.0
+        self.BAR_H = 7.0
+        self.FOOT_Y = 48.0
+        self.setFixedHeight(int(self.FOOT_Y + m["sn_date_pt"] + 14))
+
+    def enterEvent(self, ev):
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, ev):
+        self._hover = False
+        self.update()
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        m = curr_metric()
+        dark = theme_state["dark"]
+        C = RANK_COL
+
+        if self._hover:
+            hv = QColor(HOVER)
+            hv.setAlpha(190)
+            p.setPen(Qt.NoPen)
+            p.setBrush(hv)
+            p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 9, 9)
+
+        # ================= 上行: 名次 + 机器名 ......... Token 总量
+        top_y = 8.0
+        top_h = self.ROW_TOP_H
+        cy = top_y + top_h / 2.0
+
+        rank_col = QColor("#d6a72c") if self.rank == 1 else (
+            QColor("#9aa3b2") if self.rank == 2 else (
+                QColor("#c08a5e") if self.rank == 3 else QColor(TEXT3)))
+        p.setPen(Qt.NoPen)
+        p.setBrush(rank_col)
+        p.drawEllipse(QRectF(C["rank_x"], cy - C["rank_d"] / 2.0, C["rank_d"], C["rank_d"]))
+        p.setPen(QColor("#ffffff"))
+        p.setFont(QFont("Consolas", m["sn_date_pt"] + 0.2, QFont.Bold))
+        p.drawText(QRectF(C["rank_x"], cy - C["rank_d"] / 2.0, C["rank_d"], C["rank_d"]),
+                   Qt.AlignCenter, str(self.rank))
+
+        # 机器名 (超长省略, 不侵入右侧总量)
+        p.setFont(QFont("Microsoft YaHei UI", m["row_pt"], QFont.Bold if self.is_local else QFont.Normal))
+        p.setPen(QColor(BLUE) if self.is_local else QColor(TEXT))
+        name_res = w - C["name_x"] - C["tot_w"] - 30
+        nm = p.fontMetrics().elidedText(self.machine, Qt.ElideRight, int(max(40, name_res)))
+        p.drawText(QRectF(C["name_x"], top_y, name_res, top_h),
+                   Qt.AlignLeft | Qt.AlignVCenter, nm)
+        if self.is_local:
+            tw = p.fontMetrics().horizontalAdvance(nm)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(BLUE))
+            p.drawEllipse(QRectF(C["name_x"] + tw + 6, cy - 2.5, 5, 5))
+
+        # Token 总量 (右, 等宽加粗)
+        p.setFont(QFont("Consolas", m["row_pt"] + 1.6, QFont.Bold))
+        p.setPen(QColor(TEXT))
+        p.drawText(QRectF(w - C["tot_w"] - C["right_pad"], top_y, C["tot_w"], top_h),
+                   Qt.AlignRight | Qt.AlignVCenter, fmt_full(self.total))
+
+        # ================= 中行: 用量占比条 (通栏)
+        bar_x = C["name_x"]
+        bar_w = max(60.0, w - bar_x - C["right_pad"])
+        bh = self.BAR_H
+        by = self.BAR_Y
+        tr = QColor(TRACK)
+        tr.setAlpha(235)
+        p.setPen(Qt.NoPen)
+        p.setBrush(tr)
+        p.drawRoundedRect(QRectF(bar_x, by, bar_w, bh), bh / 2, bh / 2)
+
+        ratio = max(0.0, min(1.0, self.total / self.mx)) if self.mx else 0.0
+        fw = bar_w * ratio
+        if fw > 1.5:
+            grad = QLinearGradient(bar_x, 0, bar_x + fw, 0)
+            c0 = QColor(BLUE) if self.is_local else QColor(PURPLE)
+            c1 = QColor(c0)
+            c1.setAlpha(150 if dark else 190)
+            grad.setColorAt(0.0, c0)
+            grad.setColorAt(1.0, c1)
+            p.setBrush(QBrush(grad))
+            p.drawRoundedRect(QRectF(bar_x, by, fw, bh), bh / 2, bh / 2)
+
+        # ================= 底行: 请求 / 区间
+        foot_y = self.FOOT_Y
+        foot_h = h - foot_y - 3.0
+        p.setFont(QFont("Microsoft YaHei UI", m["sn_date_pt"] - 0.2))
+        p.setPen(QColor(TEXT3))
+        p.drawText(QRectF(bar_x, foot_y, w - bar_x - C["right_pad"], foot_h),
+                   Qt.AlignLeft | Qt.AlignTop,
+                   f"{self.requests:,} 请求   ·   {self.first_day} ~ {self.last_day}")
+
+
+class MachineChip(QWidget):
+    """本机身份胶囊: 🖥 圆点 + 机器名, 自绘浅色圆角底。"""
+
+    def __init__(self, name="—", parent=None):
+        super().__init__(parent)
+        self._name = name
+        self._font = QFont("Microsoft YaHei UI", 9.0, QFont.Bold)
+        self.setFixedHeight(22)
+        self._recalc()
+
+    def set_name(self, name):
+        self._name = name or "—"
+        self._recalc()
+        self.update()
+
+    def apply_size(self):
+        m = curr_metric()
+        self._font = QFont("Microsoft YaHei UI", m["sn_sub_pt"] - 0.2, QFont.Bold)
+        self.setFixedHeight(m["sn_sub_pt"] + 13)
+        self._recalc()
+        self.update()
+
+    def _recalc(self):
+        p = QPainter(self)
+        p.setFont(self._font)
+        fm = p.fontMetrics()
+        w = 12 + 9 + 6 + fm.horizontalAdvance(self._name) + 12
+        p.end()
+        self.setFixedWidth(max(58, w))
+
+    def apply_theme(self):
+        self.update()
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        c = QColor(BLUE)
+        bg = QColor(c)
+        bg.setAlpha(44 if theme_state["dark"] else 26)
+        p.setPen(Qt.NoPen)
+        p.setBrush(bg)
+        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), (h - 1.0) / 2.0, (h - 1.0) / 2.0)
+        p.setBrush(c)
+        p.drawEllipse(QRectF(12, h / 2.0 - 2.5, 5.0, 5.0))
+        p.setFont(self._font)
+        p.setPen(c)
+        p.drawText(QRectF(23, 0, w - 30, h), Qt.AlignLeft | Qt.AlignVCenter, self._name)
+
+
+class StatHeaderRow(QWidget):
+    """按机统计的列头: 与 StatRankRow 两行式布局对齐 (机器 / Token 总量 + 分隔线)。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(18)
+
+    def apply_size(self):
+        m = curr_metric()
+        self.setFixedHeight(m["sn_date_pt"] + 10)
+        self.update()
+
+    def apply_theme(self):
+        self.update()
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        m = curr_metric()
+        C = RANK_COL
+        p.setFont(QFont("Microsoft YaHei UI", m["sn_date_pt"] - 0.2))
+        p.setPen(QColor(TEXT3))
+        p.drawText(QRectF(C["name_x"], 0, w - C["name_x"] - C["tot_w"], h),
+                   Qt.AlignLeft | Qt.AlignVCenter, "机器 / 用量占比")
+        p.drawText(QRectF(w - C["tot_w"] - C["right_pad"], 0, C["tot_w"], h),
+                   Qt.AlignRight | Qt.AlignVCenter, "Token 总量")
+
+        ln = QColor(BORDER)
+        ln.setAlpha(150)
+        p.setPen(QPen(ln, 1.0))
+        p.drawLine(QPointF(C["rank_x"], h - 0.5), QPointF(w - C["right_pad"], h - 0.5))
 
 
 class MultiMachinePage(QWidget):
@@ -3183,76 +3742,83 @@ class MultiMachinePage(QWidget):
         self._summary = {}
         self._build_ui()
 
+    # ---------- 面板头工厂 (统一「小细条 + 标题 + 右侧说明」语言) ----------
+    def _panel_head(self, parent_layout, title, accent, right_text=""):
+        h = QHBoxLayout()
+        h.setSpacing(8)
+        bar = BarIndicator(accent)
+        h.addWidget(bar, 0, Qt.AlignVCenter)
+        lbl = QLabel(title)
+        h.addWidget(lbl, 0, Qt.AlignVCenter)
+        h.addStretch(1)
+        right = None
+        if right_text is not None:
+            right = QLabel(right_text)
+            h.addWidget(right, 0, Qt.AlignVCenter)
+        parent_layout.addLayout(h)
+        return bar, lbl, right
+
     def _build_ui(self):
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(10)
 
-        # ---- 1. 本机身份 + 操作卡
+        # ================= 1. 顶部: 本机身份 + 双主操作
         self.action_card = GlassPodFrame(radius=12)
         self.action_card.setObjectName("multi_action_card")
         av = QVBoxLayout(self.action_card)
-        av.setContentsMargins(16, 12, 16, 12)
-        av.setSpacing(8)
+        av.setContentsMargins(16, 13, 16, 13)
+        av.setSpacing(11)
 
         r1 = QHBoxLayout()
         r1.setSpacing(8)
         self.bar_action = BarIndicator(BLUE)
         r1.addWidget(self.bar_action, 0, Qt.AlignVCenter)
         self.title_lbl = QLabel("数据源管理")
-        self.title_lbl.setFont(QFont("Microsoft YaHei UI", 10.5, QFont.Bold))
         r1.addWidget(self.title_lbl, 0, Qt.AlignVCenter)
         r1.addStretch(1)
-        self.machine_lbl = QLabel("本机: —")
-        r1.addWidget(self.machine_lbl, 0, Qt.AlignVCenter)
-        self.btn_rename = QPushButton("改名")
-        self.btn_rename.setCursor(Qt.PointingHandCursor)
+
+        # 本机身份: 自绘胶囊 (机器名 + 改名图标态按钮)
+        self.machine_chip = MachineChip("—")
+        r1.addWidget(self.machine_chip, 0, Qt.AlignVCenter)
+        self.btn_rename = make_btn("ghost", "改名")
         self.btn_rename.clicked.connect(lambda: self.machine_rename.emit(""))
         r1.addWidget(self.btn_rename, 0, Qt.AlignVCenter)
         av.addLayout(r1)
 
-        r2 = QHBoxLayout()
-        r2.setSpacing(8)
         self.hint_lbl = QLabel("导出本机数据（含 WorkBuddy + DSH 两个来源的全部记录）为文件，"
                                "可拷到其他电脑导入；导入不会覆盖本机数据，按机器名分别存放。")
         self.hint_lbl.setWordWrap(True)
         self.hint_lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        r2.addWidget(self.hint_lbl, 1)
-        av.addLayout(r2)
+        av.addWidget(self.hint_lbl)
 
         r3 = QHBoxLayout()
-        r3.setSpacing(8)
-        self.btn_export = QPushButton("⬆  导出本机数据")
-        self.btn_export.setCursor(Qt.PointingHandCursor)
+        r3.setSpacing(9)
+        self.btn_export = make_btn("primary", "⬆  导出本机数据")
         self.btn_export.clicked.connect(self.export_requested)
-        r3.addWidget(self.btn_export)
-        self.btn_import = QPushButton("⬇  导入别机数据")
-        self.btn_import.setCursor(Qt.PointingHandCursor)
+        r3.addWidget(self.btn_export, 1)
+        self.btn_import = make_btn("primary", "⬇  导入别机数据")
         self.btn_import.clicked.connect(self.import_requested)
-        r3.addWidget(self.btn_import)
-        r3.addStretch(1)
-        self.peer_count_lbl = QLabel("")
-        r3.addWidget(self.peer_count_lbl, 0, Qt.AlignVCenter)
+        r3.addWidget(self.btn_import, 1)
         av.addLayout(r3)
         v.addWidget(self.action_card)
 
-        # ---- 2. 按机统计对比卡
+        # ================= 2. 主体: 左「按机统计」 / 右「已导入的机器」
+        body = QHBoxLayout()
+        body.setSpacing(10)
+
+        # ---- 2a. 按机统计
         self.stat_card = GlassPodFrame(radius=12)
         self.stat_card.setObjectName("multi_stat_card")
         sv = QVBoxLayout(self.stat_card)
-        sv.setContentsMargins(16, 10, 16, 10)
-        sv.setSpacing(6)
-        sh = QHBoxLayout()
-        sh.setSpacing(8)
-        self.bar_stat = BarIndicator(GREEN)
-        sh.addWidget(self.bar_stat, 0, Qt.AlignVCenter)
-        self.stat_title = QLabel("按机统计")
-        self.stat_title.setFont(QFont("Microsoft YaHei UI", 10.5, QFont.Bold))
-        sh.addWidget(self.stat_title, 0, Qt.AlignVCenter)
-        sh.addStretch(1)
-        self.stat_scope_lbl = QLabel("")
-        sh.addWidget(self.stat_scope_lbl, 0, Qt.AlignVCenter)
-        sv.addLayout(sh)
+        sv.setContentsMargins(16, 12, 16, 12)
+        sv.setSpacing(9)
+        self.bar_stat, self.stat_title, self.stat_scope_lbl = self._panel_head(
+            sv, "按机统计", GREEN, "")
+
+        # 列头 (与 StatRankRow 的列宽严格对齐)
+        self.stat_header = StatHeaderRow()
+        sv.addWidget(self.stat_header)
 
         self.stat_area = QScrollArea()
         self.stat_area.setWidgetResizable(True)
@@ -3261,26 +3827,19 @@ class MultiMachinePage(QWidget):
         self.stat_host = QWidget()
         self.stat_lay = QVBoxLayout(self.stat_host)
         self.stat_lay.setContentsMargins(0, 0, 0, 0)
-        self.stat_lay.setSpacing(2)
+        self.stat_lay.setSpacing(1)
         self.stat_area.setWidget(self.stat_host)
         sv.addWidget(self.stat_area, 1)
-        v.addWidget(self.stat_card, 1)
+        body.addWidget(self.stat_card, 13)
 
-        # ---- 3. 别机列表卡
+        # ---- 2b. 已导入的机器
         self.peer_card = GlassPodFrame(radius=12)
         self.peer_card.setObjectName("multi_peer_card")
         pv = QVBoxLayout(self.peer_card)
-        pv.setContentsMargins(16, 10, 16, 10)
-        pv.setSpacing(6)
-        ph = QHBoxLayout()
-        ph.setSpacing(8)
-        self.bar_peer = BarIndicator(PURPLE)
-        ph.addWidget(self.bar_peer, 0, Qt.AlignVCenter)
-        self.peer_title = QLabel("已导入的机器")
-        self.peer_title.setFont(QFont("Microsoft YaHei UI", 10.5, QFont.Bold))
-        ph.addWidget(self.peer_title, 0, Qt.AlignVCenter)
-        ph.addStretch(1)
-        pv.addLayout(ph)
+        pv.setContentsMargins(16, 12, 16, 12)
+        pv.setSpacing(9)
+        self.bar_peer, self.peer_title, self.peer_count_lbl = self._panel_head(
+            pv, "已导入的机器", PURPLE, "")
 
         self.peer_area = QScrollArea()
         self.peer_area.setWidgetResizable(True)
@@ -3289,44 +3848,51 @@ class MultiMachinePage(QWidget):
         self.peer_host = QWidget()
         self.peer_lay = QVBoxLayout(self.peer_host)
         self.peer_lay.setContentsMargins(0, 0, 0, 0)
-        self.peer_lay.setSpacing(6)
+        self.peer_lay.setSpacing(7)
         self.peer_area.setWidget(self.peer_host)
         pv.addWidget(self.peer_area, 1)
-        v.addWidget(self.peer_card, 1)
+        body.addWidget(self.peer_card, 9)
+        v.addLayout(body, 1)
 
     # ---------------- 尺寸 ----------------
     def apply_size(self):
         m = curr_metric()
         for w, pt in ((self.title_lbl, m["sn_title_pt"]), (self.stat_title, m["sn_title_pt"]),
-                      (self.peer_title, m["sn_title_pt"]), (self.machine_lbl, m["sn_sub_pt"]),
-                      (self.hint_lbl, m["sn_sub_pt"]), (self.peer_count_lbl, m["sn_date_pt"]),
-                      (self.stat_scope_lbl, m["sn_date_pt"])):
+                      (self.peer_title, m["sn_title_pt"]), (self.hint_lbl, m["sn_sub_pt"] - 0.2),
+                      (self.peer_count_lbl, m["sn_date_pt"]), (self.stat_scope_lbl, m["sn_date_pt"])):
             w.setFont(QFont("Microsoft YaHei UI", pt))
+        self.machine_chip.apply_size()
+        bh = m["nav_btn_h"] - 4
         for b in (self.btn_export, self.btn_import, self.btn_rename):
-            b.setFixedHeight(m["nav_btn_h"] - 4)
+            b.setFixedHeight(bh)
+            style_btn(b, None, pt=m["sn_sub_pt"] + 0.2, height=bh)
+        self.stat_header.apply_size()
         for row in self.findChildren(MachineRow):
             row.apply_size()
         self.update()
 
     # ---------------- 主题 ----------------
     def apply_theme(self):
-        self.title_lbl.setStyleSheet(f"color:{qname(TEXT)};")
-        self.stat_title.setStyleSheet(f"color:{qname(TEXT)};")
-        self.peer_title.setStyleSheet(f"color:{qname(TEXT)};")
-        self.machine_lbl.setStyleSheet(f"color:{qname(BLUE)};")
+        m = curr_metric()
+        self.title_lbl.setStyleSheet(f"color:{qname(TEXT)}; font-weight:700;")
+        self.stat_title.setStyleSheet(f"color:{qname(TEXT)}; font-weight:700;")
+        self.peer_title.setStyleSheet(f"color:{qname(TEXT)}; font-weight:700;")
         self.hint_lbl.setStyleSheet(f"color:{qname(TEXT3)};")
-        self.peer_count_lbl.setStyleSheet(f"color:{qname(TEXT3)};")
-        self.stat_scope_lbl.setStyleSheet(f"color:{qname(TEXT3)};")
-        btn_primary = (
-            f"QPushButton{{background:{qrgba(BLUE, 38)}; border:1px solid {qrgba(BLUE, 90)};"
-            f" border-radius:7px; padding:3px 14px; color:{qname(BLUE)}; font-weight:600;}}"
-            f"QPushButton:hover{{background:{qrgba(BLUE, 62)};}}")
-        self.btn_export.setStyleSheet(btn_primary)
-        self.btn_import.setStyleSheet(btn_primary)
-        self.btn_rename.setStyleSheet(
-            f"QPushButton{{background:transparent; border:1px solid {qrgba(BORDER)};"
-            f" border-radius:6px; padding:2px 10px; color:{qname(TEXT2)};}}"
-            f"QPushButton:hover{{background:{qrgba(HOVER)}; color:{qname(BLUE)};}}")
+        self.peer_count_lbl.setStyleSheet(
+            f"color:{qname(TEXT3)}; background:{qrgba(TRACK)}; border-radius:5px; padding:2px 8px;")
+        self.stat_scope_lbl.setStyleSheet(
+            f"color:{qname(TEXT2)}; background:{qrgba(TRACK)}; border-radius:5px; padding:2px 8px;")
+        # 空态占位文案
+        for t in self.findChildren(QLabel, "multi_empty_title"):
+            t.setStyleSheet(f"color:{qname(TEXT2)}; font-size:{m['sn_sub_pt'] + 0.6}pt;"
+                            f" font-weight:600;")
+        for s in self.findChildren(QLabel, "multi_empty_sub"):
+            s.setStyleSheet(f"color:{qname(TEXT3)}; font-size:{m['sn_date_pt']}pt;")
+        style_btn(self.btn_export, "primary")
+        style_btn(self.btn_import, "primary")
+        style_btn(self.btn_rename, "ghost")
+        self.machine_chip.apply_theme()
+        self.stat_header.apply_theme()
         for row in self.findChildren(MachineRow):
             row.apply_theme()
         self.update()
@@ -3335,7 +3901,7 @@ class MultiMachinePage(QWidget):
     def render(self, peers, summary, machine_name=""):
         self._peers = list(peers or [])
         self._summary = dict(summary or {})
-        self.machine_lbl.setText(f"本机: {machine_name or '—'}")
+        self.machine_chip.set_name(machine_name or "—")
 
         # 别机列表
         while self.peer_lay.count():
@@ -3344,12 +3910,9 @@ class MultiMachinePage(QWidget):
             if w:
                 w.deleteLater()
         if not self._peers:
-            empty = QLabel("尚未导入其他机器的数据。\n在另一台电脑上点「导出本机数据」，"
-                           "把文件拷过来后点「导入别机数据」即可。")
-            empty.setAlignment(Qt.AlignCenter)
-            empty.setWordWrap(True)
-            empty.setStyleSheet(f"color:{qname(TEXT3)}; padding:22px; font-size:11px;")
-            self.peer_lay.addWidget(empty)
+            self.peer_lay.addWidget(self._empty_hint(
+                "尚未导入其他机器的数据",
+                "在另一台电脑上点「导出本机数据」，把文件拷过来后点「导入别机数据」即可。"))
         else:
             for it in self._peers:
                 row = MachineRow(it)
@@ -3357,8 +3920,7 @@ class MultiMachinePage(QWidget):
                 row.replace.connect(self.machine_replace)
                 self.peer_lay.addWidget(row)
         self.peer_lay.addStretch(1)
-        self.peer_count_lbl.setText(f"共 {len(self._peers)} 台别机")
-
+        self.peer_count_lbl.setText(f"{len(self._peers)} 台")
         # 按机统计对比
         while self.stat_lay.count():
             it = self.stat_lay.takeAt(0)
@@ -3368,74 +3930,131 @@ class MultiMachinePage(QWidget):
         rows = [(m, d) for m, d in self._summary.items() if d]
         rows.sort(key=lambda kv: -kv[1].get("total", 0))
         if not rows:
-            empty = QLabel("暂无统计数据。")
-            empty.setAlignment(Qt.AlignCenter)
-            empty.setStyleSheet(f"color:{qname(TEXT3)}; padding:22px; font-size:11px;")
-            self.stat_lay.addWidget(empty)
+            self.stat_lay.addWidget(self._empty_hint("暂无统计数据", "导入别机数据后这里会显示各机器的用量对比。"))
         else:
             mx = max(d.get("total", 0) for _m, d in rows) or 1
-            for m, d in rows:
-                is_local = bool(d.get("local"))
-                self.stat_lay.addWidget(self._stat_row(m, d, mx, is_local))
+            for i, (m, d) in enumerate(rows, 1):
+                self.stat_lay.addWidget(StatRankRow(i, m, d, mx, bool(d.get("local"))))
         self.stat_lay.addStretch(1)
         total_tok = sum(d.get("total", 0) for _m, d in rows)
-        self.stat_scope_lbl.setText(f"合计 {fmt_full(total_tok)} tokens · {len(rows)} 台机器")
+        self.stat_scope_lbl.setText(f"合计 {fmt_full(total_tok)} · {len(rows)} 台机器")
         self.apply_theme()
         self.apply_size()
 
-    def _stat_row(self, machine, d, mx, is_local):
+    def _empty_hint(self, title, sub):
         w = QWidget()
-        lay = QHBoxLayout(w)
-        lay.setContentsMargins(2, 2, 2, 2)
-        lay.setSpacing(8)
-
-        name = QLabel(("🖥 " if is_local else "💻 ") + machine)
-        name.setFixedWidth(150)
-        name.setToolTip("本机" if is_local else "别机")
-        lay.addWidget(name)
-
-        bar = SNProgressBar(d.get("total", 0) / mx if mx else 0,
-                            color="orange" if not is_local else "purple")
-        lay.addWidget(bar, 1)
-
-        tot = QLabel(fmt_full(d.get("total", 0)))
-        tot.setFixedWidth(110)
-        tot.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        lay.addWidget(tot)
-
-        req = QLabel(f"{d.get('requests', 0):,} 请求")
-        req.setFixedWidth(90)
-        req.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        lay.addWidget(req)
-
-        days = QLabel(f"{d.get('firstDay', '') or '—'} ~ {d.get('lastDay', '') or '—'}")
-        days.setFixedWidth(160)
-        days.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        lay.addWidget(days)
-
-        m = curr_metric()
-        for lbl, pt in ((name, m["row_pt"]), (tot, m["row_pt"]),
-                        (req, m["row_head_pt"]), (days, m["row_head_pt"])):
-            lbl.setFont(QFont("Microsoft YaHei UI", pt))
-        name.setStyleSheet(f"color:{qname(BLUE if is_local else TEXT2)};")
-        tot.setStyleSheet(f"color:{qname(TEXT)};")
-        req.setStyleSheet(f"color:{qname(TEXT3)};")
-        days.setStyleSheet(f"color:{qname(TEXT3)};")
-        bar.setFixedHeight(m.get("sn_prog_h", 10))
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(0, 26, 0, 26)
+        lay.setSpacing(5)
+        t = QLabel(title)
+        t.setAlignment(Qt.AlignCenter)
+        t.setObjectName("multi_empty_title")
+        lay.addWidget(t)
+        s = QLabel(sub)
+        s.setAlignment(Qt.AlignCenter)
+        s.setWordWrap(True)
+        s.setObjectName("multi_empty_sub")
+        lay.addWidget(s)
         return w
 
 
 class NavButton(QPushButton):
+    """侧边栏数据源导航按钮 (2026-09-19 第51轮 自绘重做)
+
+    原来只是一个 QPushButton + QSS, 选中态仅换背景色 —— 视觉上扁平、和卡片的
+    玻璃语言脱节, 且 4 个按钮不等宽时文字起始位置飘。现改为纯自绘:
+      · 左侧 3px 竖条选中指示器 (选中时淡入 + 上移)
+      · 图标与文字分列排版, 图标居中于固定 26px 图标槽, 文字左对齐 → 四个按钮完全对齐
+      · 选中态: 蓝色柔和填充 + 左侧指示条 + 文字加粗变色
+      · hover 态: 中性浅填充, 与选中态明显区分
+    """
+    ICON_W = 22
+    PAD_L = 13
+    GAP = 3
+
     def __init__(self, text, icon_str="", parent=None):
-        super().__init__(f"  {icon_str}  {text}", parent)
+        super().__init__("", parent)
         self.setCheckable(True)
         self.setCursor(Qt.PointingHandCursor)
+        self.text = text
+        self.icon_str = icon_str
+        self._hover = False
+        self.setMouseTracking(True)
         self.apply_size()
+
+    def sizeHint(self):
+        from PySide6.QtCore import QSize
+        return QSize(150, curr_metric()["nav_btn_h"])
 
     def apply_size(self):
         m = curr_metric()
         self.setFixedHeight(m["nav_btn_h"])
-        self.setFont(QFont("Microsoft YaHei UI", m["nav_btn_pt"]))
+        self.update()
+
+    def enterEvent(self, ev):
+        self._hover = True
+        self.update()
+        super().enterEvent(ev)
+
+    def leaveEvent(self, ev):
+        self._hover = False
+        self.update()
+        super().leaveEvent(ev)
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        m = curr_metric()
+        checked = self.isChecked()
+        dark = theme_state["dark"]
+        glass = theme_state["glass"]
+        r = 9.0
+
+        # 1. 背景 (选中 > hover > 常态)
+        if checked:
+            bg = QColor(BLUE)
+            bg.setAlpha(72 if dark else 30)
+            p.setPen(Qt.NoPen)
+            p.setBrush(bg)
+            p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), r, r)
+            # 玻璃态下叠一层极淡描边, 让选中块在透光背景上仍有边界感
+            if glass:
+                rim = QColor(BLUE)
+                rim.setAlpha(80 if dark else 62)
+                p.setBrush(Qt.NoBrush)
+                p.setPen(QPen(rim, 1.0))
+                p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), r, r)
+        elif self._hover:
+            hv = QColor(HOVER)
+            hv.setAlpha(210)
+            p.setPen(Qt.NoPen)
+            p.setBrush(hv)
+            p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), r, r)
+
+        # 2. 左侧竖条指示器 (选中态)
+        if checked:
+            bar_h = min(h - 18.0, 20.0)
+            y = (h - bar_h) / 2.0
+            p.setPen(Qt.NoPen)
+            p.setBrush(BLUE)
+            p.drawRoundedRect(QRectF(3.5, y, 3.0, bar_h), 1.5, 1.5)
+
+        # 3. 图标 (居中于固定图标槽, 保证四个按钮文字左边界完全一致)
+        f = QFont("Microsoft YaHei UI", m["nav_btn_pt"] - 0.4)
+        p.setFont(f)
+        p.setPen(QColor(TEXT2) if not checked else QColor(BLUE))
+        p.drawText(QRectF(self.PAD_L, 0, self.ICON_W, h),
+                   Qt.AlignCenter, self.icon_str)
+
+        # 4. 文字
+        tf = QFont("Microsoft YaHei UI", m["nav_btn_pt"])
+        tf.setBold(bool(checked))
+        p.setFont(tf)
+        p.setPen(QColor(BLUE) if checked else (QColor(TEXT) if self._hover else QColor(TEXT2)))
+        tx = self.PAD_L + self.ICON_W + self.GAP
+        p.drawText(QRectF(tx, 0, w - tx - 8, h),
+                   Qt.AlignLeft | Qt.AlignVCenter, self.text)
 
 
 # ============================================================ 刷新信号桥
@@ -3886,13 +4505,10 @@ class CardWindow(QWidget):
                 f"QPushButton:hover{{ color:{qname(TEXT)}; }}"
                 "QPushButton:checked:hover{ color:white; }")
 
-        nav_style = (
-            f"QPushButton{{ background:transparent; color:{qname(TEXT2)}; border:none; border-radius:8px;"
-            f" text-align:left; padding-left:10px; }}"
-            f"QPushButton:hover{{ background:{qrgba(HOVER)}; color:{qname(TEXT)}; }}"
-            f"QPushButton:checked{{ background:{qrgba(BLUE, 55 if dark else 25)}; color:#3b6fe0; font-weight:700; }}")
-        for b in (self.btn_nav_wb, self.btn_nav_dsh, self.btn_nav_sn):
-            b.setStyleSheet(nav_style)
+        # NavButton 为纯自绘 (见类内 paintEvent), 不再套 QSS, 避免与自绘叠加产生双重背景
+        for b in (self.btn_nav_wb, self.btn_nav_dsh, self.btn_nav_sn, self.btn_nav_multi):
+            b.setStyleSheet("background:transparent; border:none;")
+            b.update()
 
         self.model_area.setStyleSheet("background:transparent; border:none;")
         self.model_host.setStyleSheet("background:transparent;")
@@ -3904,6 +4520,7 @@ class CardWindow(QWidget):
         refresh_palette()
         self.apply_styles()
         apply_app_qss()
+        self._refresh_subpages_theme()
         self._update_all()
         save_settings()
 
@@ -3911,8 +4528,21 @@ class CardWindow(QWidget):
         theme_state["glass"] = enabled
         refresh_palette()
         self.apply_styles()
+        self._refresh_subpages_theme()
         self._update_all()
         save_settings()
+
+    def _refresh_subpages_theme(self):
+        """2026-09-19 第51轮: 子页面用 QLabel + QSS 上色, 主题切换必须显式重刷,
+        否则多机页/商汤页会在切换暗色后保留旧主题的文字颜色 (update() 不重算 QSS)。"""
+        try:
+            self.sn_page.apply_theme()
+        except Exception:
+            pass
+        try:
+            self.multi_page.apply_theme()
+        except Exception:
+            pass
 
     def _update_all(self):
         for w in QApplication.allWidgets():
@@ -4095,11 +4725,12 @@ class CardWindow(QWidget):
             self._show_toast(f"导入失败\n\n{msg}", error=True)
 
     def _on_peer_remove(self, machine):
-        r = QMessageBox.question(
-            self, "删除机器数据", f"确定删除机器「{machine}」的已导入数据？\n\n"
-            f"（只删除本机保存的这台机器的快照，不影响对方电脑上的原始数据）",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if r != QMessageBox.Yes:
+        ok_yes = dlg_confirm(
+            self, "删除机器数据",
+            f"确定删除机器「{machine}」的已导入数据？\n\n"
+            f"只删除本机保存的这台机器的快照，不影响对方电脑上的原始数据。",
+            ok_text="删除", icon="error")
+        if not ok_yes:
             return
         ok, msg = peer_store.remove_peer(machine)
         self.subtitle.setText(msg if ok else f"删除失败: {msg}")
@@ -4108,11 +4739,12 @@ class CardWindow(QWidget):
 
     def _on_rename_machine(self, _arg=""):
         name = peer_store.load_machine_name()
-        text, ok = QInputDialog.getText(self, "修改机器名", "机器名（导出时用于标识来源）:",
-                                        QLineEdit.Normal, name)
+        text, ok = dlg_prompt(
+            self, "修改机器名",
+            "给这台电脑起个名字，导出时会用它标识数据来源。",
+            default=name, label="机器名", placeholder="例如：台式机 / 笔记本")
         if not ok:
             return
-        text = (text or "").strip()
         if not text:
             return
         peer_store.save_machine_name(text)
@@ -4120,15 +4752,14 @@ class CardWindow(QWidget):
         self.refresh(force=True)
 
     def _show_toast(self, text, error=False):
-        """轻量结果提示: 直接复用系统消息框（父窗口置顶, 避免被卡片遮挡）。"""
-        box = QMessageBox(self)
-        box.setWindowTitle("Token 统计")
-        box.setIcon(QMessageBox.Warning if error else QMessageBox.Information)
-        box.setText("导出失败" if error else text.split("\n")[0])
-        if not error and "\n" in text:
-            box.setInformativeText(text[text.index("\n") + 1:].strip())
-        box.setStandardButtons(QMessageBox.Ok)
-        box.exec()
+        """轻量结果提示: 统一走自绘玻璃弹窗，与卡片语言一致。"""
+        lines = [ln for ln in str(text).split("\n")]
+        title = lines[0] if lines else "提示"
+        body = "\n".join(lines[1:]).strip()
+        if error and not body:
+            body = title
+            title = "操作失败"
+        dlg_notify(self, title, body or title, error=error)
 
     def _on_scan_done(self, src, s, gen=None):
         # 代次校验: 看门狗超时后线程若才回来, 其结果已作废, 不能覆盖新状态
