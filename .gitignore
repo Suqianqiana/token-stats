@@ -15,6 +15,10 @@ legacy/
 *.bak
 *.bak.*
 
+# 误生成的重复副本与本地快捷方式（2026-09-19 第51轮整理）
+/ (*).*
+*.lnk
+
 # 素材归档与中间产物（磁盘保留，不进版本库：仓库以「源码 + 文档」为唯一真相源）
 /assets/pet_v2_bak_preGreen/
 /assets/pet_v2_bak_preAlpha2/
