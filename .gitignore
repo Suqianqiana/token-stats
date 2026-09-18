@@ -9,6 +9,10 @@
 # --- 归档区：历史物集中存放，磁盘保留、不进版本库 ---
 /_archive/
 
+# --- 质检/窗口配置 JSON（工具链生成物，非源码）---
+/assets/pet_*_qc.json
+/assets/pet_*_windows.json
+
 # --- 字节码与缓存 ---
 __pycache__/
 *.pyc
