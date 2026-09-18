@@ -496,6 +496,80 @@ def merge_machines(entries, include_local=True, peer_filter=None):
     }
 
 
+def source_view(entries, source_key, include_local=True, peer_filter=None):
+    """单来源合并视图 —— 结构与 scan_full()/load_dsh_stats() 同构，供 WB/DSH 统计页直接渲染。
+
+    @2026-09-19 第55轮（浅猫实机反馈）：导入的别机数据原本**只在「多机合并」页可见**，
+    前面的 WB / DSH 页仍是纯本机数据，与"按数据源自动识别并在程序侧补充上去"的诉求不符。
+    本函数就是给这两页用的：把**同一来源**的「本机实时数据 + 各别机快照」合并成一张视图。
+
+    与 merge_machines 的分工：那边产出"跨来源总览 + 按机/按来源摘要"（多机页用）；
+    这边只取**单一来源**，并把页面渲染真正要用的字段补齐
+    （daily / models / dailySessions / sessionsTotal / today / firstDay / lastDay）。
+
+    两处刻意的取舍：
+      · `today` 由**合并后的 daily[今天]** 现算，而不是把各机快照里的 `today` 相加 ——
+        别机快照的 today 是它"导出那天"的，隔天再导入就会算错日期。
+      · `today.cost` **只取本机** —— 费用是 DSH 本地账本字段，无法知道别机"今天"花多少。
+    """
+    daily, models = {}, {}
+    daily_sessions, sessions_total = {}, 0
+    days, used = [], []
+    local_cost = None
+    total_cost = 0.0
+
+    for ent in entries or []:
+        machine = ent.get("machine") or "unknown-machine"
+        is_local = bool(ent.get("local"))
+        if is_local and not include_local:
+            continue
+        if (not is_local) and peer_filter is not None and machine not in peer_filter:
+            continue
+        raw = (ent.get("stats") or {}).get(source_key)
+        if is_local and isinstance(raw, dict) and isinstance(raw.get("today"), dict):
+            local_cost = raw["today"].get("cost")
+        norm = normalize_source(source_key, raw)
+        if not norm:
+            continue
+        used.append(machine)
+        if isinstance(norm.get("totalCost"), (int, float)):      # DSH 专用: 累计花费各机相加
+            total_cost += float(norm["totalCost"] or 0)
+        for d, mm in norm["daily"].items():
+            tgt = daily.setdefault(d, {})
+            for m, a in mm.items():
+                _add_model(tgt.setdefault(m, _empty_model_agg()), a)
+                _add_model(models.setdefault(m, _empty_model_agg()), a)
+            if d and d != "unknown":
+                days.append(d)
+        for d, n in norm["dailySessions"].items():
+            daily_sessions[d] = daily_sessions.get(d, 0) + int(n or 0)
+        sessions_total += int(norm.get("sessionsTotal", 0) or 0)
+
+    days = sorted(set(days))
+    tkey = time.strftime("%Y-%m-%d")
+    today = {"requests": 0, "input": 0, "output": 0, "cached": 0, "cacheWrite": 0,
+             "total": 0, "sessions": int(daily_sessions.get(tkey, 0) or 0),
+             "cost": float(local_cost or 0.0)}
+    for a in (daily.get(tkey) or {}).values():
+        for k in ("requests", "input", "output", "cached", "cacheWrite", "total"):
+            today[k] += int(a.get(k, 0) or 0)
+
+    return {
+        "source": source_key,
+        "dsh": (source_key == "dsh"),
+        "daily": daily,
+        "models": models,
+        "dailySessions": daily_sessions,
+        "sessionsTotal": sessions_total,
+        "today": today,
+        "firstDay": days[0] if days else "",
+        "lastDay": days[-1] if days else "",
+        "totalCost": round(total_cost, 2),      # 仅 DSH 有意义; 各机累计花费相加
+        "machinesUsed": used,
+        "mergedPeers": max(0, len(used) - (1 if include_local else 0)),
+    }
+
+
 if __name__ == "__main__":
     import sys
     name = load_machine_name()

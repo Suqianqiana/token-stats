@@ -1306,6 +1306,70 @@ check("render 使用 _clear_layout 清理两个列表",
 _w6.close()
 check("CardWindow 提供 _apply_page", hasattr(_w5, "_apply_page"))
 
+# ========== 15. 单来源合并: 别机数据要补进 WB/DSH 页 (2026-09-19 第55轮) ==========
+# 浅猫实机反馈: 导入别机数据后"只在多机页有数据", 前面的 WB/DSH 页也要补上。
+# ⚠️ 本段必须在上面 peers 临时目录还原**之前**跑, 否则会读到真实 peers 存档。
+print("== 15. 单来源合并视图: WB/DSH 页也带上别机数据 ==")
+
+# 15.1 source_view 必须与 scan_full()/load_dsh_stats() 同构(页面直接拿去渲染)
+_sv_wb = ps.source_view(_entries, "wb", include_local=True)
+check("source_view 结构同构(渲染所需字段齐全)",
+      all(k in _sv_wb for k in ("daily", "models", "dailySessions", "sessionsTotal",
+                                "today", "firstDay", "lastDay", "dsh")),
+      str(sorted(_sv_wb)))
+check("source_view 只取指定来源(不含 DSH 模型)",
+      "deepseek-v4" not in _sv_wb["models"]
+      and _sv_wb["models"]["glm-5.3-flash"]["total"] == 1000,
+      str(sorted(_sv_wb["models"])))
+check("source_view(WB) 的 dsh 标记为 False(页面据此切表头)", _sv_wb.get("dsh") is False)
+check("source_view 带合并构成 machinesUsed/mergedPeers",
+      _sv_wb["mergedPeers"] == 1 and len(_sv_wb["machinesUsed"]) == 2,
+      f"peers={_sv_wb['mergedPeers']} used={_sv_wb['machinesUsed']}")
+
+_sv_dsh = ps.source_view(_entries, "dsh", include_local=True)
+check("source_view(DSH) 只取 DSH 来源", list(_sv_dsh["models"]) == ["deepseek-v4"],
+      str(sorted(_sv_dsh["models"])))
+check("source_view(DSH) 的 dsh 标记为 True", _sv_dsh.get("dsh") is True)
+check("source_view(DSH) 累计花费各机相加", abs(_sv_dsh["totalCost"] - 1.0) < 1e-6,
+      str(_sv_dsh["totalCost"]))
+check("source_view(WB) 不带花费(DSH 专有字段)", _sv_wb["totalCost"] == 0.0,
+      str(_sv_wb["totalCost"]))
+
+# 15.2 today 必须由"合并后的 daily[今天]"现算 —— 不能照抄别机快照里的 today
+#      (那是它**导出那天**的值, 隔天导入会算错日期)
+_sv_far = ps.source_view(
+    [{"machine": "别机", "local": False,
+      "stats": {"wb": {"daily": {"2099-01-01": {"m": {"requests": 9, "input": 90,
+                                                     "output": 10, "total": 100}}},
+                       "dailySessions": {"2099-01-01": 3}, "sessionsTotal": 3,
+                       "today": {"requests": 9, "input": 90, "output": 10, "total": 100,
+                                 "sessions": 3, "cost": 99.0}}}}],
+    "wb", include_local=False)
+check("today 按今天现算, 不照抄别机快照的 today",
+      _sv_far["today"]["requests"] == 0 and _sv_far["today"]["cost"] == 0.0,
+      str(_sv_far["today"]))
+check("历史日期仍完整保留(lastDay 反映别机数据)",
+      _sv_far["lastDay"] == "2099-01-01", _sv_far["lastDay"])
+
+# 15.3 CardWindow._build_source_stats: 有无别机两条路径
+_orig_lap, _orig_scan = ps.load_all_peers, ca.scanner.scan_full
+ps.load_all_peers = lambda: {}
+ca.scanner.scan_full = lambda *a, **k: json.loads(json.dumps(_wb_stub))
+_r_none = ca.CardWindow._build_source_stats(None, "wb")     # 该函数不碰 self, 可传 None
+check("无别机 → 走原路径(不带合并标记, 与加功能前完全一致)",
+      "mergedPeers" not in _r_none and "machinesUsed" not in _r_none, str(sorted(_r_none)))
+ps.load_all_peers = _orig_lap
+_r_peer = ca.CardWindow._build_source_stats(None, "wb")
+check("有别机 → WB 页数据含别机 (500+500=1000)",
+      _r_peer["models"]["glm-5.3-flash"]["total"] == 1000,
+      str(_r_peer["models"]["glm-5.3-flash"]["total"]))
+check("有别机 → 带 mergedPeers 供副标题标注", _r_peer.get("mergedPeers") == 1)
+ca.scanner.scan_full = _orig_scan
+ps.load_all_peers = _orig_lap
+
+# 15.4 副标题必须标出数据构成(否则页面上的数字"来路不明")
+check("WB/DSH 副标题标注「含 N 台别机」", "台别机" in _src and "mergedPeers" in _src)
+
 # 还原 peers 目录 (临时目录随系统清理)
 ps.PEERS_DIR = _REAL_PEERS_DIR
 ps.PEERS_INDEX = _REAL_PEERS_INDEX

@@ -5105,10 +5105,10 @@ class CardWindow(QWidget):
 
         def work():
             try:
-                if src == "dsh": s = load_dsh_stats()
+                if src == "dsh": s = self._build_source_stats("dsh")
                 elif src == "sn": s = load_sn_stats(force=force, proactive=proactive)
                 elif src == "multi": s = self._build_multi_stats()
-                else: s = scanner.scan_full()
+                else: s = self._build_source_stats("wb")
             except Exception as e:
                 s = {"error": str(e)}
             self.bridge.done.emit(src, s, gen)
@@ -5116,6 +5116,30 @@ class CardWindow(QWidget):
         threading.Thread(target=work, daemon=True).start()
 
     # ---------------- 多机数据源 (2026-09-19 第50轮) ----------------
+    def _build_source_stats(self, src_key):
+        """单来源视图 = 本机实时数据 + 已导入的别机快照（2026-09-19 第55轮新增）。
+
+        浅猫实机反馈：导入别机数据后**只有「多机合并」页能看到**，WB / DSH 页仍是纯本机
+        数据，与最初"按数据源自动识别并在程序侧补充上去"的诉求不符。这里把同一来源
+        （wb 或 dsh）的各机数据合并后直接交给页面渲染。
+
+        ⚠️ **没有任何别机数据时走原路径**（直接返回扫描结果的原始结构）——
+        这样零别机时的行为与加这个功能之前完全一致，不给既有回归留隐患。
+        """
+        peers = peer_store.load_all_peers()
+        if not peers:
+            return scanner.scan_full() if src_key == "wb" else load_dsh_stats()
+        local = {}
+        try:
+            local[src_key] = scanner.scan_full() if src_key == "wb" else load_dsh_stats()
+        except Exception as e:
+            local[src_key] = {"error": str(e)}
+        entries = [{"machine": peer_store.load_machine_name(), "local": True, "stats": local}]
+        for name, pk in peers.items():
+            entries.append({"machine": name, "local": False,
+                            "stats": (pk or {}).get("sources") or {}})
+        return peer_store.source_view(entries, src_key, include_local=True)
+
     def _build_multi_stats(self):
         """汇总多机数据: 本机实时（WB+DSH）+ 各别机快照 → 合并视图。
 
@@ -5290,7 +5314,10 @@ class CardWindow(QWidget):
             if src == "sn": self._sn_cache = s
             self.render()
             if src == "dsh":
-                self.subtitle.setText(f"DSH · {s.get('firstDay','—')} ~ {s.get('lastDay','—')} · 累计花费 ¥{s.get('totalCost', 0):.2f} · 已更新 {time.strftime('%H:%M:%S')}")
+                # @2026-09-19 第55轮: 别机 DSH 数据已并入本页, 副标题标出构成, 数字才不"来路不明"
+                _np = int(s.get("mergedPeers", 0) or 0)
+                _src_txt = f" · 含 {_np} 台别机" if _np else ""
+                self.subtitle.setText(f"DSH · {s.get('firstDay','—')} ~ {s.get('lastDay','—')} · 累计花费 ¥{s.get('totalCost', 0):.2f}{_src_txt} · 已更新 {time.strftime('%H:%M:%S')}")
             elif src == "multi":
                 n_peer = len(s.get("peers") or [])
                 self.subtitle.setText(
@@ -5301,7 +5328,9 @@ class CardWindow(QWidget):
                 we = time.strftime("%H:%M", time.localtime(s.get("window_end", 0)))
                 self.subtitle.setText(f"商汤 · 积分额度 · 窗口 {ws}–{we} · 已更新 {time.strftime('%H:%M:%S')}")
             else:
-                self.subtitle.setText(f"WorkBuddy · {s.get('firstDay','—')} ~ {s.get('lastDay','—')} · 真实 usage · 已更新 {time.strftime('%H:%M:%S')}")
+                _np = int(s.get("mergedPeers", 0) or 0)
+                _src_txt = f" · 含 {_np} 台别机" if _np else ""
+                self.subtitle.setText(f"WorkBuddy · {s.get('firstDay','—')} ~ {s.get('lastDay','—')} · 真实 usage{_src_txt} · 已更新 {time.strftime('%H:%M:%S')}")
         elif src == "sn":
             self._sn_cache = s
         self._kick_pending()
@@ -5336,7 +5365,9 @@ class CardWindow(QWidget):
         if self.source == "sn":
             self.stats = self._sn_cache or {"source": "sn", "pools": []}
         elif self.source == "dsh":
-            self.stats = load_dsh_stats()
+            # @2026-09-19 第55轮: DSH 页也带上已导入的别机 DSH 数据
+            # (只多读一次本地 peers 小文件 + 内存合并, 不会拖慢切页)
+            self.stats = self._build_source_stats("dsh")
         elif self.source == "multi":
             # 多机页首次进入: 先渲染一份快速的轻量视图（仅别机列表 + 本机摘要），
             # 完整合并交给随后的后台 refresh，避免切页卡顿。
@@ -5353,9 +5384,21 @@ class CardWindow(QWidget):
         else:
             try:
                 with open(scanner.STATS_FILE, "r", encoding="utf-8") as f:
-                    self.stats = json.load(f)
+                    cached = json.load(f)
             except Exception:
-                self.stats = {"source": "wb", "daily": {}, "dailySessions": {}, "sessionsTotal": 0, "today": {}}
+                cached = {"source": "wb", "daily": {}, "dailySessions": {},
+                          "sessionsTotal": 0, "today": {}}
+            # @2026-09-19 第55轮: 首屏也走合并视图（本机部分用磁盘缓存，不阻塞切页）。
+            # 否则会先显示纯本机数字、100ms 后台刷新回来再"跳变"成含别机的数字。
+            peers = peer_store.load_all_peers()
+            if peers:
+                entries = [{"machine": peer_store.load_machine_name(),
+                            "local": True, "stats": {"wb": cached}}]
+                for _name, _pk in peers.items():
+                    entries.append({"machine": _name, "local": False,
+                                    "stats": (_pk or {}).get("sources") or {}})
+                cached = peer_store.source_view(entries, "wb", include_local=True)
+            self.stats = cached
         self.render()
         QTimer.singleShot(100, self.refresh)
 
