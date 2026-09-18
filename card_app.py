@@ -60,7 +60,7 @@ from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QVBoxLayout,
                                QHBoxLayout, QGridLayout, QFrame, QPushButton,
                                QScrollArea, QMenu, QSizePolicy, QPlainTextEdit,
                                QStackedWidget, QLineEdit, QSystemTrayIcon,
-                               QFileDialog, QMessageBox, QInputDialog)
+                               QFileDialog, QMessageBox, QInputDialog, QDialog)
 
 
 def app_icon():
@@ -249,6 +249,29 @@ def make_menu(parent):
     return m
 
 
+def scrollbare_qss():
+    """返回与全局一致的滚动条样式片段 (局部 setStyleSheet 会覆盖全局 QSS, 必须带上)。"""
+    handle = "#d3d9e2" if not theme_state["dark"] else "#3d434c"
+    handle_h = "#b8c2d0" if not theme_state["dark"] else "#4d545f"
+    return (f"QScrollBar:vertical {{ background:transparent; width:6px; margin:2px 1px; }}"
+            f"QScrollBar::handle:vertical {{ background:{handle}; border-radius:3px; min-height:24px; }}"
+            f"QScrollBar::handle:vertical:hover {{ background:{handle_h}; }}"
+            f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height:0; }}"
+            f"QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background:transparent; }}"
+            f"QScrollBar:horizontal {{ background:transparent; height:6px; margin:1px 2px; }}"
+            f"QScrollBar::handle:horizontal {{ background:{handle}; border-radius:3px; min-width:24px; }}"
+            f"QScrollBar::handle:horizontal:hover {{ background:{handle_h}; }}"
+            f"QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width:0; }}"
+            f"QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background:transparent; }}")
+
+
+def style_scroll_area(area):
+    """给 QScrollArea 套「透明底 + 主题化滚动条」。"""
+    area.setStyleSheet(
+        "QScrollArea{ background:transparent; border:none; }"
+        "QScrollArea > QWidget > QWidget{ background:transparent; }" + scrollbare_qss())
+
+
 def apply_app_qss():
     handle = "#d3d9e2" if not theme_state["dark"] else "#3d434c"
     handle_h = "#b8c2d0" if not theme_state["dark"] else "#4d545f"
@@ -366,61 +389,73 @@ class GlassPodFrame(QFrame):
         self.radius = radius
 
     def paintEvent(self, ev):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        w, h = self.width(), self.height()
-        r = self.radius
-        rect = QRectF(0.5, 0.5, w - 1.0, h - 1.0)
-        path = QPainterPath()
-        path.addRoundedRect(rect, r, r)
+        paint_pod(self, self.radius)
 
-        dark = theme_state["dark"]
-        glass = theme_state["glass"]
 
-        if glass:
-            gp = curr_glass_preset()
-            a_top, a_bot = gp["pod_alpha_dark"] if dark else gp["pod_alpha_light"]
-            mult = gp["rim_mult"]
+def paint_pod(widget, radius, inset=0.5):
+    """把「菲涅尔切角玻璃底层」画在任意 widget 上。
 
-            # 背景固化背板 (透光不透杂物，保护文字极高清晰度)
-            grad = QLinearGradient(0, 0, 0, h)
-            if dark:
-                grad.setColorAt(0.0, QColor(36, 40, 50, a_top))
-                grad.setColorAt(1.0, QColor(25, 28, 35, a_bot))
-            else:
-                grad.setColorAt(0.0, QColor(255, 255, 255, a_top))
-                grad.setColorAt(1.0, QColor(246, 249, 254, a_bot))
-            p.setPen(Qt.NoPen)
-            p.setBrush(QBrush(grad))
-            p.drawPath(path)
+    2026-09-19 第52轮抽成独立函数: 原来只有 GlassPodFrame 会画这层底,
+    而 GlassDialog 需要继承 QDialog (拿真模态), 无法再继承 QFrame,
+    因此把绘制逻辑抽出来供两者共用 —— 保证弹窗与子卡片视觉完全同源。
+    """
+    p = QPainter(widget)
+    p.setRenderHint(QPainter.Antialiasing)
+    w, h = widget.width(), widget.height()
+    r = radius
+    rect = QRectF(inset, inset, w - 2 * inset, h - 2 * inset)
+    path = QPainterPath()
+    path.addRoundedRect(rect, r, r)
 
-            # 菲涅尔切角外边框
-            rim = QLinearGradient(0, 0, 0, h)
-            if dark:
-                rim.setColorAt(0.0, QColor(255, 255, 255, int(75 * mult)))
-                rim.setColorAt(0.5, QColor(255, 255, 255, int(18 * mult)))
-                rim.setColorAt(1.0, QColor(255, 255, 255, int(40 * mult)))
-            else:
-                rim.setColorAt(0.0, QColor(255, 255, 255, int(210 * mult)))
-                rim.setColorAt(0.5, QColor(210, 218, 230, int(95 * mult)))
-                rim.setColorAt(1.0, QColor(255, 255, 255, int(135 * mult)))
-            p.setBrush(Qt.NoBrush)
-            p.setPen(QPen(QBrush(rim), 1.0))
-            p.drawPath(path)
+    dark = theme_state["dark"]
+    glass = theme_state["glass"]
 
-            # 顶部微切角镜面反射线
-            top_hl = QLinearGradient(r, 1.2, w - r, 1.2)
-            top_hl.setColorAt(0.0, QColor(255, 255, 255, 0))
-            top_a = int((80 if dark else 145) * mult)
-            top_hl.setColorAt(0.3, QColor(255, 255, 255, top_a))
-            top_hl.setColorAt(0.7, QColor(255, 255, 255, top_a))
-            top_hl.setColorAt(1.0, QColor(255, 255, 255, 0))
-            p.setPen(QPen(QBrush(top_hl), 1.0))
-            p.drawLine(QPointF(r, 1.2), QPointF(w - r, 1.2))
+    if glass:
+        gp = curr_glass_preset()
+        a_top, a_bot = gp["pod_alpha_dark"] if dark else gp["pod_alpha_light"]
+        mult = gp["rim_mult"]
+
+        # 背景固化背板 (透光不透杂物，保护文字极高清晰度)
+        grad = QLinearGradient(0, 0, 0, h)
+        if dark:
+            grad.setColorAt(0.0, QColor(36, 40, 50, a_top))
+            grad.setColorAt(1.0, QColor(25, 28, 35, a_bot))
         else:
-            p.setPen(QPen(BORDER, 1.0))
-            p.setBrush(QBrush(CARD))
-            p.drawPath(path)
+            grad.setColorAt(0.0, QColor(255, 255, 255, a_top))
+            grad.setColorAt(1.0, QColor(246, 249, 254, a_bot))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QBrush(grad))
+        p.drawPath(path)
+
+        # 菲涅尔切角外边框
+        rim = QLinearGradient(0, 0, 0, h)
+        if dark:
+            rim.setColorAt(0.0, QColor(255, 255, 255, int(75 * mult)))
+            rim.setColorAt(0.5, QColor(255, 255, 255, int(18 * mult)))
+            rim.setColorAt(1.0, QColor(255, 255, 255, int(40 * mult)))
+        else:
+            rim.setColorAt(0.0, QColor(255, 255, 255, int(210 * mult)))
+            rim.setColorAt(0.5, QColor(210, 218, 230, int(95 * mult)))
+            rim.setColorAt(1.0, QColor(255, 255, 255, int(135 * mult)))
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(QBrush(rim), 1.0))
+        p.drawPath(path)
+
+        # 顶部微切角镜面反射线
+        top_hl = QLinearGradient(r, 1.2, w - r, 1.2)
+        top_hl.setColorAt(0.0, QColor(255, 255, 255, 0))
+        top_a = int((80 if dark else 145) * mult)
+        top_hl.setColorAt(0.3, QColor(255, 255, 255, top_a))
+        top_hl.setColorAt(0.7, QColor(255, 255, 255, top_a))
+        top_hl.setColorAt(1.0, QColor(255, 255, 255, 0))
+        p.setPen(QPen(QBrush(top_hl), 1.0))
+        p.drawLine(QPointF(r, 1.2), QPointF(w - r, 1.2))
+    else:
+        p.setPen(QPen(BORDER, 1.0))
+        p.setBrush(QBrush(CARD))
+        p.drawPath(path)
+    p.end()
+
 
 
 # ============================================================ 通用按钮工厂 (2026-09-19 第51轮)
@@ -512,21 +547,28 @@ class DlgIcon(QWidget):
         p.drawText(QRectF(0, 0, 20, 20), Qt.AlignCenter, self.GLYPH.get(self.kind, "i"))
 
 
-class GlassDialog(GlassPodFrame):
+class GlassDialog(QDialog):
     """程序内统一弹窗: 模态等待 + 玻璃卡片 + 底部按钮区。
 
     用法:
         dlg = GlassDialog(window, "标题", "正文", icon="warn")
         dlg.add_field("机器名", text="台式机")          # 可选输入框
         if dlg.exec_ok(): ...
+
+    ⚠ 2026-09-19 第52轮修复: 原来基类是 GlassPodFrame(QFrame) + 手写 QEventLoop
+    来"假装"模态 —— 实际 IS_MODAL=False、adjustSize() 算不出尺寸(恒为 640x480
+    默认值), Windows 下既不抢焦点也压不住主窗, 表现为**弹窗根本看不见**。
+    现改为真正的 QDialog 基类: 玻璃底改由 paint_pod() 共用函数绘制,
+    模态交给 Qt 原生 exec(), 尺寸交给布局 sizeHint —— 三处问题一并解决。
     """
 
     def __init__(self, parent, title, message="", icon="info", accent=None,
                  ok_text="确定", cancel_text="取消", width=380):
-        super().__init__(radius=14, parent=None)
+        super().__init__(parent, Qt.Dialog | Qt.FramelessWindowHint)
         self.setObjectName("glass_dialog")
-        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+        self.radius = 14
         self._icon_kind = icon
         self._accent = accent or {"warn": QColor("#e0813f"), "error": RED,
                                   "ok": GREEN, "ask": PURPLE}.get(icon, BLUE)
@@ -534,12 +576,14 @@ class GlassDialog(GlassPodFrame):
         self._drag = None
         self._ok = False
         self._field = None
-        self._loop = None
         self._width = width
         self._build(title, message, ok_text, cancel_text, icon)
-        if parent is not None:
-            self._center_on(parent)
         self.apply_theme()
+        self._fit()
+
+    # ---------- 玻璃底面 (与 GlassPodFrame 同源) ----------
+    def paintEvent(self, ev):
+        paint_pod(self, self.radius, inset=0.5)
 
     # ---------- 构建 ----------
     def _build(self, title, message, ok_text, cancel_text, icon="info"):
@@ -564,15 +608,16 @@ class GlassDialog(GlassPodFrame):
         self.wrap = QWidget()
         self.wrap.setFixedWidth(self._width - 40)
         wv = QVBoxLayout(self.wrap)
-        wv.setContentsMargins(0, 2, 0, 2)
-        wv.setSpacing(10)
+        wv.setContentsMargins(0, 0, 0, 0)
+        wv.setSpacing(11)
         self.msg_lbl = QLabel(message)
         self.msg_lbl.setWordWrap(True)
         self.msg_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
         wv.addWidget(self.msg_lbl)
         self._wrap_lay = wv
+        v.addSpacing(2)
         v.addWidget(self.wrap)
-        v.addSpacing(4)
+        v.addSpacing(7)
 
         brow = QHBoxLayout()
         brow.setSpacing(8)
@@ -593,13 +638,16 @@ class GlassDialog(GlassPodFrame):
         """在正文下方追加一个带标签的输入框 (用于「改名」等场景)。"""
         row = QHBoxLayout()
         row.setSpacing(8)
+        row.setContentsMargins(0, 0, 0, 0)
         tag = QLabel(label)
         tag.setFixedWidth(52)
         tag.setObjectName("dlg_tag")
+        tag.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         row.addWidget(tag, 0, Qt.AlignVCenter)
         edit = QLineEdit()
         edit.setText(text)
         edit.setPlaceholderText(placeholder)
+        edit.setFixedHeight(curr_metric()["nav_btn_h"] - 2)
         if password:
             edit.setEchoMode(QLineEdit.Password)
         edit.selectAll()
@@ -612,12 +660,24 @@ class GlassDialog(GlassPodFrame):
         return self._field.text().strip() if self._field is not None else ""
 
     # ---------- 交互 ----------
+    def _fit(self):
+        """按布局 sizeHint 定尺寸并居中到父窗。
+
+        QDialog + FramelessWindowHint 下 adjustSize() 会走布局的 sizeHint,
+        这是它相对旧 QFrame 实现的关键区别 (旧实现恒得 640x480 默认值)。
+        """
+        self.setFixedWidth(self._width)
+        self.layout().activate()
+        self.adjustSize()
+        self._center_on(self._parent_win)
+
     def _center_on(self, parent):
+        if parent is None:
+            return
         try:
             pg = parent.window().frameGeometry()
         except Exception:
             return
-        self.adjustSize()
         g = self.frameGeometry()
         g.moveCenter(pg.center())
         self.move(g.topLeft())
@@ -645,31 +705,15 @@ class GlassDialog(GlassPodFrame):
         else:
             super().keyPressEvent(ev)
 
-    def accept(self):
-        self._ok = True
-        self.close()
-
-    def reject(self):
-        self._ok = False
-        self.close()
-
-    def closeEvent(self, ev):
-        if self._loop is not None:
-            self._loop.quit()
-        ev.accept()
-
     def exec_ok(self):
-        """模态显示并等待用户响应, 返回是否确认。"""
-        from PySide6.QtCore import QEventLoop
-        self._loop = QEventLoop()
-        self.show()
-        self.raise_()
-        self.activateWindow()
+        """模态显示并等待用户响应, 返回是否确认。
+
+        用 Qt 原生 exec(): 真正阻塞式模态栈 —— 主窗不可点、焦点必在弹窗上,
+        这正是"弹窗看不见"问题的根治手段。
+        """
         if self._field is not None:
             self._field.setFocus()
-        self._loop.exec()
-        self._loop = None
-        return self._ok
+        return self.exec() == QDialog.Accepted
 
     # ---------- 外观 ----------
     def apply_theme(self):
@@ -3418,34 +3462,67 @@ class SrcBadge(QWidget):
             tw = fm.horizontalAdvance(label)
             cw = 9 + tw + 12
             bg = QColor(col)
-            bg.setAlpha(46 if dark else 28)
+            bg.setAlpha(64 if dark else 28)
             p.setPen(Qt.NoPen)
             p.setBrush(bg)
             p.drawRoundedRect(QRectF(x, 0.5, cw, h - 1.0), (h - 1.0) / 2.0, (h - 1.0) / 2.0)
             p.setBrush(col)
             p.drawEllipse(QRectF(x + 5.5, h / 2.0 - 2.0, 4.0, 4.0))
-            p.setPen(col)
+            p.setPen(col.lighter(125) if dark else col)
             p.drawText(QRectF(x + 13.5, 0, tw + 2, h), Qt.AlignLeft | Qt.AlignVCenter, label)
             x += cw + 5
 
 
-class MachineRow(GlassPodFrame):
-    """别机列表中的一行: 机器名 / 来源徽标 / token 总量 / 请求 / 日期跨度 / 导入时间 + 操作。"""
+class MachineRow(QWidget):
+    """别机列表中的一行: 机器名 / 来源徽标 / token 总量 / 请求 / 日期跨度 + 操作。
+
+    2026-09-19 第52轮修复: 原来继承 GlassPodFrame —— 但父级 peer_card 本身就是
+    GlassPodFrame, **两层玻璃底叠加**后内层明显比外层深/亮, 暗色模式下尤其突兀
+    (外壳浅灰、内层近黑), 这正是浅猫反馈的"统计里面的框框没适配暗色模式"。
+    现改为普通 QWidget, 自己只画一层**中性浅底 + 细描边**, 与外壳形成清晰层级,
+    明暗两套主题都只看全局调色板, 不再叠加玻璃透明度。
+    """
 
     remove = Signal(str)
     replace = Signal(str)
 
     def __init__(self, item, parent=None):
-        super().__init__(radius=11, parent=parent)
+        super().__init__(parent)
         self.item = item
         self.machine = item.get("machine", "")
+        self._hover = False
+        self.setMouseTracking(True)
         self._build_ui()
         self.apply_theme()
 
+    def enterEvent(self, ev):
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, ev):
+        self._hover = False
+        self.update()
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        dark = theme_state["dark"]
+        base = QColor(HOVER) if self._hover else QColor(ZEBRA)
+        base.setAlpha(235 if dark else 255)
+        p.setPen(Qt.NoPen)
+        p.setBrush(base)
+        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 10, 10)
+        bd = QColor(BORDER)
+        bd.setAlpha(190 if dark else 255)
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(bd, 1.0))
+        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 10, 10)
+
     def _build_ui(self):
         v = QVBoxLayout(self)
-        v.setContentsMargins(14, 11, 14, 11)
-        v.setSpacing(8)
+        v.setContentsMargins(13, 9, 13, 9)
+        v.setSpacing(7)
 
         # ---- 顶行: 指示条 + 机器名 ............... 总量 + tokens
         top = QHBoxLayout()
@@ -3458,6 +3535,10 @@ class MachineRow(GlassPodFrame):
         self.name_lbl.setMinimumWidth(40)
         top.addWidget(self.name_lbl, 1)
 
+        # 来源徽标 (单列通栏后可与名字同行, 不再单独占一行)
+        self.badge = SrcBadge(self.item.get("sources") or [])
+        top.addWidget(self.badge, 0, Qt.AlignVCenter)
+
         dig = self.item.get("digest") or {}
         self.total_lbl = QLabel(fmt_full(dig.get("total_tokens", 0)))
         top.addWidget(self.total_lbl, 0, Qt.AlignVCenter)
@@ -3466,20 +3547,15 @@ class MachineRow(GlassPodFrame):
         top.addWidget(self.unit_lbl, 0, Qt.AlignVCenter)
         v.addLayout(top)
 
-        # ---- 中行: 来源徽标
-        self.badge = SrcBadge(self.item.get("sources") or [])
-        v.addWidget(self.badge, 0, Qt.AlignLeft)
-
-        # ---- 底行: 元信息 ............................. 操作按钮组
-        # 两行式: 上=请求+区间, 下=按钮组 → 窄面板下不会互相挤压截断
-        self.meta_lbl = QLabel(self._meta_text(dig))
-        self.meta_lbl.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
-        self.meta_lbl.setToolTip(self._meta_text(dig))
-        v.addWidget(self.meta_lbl, 0, Qt.AlignLeft)
-
+        # ---- 底行: 元信息 ...... 操作按钮组 (单列后同一行放得下)
         bot = QHBoxLayout()
         bot.setSpacing(6)
-        bot.addStretch(1)
+        self.meta_lbl = QLabel(self._meta_text(dig))
+        self.meta_lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.meta_lbl.setMinimumWidth(60)
+        self.meta_lbl.setToolTip(self._meta_text(dig))
+        bot.addWidget(self.meta_lbl, 1)
+
         self.btn_replace = make_btn("ghost", "覆盖更新")
         self.btn_replace.setToolTip("用新数据包覆盖这台机器的旧快照")
         self.btn_replace.clicked.connect(lambda: self.replace.emit(self.machine))
@@ -3504,12 +3580,12 @@ class MachineRow(GlassPodFrame):
         m = curr_metric()
         self.name_lbl.setFont(QFont("Microsoft YaHei UI", m["row_pt"] + 0.8, QFont.Bold))
         self.total_lbl.setFont(QFont("Consolas", m["row_pt"] + 1.4, QFont.Bold))
-        for w, pt in ((self.meta_lbl, m["row_head_pt"] - 0.3), (self.unit_lbl, m["sn_date_pt"])):
+        for w, pt in ((self.meta_lbl, m["row_head_pt"] - 0.6), (self.unit_lbl, m["sn_date_pt"])):
             w.setFont(QFont("Microsoft YaHei UI", pt))
-        bh = m["row_h"] - 2
+        bh = m["row_h"] - 6
         for b in (self.btn_replace, self.btn_remove):
             b.setFixedHeight(bh)
-            style_btn(b, None, pt=m["sn_sub_pt"] - 0.2, height=bh)
+            style_btn(b, None, pt=m["sn_sub_pt"] - 0.6, height=bh)
         self.badge.update()
         self.update()
 
@@ -3574,6 +3650,14 @@ class StatRankRow(QWidget):
             p.setPen(Qt.NoPen)
             p.setBrush(hv)
             p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 9, 9)
+        else:
+            # 轻斑马纹底: 让每一行读起来像独立的「框」, 暗色下也保持层级可辨
+            zb = QColor(ZEBRA if self.rank % 2 == 0 else CARD)
+            zb.setAlpha(150 if dark else (255 if self.rank % 2 == 0 else 0))
+            if zb.alpha() > 0:
+                p.setPen(Qt.NoPen)
+                p.setBrush(zb)
+                p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 9, 9)
 
         # ================= 上行: 名次 + 机器名 ......... Token 总量
         top_y = 8.0
@@ -3643,54 +3727,121 @@ class StatRankRow(QWidget):
                    f"{self.requests:,} 请求   ·   {self.first_day} ~ {self.last_day}")
 
 
-class MachineChip(QWidget):
-    """本机身份胶囊: 🖥 圆点 + 机器名, 自绘浅色圆角底。"""
+class MachineBox(QWidget):
+    """本机机器框 (2026-09-19 第52轮新增)
+
+    替代原来的 MachineChip 胶囊: 胶囊只够放一个名字, 而浅猫要求「框框放到左边,
+    导出导入按钮放到右边」→ 需要一个**占满左侧、有明确边界**的容器, 既能显示
+    「本机 · 机器名」又能内嵌「改名」入口。自绘描边框 + 左侧主机图标 + 名字 +
+    右侧改名文字链, 宽度由布局拉伸决定 (不再固定宽度)。
+    """
+
+    rename_requested = Signal()
 
     def __init__(self, name="—", parent=None):
         super().__init__(parent)
-        self._name = name
+        self._name = name or "—"
+        self._hover = False
+        self._rename_rect = QRectF()
         self._font = QFont("Microsoft YaHei UI", 9.0, QFont.Bold)
-        self.setFixedHeight(22)
-        self._recalc()
+        self._sub_font = QFont("Microsoft YaHei UI", 8.0)
+        self.setMouseTracking(True)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.apply_size()
 
     def set_name(self, name):
         self._name = name or "—"
-        self._recalc()
         self.update()
 
     def apply_size(self):
         m = curr_metric()
-        self._font = QFont("Microsoft YaHei UI", m["sn_sub_pt"] - 0.2, QFont.Bold)
-        self.setFixedHeight(m["sn_sub_pt"] + 13)
-        self._recalc()
+        self._font = QFont("Microsoft YaHei UI", m["sn_sub_pt"] + 0.2, QFont.Bold)
+        self._sub_font = QFont("Microsoft YaHei UI", m["sn_date_pt"] - 0.2)
+        self.setFixedHeight(m["nav_btn_h"] - 2)
         self.update()
-
-    def _recalc(self):
-        p = QPainter(self)
-        p.setFont(self._font)
-        fm = p.fontMetrics()
-        w = 12 + 9 + 6 + fm.horizontalAdvance(self._name) + 12
-        p.end()
-        self.setFixedWidth(max(58, w))
 
     def apply_theme(self):
         self.update()
+
+    # ---------- 交互 ----------
+    def enterEvent(self, ev):
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, ev):
+        self._hover = False
+        self.update()
+
+    def mouseReleaseEvent(self, ev):
+        if ev.button() == Qt.LeftButton and self._rename_rect.contains(ev.position()):
+            self.rename_requested.emit()
+            ev.accept()
+            return
+        super().mouseReleaseEvent(ev)
+
+    def _recalc_rename(self, p):
+        """改名热区的几何: 靠右对齐, 命中判定与绘制共用同一矩形。"""
+        p.setFont(self._sub_font)
+        tw = p.fontMetrics().horizontalAdvance("改名")
+        rw = tw + 16
+        self._rename_rect = QRectF(self.width() - rw - 10, 1.0, rw, self.height() - 2.0)
 
     def paintEvent(self, ev):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
-        c = QColor(BLUE)
-        bg = QColor(c)
-        bg.setAlpha(44 if theme_state["dark"] else 26)
+        dark = theme_state["dark"]
+
+        # 底: 低饱和填充 + 明确描边 (暗色下同样走全局调色板, 不写死颜色)
+        bg = QColor(CARD)
+        bg.setAlpha(150 if dark else 190)
         p.setPen(Qt.NoPen)
         p.setBrush(bg)
-        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), (h - 1.0) / 2.0, (h - 1.0) / 2.0)
-        p.setBrush(c)
-        p.drawEllipse(QRectF(12, h / 2.0 - 2.5, 5.0, 5.0))
+        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 9, 9)
+        bd = QColor(BLUE)
+        bd.setAlpha(120 if dark else 90)
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(bd, 1.0))
+        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 9, 9)
+
+        # 左: 主机图标 (自绘方屏 + 底座, 避免依赖 emoji 字体)
+        cy = h / 2.0
+        ic = QColor(BLUE)
+        p.setPen(QPen(ic, 1.4))
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(QRectF(11.5, cy - 6.0, 13.0, 9.5), 2.0, 2.0)
+        p.setPen(Qt.NoPen)
+        p.setBrush(ic)
+        p.drawRoundedRect(QRectF(16.0, cy + 4.0, 4.0, 1.6), 0.8, 0.8)
+        p.drawRoundedRect(QRectF(13.5, cy + 6.0, 9.0, 1.4), 0.7, 0.7)
+
+        # 中: 「本机」小字 + 机器名
+        p.setFont(self._sub_font)
+        p.setPen(QColor(TEXT3))
+        tag = "本机"
+        tag_w = p.fontMetrics().horizontalAdvance(tag)
+        tx = 32.0
+        p.drawText(QRectF(tx, 0, tag_w + 2, h), Qt.AlignLeft | Qt.AlignVCenter, tag)
+
+        self._recalc_rename(p)
         p.setFont(self._font)
-        p.setPen(c)
-        p.drawText(QRectF(23, 0, w - 30, h), Qt.AlignLeft | Qt.AlignVCenter, self._name)
+        p.setPen(QColor(TEXT))
+        name_x = tx + tag_w + 7
+        name_w = self._rename_rect.left() - name_x - 8
+        nm = p.fontMetrics().elidedText(self._name, Qt.ElideRight, int(max(30, name_w)))
+        p.drawText(QRectF(name_x, 0, max(30.0, name_w), h),
+                   Qt.AlignLeft | Qt.AlignVCenter, nm)
+
+        # 右: 改名 (hover 高亮, 可点击)
+        p.setFont(self._sub_font)
+        if self._hover:
+            hv = QColor(BLUE)
+            hv.setAlpha(30 if dark else 22)
+            p.setPen(Qt.NoPen)
+            p.setBrush(hv)
+            p.drawRoundedRect(self._rename_rect, 6, 6)
+        p.setPen(QColor(BLUE))
+        p.drawText(self._rename_rect, Qt.AlignCenter, "改名")
 
 
 class StatHeaderRow(QWidget):
@@ -3759,16 +3910,28 @@ class MultiMachinePage(QWidget):
         return bar, lbl, right
 
     def _build_ui(self):
+        """多机页布局 (2026-09-19 第52轮重做)
+
+        从「顶部操作卡 + 13:9 双栏」改为**单列纵向三段**, 原因是双栏下:
+          · 左栏排行条被拉得极长, 右侧却空出一大块, 横向空间浪费;
+          · 右栏过窄, 机器名 + 总量 + 按钮互相挤压, 观感局促;
+          · 两块卡片底部各留一大片空白, 高度不齐。
+        单列后每段横向铺满, 排行条长度即真实占比, 信息密度更均匀。
+
+        第③段「已导入的机器」按浅猫要求**并入第①段「数据源管理」**:
+        机器框在左、导出/导入按钮在右, 导入按钮统一为「导入/更新别机数据」
+        (新机器 = 导入, 同名机器 = 覆盖更新, 由 peer_store 的快照语义自动决定)。
+        """
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(10)
 
-        # ================= 1. 顶部: 本机身份 + 双主操作
+        # ================= 1. 数据源管理: 左侧机器框 / 右侧导出导入
         self.action_card = GlassPodFrame(radius=12)
         self.action_card.setObjectName("multi_action_card")
         av = QVBoxLayout(self.action_card)
         av.setContentsMargins(16, 13, 16, 13)
-        av.setSpacing(11)
+        av.setSpacing(10)
 
         r1 = QHBoxLayout()
         r1.setSpacing(8)
@@ -3777,42 +3940,43 @@ class MultiMachinePage(QWidget):
         self.title_lbl = QLabel("数据源管理")
         r1.addWidget(self.title_lbl, 0, Qt.AlignVCenter)
         r1.addStretch(1)
-
-        # 本机身份: 自绘胶囊 (机器名 + 改名图标态按钮)
-        self.machine_chip = MachineChip("—")
-        r1.addWidget(self.machine_chip, 0, Qt.AlignVCenter)
-        self.btn_rename = make_btn("ghost", "改名")
-        self.btn_rename.clicked.connect(lambda: self.machine_rename.emit(""))
-        r1.addWidget(self.btn_rename, 0, Qt.AlignVCenter)
+        self.peer_count_lbl = QLabel("0 台")
+        r1.addWidget(self.peer_count_lbl, 0, Qt.AlignVCenter)
         av.addLayout(r1)
 
+        # ---- 主体行: [本机机器框] ....... [导出] [导入/更新]
+        row = QHBoxLayout()
+        row.setSpacing(9)
+
+        self.machine_box = MachineBox("—")
+        self.machine_box.rename_requested.connect(lambda: self.machine_rename.emit(""))
+        row.addWidget(self.machine_box, 1)
+
+        self.btn_export = make_btn("primary", "⬆  导出本机数据")
+        self.btn_export.clicked.connect(self.export_requested)
+        row.addWidget(self.btn_export, 0, Qt.AlignVCenter)
+
+        self.btn_import = make_btn("primary", "⬇  导入/更新别机数据")
+        self.btn_import.setToolTip("选择别机导出的数据包：新机器直接导入，"
+                                   "已存在的机器名则覆盖更新其旧数据")
+        self.btn_import.clicked.connect(self.import_requested)
+        row.addWidget(self.btn_import, 0, Qt.AlignVCenter)
+        av.addLayout(row)
+
         self.hint_lbl = QLabel("导出本机数据（含 WorkBuddy + DSH 两个来源的全部记录）为文件，"
-                               "可拷到其他电脑导入；导入不会覆盖本机数据，按机器名分别存放。")
+                               "可拷到其他电脑导入；导入不会影响本机数据，按机器名分别存放 —— "
+                               "同名机器视为同一台的更新，直接覆盖其旧快照。")
         self.hint_lbl.setWordWrap(True)
         self.hint_lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         av.addWidget(self.hint_lbl)
-
-        r3 = QHBoxLayout()
-        r3.setSpacing(9)
-        self.btn_export = make_btn("primary", "⬆  导出本机数据")
-        self.btn_export.clicked.connect(self.export_requested)
-        r3.addWidget(self.btn_export, 1)
-        self.btn_import = make_btn("primary", "⬇  导入别机数据")
-        self.btn_import.clicked.connect(self.import_requested)
-        r3.addWidget(self.btn_import, 1)
-        av.addLayout(r3)
         v.addWidget(self.action_card)
 
-        # ================= 2. 主体: 左「按机统计」 / 右「已导入的机器」
-        body = QHBoxLayout()
-        body.setSpacing(10)
-
-        # ---- 2a. 按机统计
+        # ================= 2. 按机统计 (单列通栏)
         self.stat_card = GlassPodFrame(radius=12)
         self.stat_card.setObjectName("multi_stat_card")
         sv = QVBoxLayout(self.stat_card)
         sv.setContentsMargins(16, 12, 16, 12)
-        sv.setSpacing(9)
+        sv.setSpacing(8)
         self.bar_stat, self.stat_title, self.stat_scope_lbl = self._panel_head(
             sv, "按机统计", GREEN, "")
 
@@ -3824,46 +3988,50 @@ class MultiMachinePage(QWidget):
         self.stat_area.setWidgetResizable(True)
         self.stat_area.setFrameShape(QFrame.NoFrame)
         self.stat_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        style_scroll_area(self.stat_area)
         self.stat_host = QWidget()
+        self.stat_host.setStyleSheet("background:transparent;")
         self.stat_lay = QVBoxLayout(self.stat_host)
         self.stat_lay.setContentsMargins(0, 0, 0, 0)
-        self.stat_lay.setSpacing(1)
+        self.stat_lay.setSpacing(2)
         self.stat_area.setWidget(self.stat_host)
         sv.addWidget(self.stat_area, 1)
-        body.addWidget(self.stat_card, 13)
+        v.addWidget(self.stat_card, 3)
 
-        # ---- 2b. 已导入的机器
+        # ================= 3. 已导入的机器 (单列通栏)
         self.peer_card = GlassPodFrame(radius=12)
         self.peer_card.setObjectName("multi_peer_card")
         pv = QVBoxLayout(self.peer_card)
         pv.setContentsMargins(16, 12, 16, 12)
-        pv.setSpacing(9)
-        self.bar_peer, self.peer_title, self.peer_count_lbl = self._panel_head(
+        pv.setSpacing(8)
+        self.bar_peer, self.peer_title, self.peer_scope_lbl = self._panel_head(
             pv, "已导入的机器", PURPLE, "")
 
         self.peer_area = QScrollArea()
         self.peer_area.setWidgetResizable(True)
         self.peer_area.setFrameShape(QFrame.NoFrame)
         self.peer_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        style_scroll_area(self.peer_area)
         self.peer_host = QWidget()
+        self.peer_host.setStyleSheet("background:transparent;")
         self.peer_lay = QVBoxLayout(self.peer_host)
         self.peer_lay.setContentsMargins(0, 0, 0, 0)
-        self.peer_lay.setSpacing(7)
+        self.peer_lay.setSpacing(6)
         self.peer_area.setWidget(self.peer_host)
         pv.addWidget(self.peer_area, 1)
-        body.addWidget(self.peer_card, 9)
-        v.addLayout(body, 1)
+        v.addWidget(self.peer_card, 2)
 
     # ---------------- 尺寸 ----------------
     def apply_size(self):
         m = curr_metric()
         for w, pt in ((self.title_lbl, m["sn_title_pt"]), (self.stat_title, m["sn_title_pt"]),
                       (self.peer_title, m["sn_title_pt"]), (self.hint_lbl, m["sn_sub_pt"] - 0.2),
-                      (self.peer_count_lbl, m["sn_date_pt"]), (self.stat_scope_lbl, m["sn_date_pt"])):
+                      (self.peer_count_lbl, m["sn_date_pt"]), (self.stat_scope_lbl, m["sn_date_pt"]),
+                      (self.peer_scope_lbl, m["sn_date_pt"])):
             w.setFont(QFont("Microsoft YaHei UI", pt))
-        self.machine_chip.apply_size()
-        bh = m["nav_btn_h"] - 4
-        for b in (self.btn_export, self.btn_import, self.btn_rename):
+        self.machine_box.apply_size()
+        bh = m["nav_btn_h"] - 2
+        for b in (self.btn_export, self.btn_import):
             b.setFixedHeight(bh)
             style_btn(b, None, pt=m["sn_sub_pt"] + 0.2, height=bh)
         self.stat_header.apply_size()
@@ -3882,6 +4050,8 @@ class MultiMachinePage(QWidget):
             f"color:{qname(TEXT3)}; background:{qrgba(TRACK)}; border-radius:5px; padding:2px 8px;")
         self.stat_scope_lbl.setStyleSheet(
             f"color:{qname(TEXT2)}; background:{qrgba(TRACK)}; border-radius:5px; padding:2px 8px;")
+        self.peer_scope_lbl.setStyleSheet(
+            f"color:{qname(TEXT2)}; background:{qrgba(TRACK)}; border-radius:5px; padding:2px 8px;")
         # 空态占位文案
         for t in self.findChildren(QLabel, "multi_empty_title"):
             t.setStyleSheet(f"color:{qname(TEXT2)}; font-size:{m['sn_sub_pt'] + 0.6}pt;"
@@ -3890,18 +4060,20 @@ class MultiMachinePage(QWidget):
             s.setStyleSheet(f"color:{qname(TEXT3)}; font-size:{m['sn_date_pt']}pt;")
         style_btn(self.btn_export, "primary")
         style_btn(self.btn_import, "primary")
-        style_btn(self.btn_rename, "ghost")
-        self.machine_chip.apply_theme()
+        self.machine_box.apply_theme()
         self.stat_header.apply_theme()
         for row in self.findChildren(MachineRow):
             row.apply_theme()
+        # 局部 QSS 必须重套, 否则切换主题后滚动条仍是上一个主题的颜色
+        style_scroll_area(self.stat_area)
+        style_scroll_area(self.peer_area)
         self.update()
 
     # ---------------- 渲染 ----------------
     def render(self, peers, summary, machine_name=""):
         self._peers = list(peers or [])
         self._summary = dict(summary or {})
-        self.machine_chip.set_name(machine_name or "—")
+        self.machine_box.set_name(machine_name or "—")
 
         # 别机列表
         while self.peer_lay.count():
@@ -3912,7 +4084,7 @@ class MultiMachinePage(QWidget):
         if not self._peers:
             self.peer_lay.addWidget(self._empty_hint(
                 "尚未导入其他机器的数据",
-                "在另一台电脑上点「导出本机数据」，把文件拷过来后点「导入别机数据」即可。"))
+                "在另一台电脑上点「导出本机数据」，把文件拷过来后点「导入/更新别机数据」即可。"))
         else:
             for it in self._peers:
                 row = MachineRow(it)
@@ -3921,6 +4093,8 @@ class MultiMachinePage(QWidget):
                 self.peer_lay.addWidget(row)
         self.peer_lay.addStretch(1)
         self.peer_count_lbl.setText(f"{len(self._peers)} 台")
+        self.peer_scope_lbl.setText(f"{len(self._peers)} 台别机")
+        self.peer_scope_lbl.setVisible(bool(self._peers))
         # 按机统计对比
         while self.stat_lay.count():
             it = self.stat_lay.takeAt(0)
@@ -3930,7 +4104,7 @@ class MultiMachinePage(QWidget):
         rows = [(m, d) for m, d in self._summary.items() if d]
         rows.sort(key=lambda kv: -kv[1].get("total", 0))
         if not rows:
-            self.stat_lay.addWidget(self._empty_hint("暂无统计数据", "导入别机数据后这里会显示各机器的用量对比。"))
+            self.stat_lay.addWidget(self._empty_hint("暂无统计数据", "导入/更新别机数据后这里会显示各机器的用量对比。"))
         else:
             mx = max(d.get("total", 0) for _m, d in rows) or 1
             for i, (m, d) in enumerate(rows, 1):
@@ -4681,9 +4855,14 @@ class CardWindow(QWidget):
             self._show_toast(f"导出失败\n\n{err}", error=True)
 
     def _on_import_clicked(self):
-        """导入别机数据包（不影响本机数据，按机器名分别存放）。"""
+        """导入/更新别机数据包（不影响本机数据，按机器名分别存放）。
+
+        @2026-09-19 第52轮: 按钮文案统一为「导入/更新别机数据」, 对应下面两条语义 ——
+          包内机器名是新的 → 新增一台机器；
+          包内机器名已存在 → 视为同一台机器的新快照, 直接覆盖其旧数据。
+        """
         path, _ = QFileDialog.getOpenFileName(
-            self, "导入别机数据", os.path.expanduser("~"),
+            self, "导入/更新别机数据", os.path.expanduser("~"),
             "Token 统计数据包 (*.json);;所有文件 (*)")
         if not path:
             return
@@ -4700,11 +4879,16 @@ class CardWindow(QWidget):
         if pkg and pkg.get("machine") != machine:
             self._show_toast(
                 f"机器名不匹配\n\n该包属于「{pkg.get('machine')}」，"
-                f"与要覆盖的「{machine}」不同。\n请改用「导入别机数据」。", error=True)
+                f"与要覆盖的「{machine}」不同。\n请改用「导入/更新别机数据」。", error=True)
             return
         self._import_path(path, replace=True)
 
     def _import_path(self, path, replace=False):
+        """写入一份别机快照, 并按「新增 / 覆盖更新」给出明确反馈。
+
+        @2026-09-19 第52轮: 区分两种结果的措辞 —— 首次导入说「新机器已导入」,
+        同名机器说「已覆盖更新」, 避免用户误以为旧数据被叠加累计。
+        """
         pkg, err = peer_store.parse_package(path)
         if not pkg:
             self.subtitle.setText(f"导入失败: {err}")
@@ -4713,9 +4897,15 @@ class CardWindow(QWidget):
         ok, msg, info = peer_store.import_peer(pkg, replace=replace)
         if ok:
             dig = (info or {}).get("digest", {})
-            self.subtitle.setText(f"已导入「{pkg['machine']}」· {msg}")
+            fresh = not bool((info or {}).get("replaced", False))
+            head = "新机器已导入" if fresh else "已覆盖更新同名机器"
+            self.subtitle.setText(f"已导入「{pkg['machine']}」· {head}")
+            detail = ("该机器名此前未出现过，已作为一台新机器加入统计。"
+                      if fresh else
+                      "该机器名已存在，本次按最新快照覆盖其旧数据（不是累加）。")
             self._show_toast(
-                f"{msg}\n\n来源: {'+'.join(sorted(pkg['sources']))}\n"
+                f"{head}\n\n机器: {pkg['machine']}\n{detail}\n\n"
+                f"来源: {'+'.join(sorted(pkg['sources']))}\n"
                 f"Token: {dig.get('total_tokens', 0):,}\n"
                 f"请求: {dig.get('requests', 0):,}\n"
                 f"区间: {dig.get('first_day', '—')} ~ {dig.get('last_day', '—')}")
@@ -4802,7 +4992,27 @@ class CardWindow(QWidget):
             f, self._pending_force = self._pending_force, False
             QTimer.singleShot(0, lambda: self.refresh(force=f))
 
+    def _apply_page(self):
+        """按当前 source 同步切换 stack 页与控件可见性 —— 必须与数据渲染解耦。
+
+        2026-09-19 第52轮修复: 原来只有 render() 里才 setCurrentIndex, 而 render()
+        只在数据到位后由后台回调触发。若用户在同步中途切页, refresh() 因 _scanning
+        为 True 直接 return(合并重复请求), 回调被推迟 → **stack 一直停在旧页,
+        表现为"同步过程中无法切换到多机合并页面"**。现把切页独立出来, 切页即时生效,
+        数据渲染等 refresh 回来再补。
+        """
+        if self.source == "sn":
+            self.stack.setCurrentIndex(1)
+            self.range_box.setVisible(False)
+        elif self.source == "multi":
+            self.stack.setCurrentIndex(2)
+            self.range_box.setVisible(False)
+        else:
+            self.stack.setCurrentIndex(0)
+            self.range_box.setVisible(True)
+
     def load_initial(self):
+        self._apply_page()
         if self.source == "sn":
             self.stats = self._sn_cache or {"source": "sn", "pools": []}
         elif self.source == "dsh":
@@ -4842,24 +5052,18 @@ class CardWindow(QWidget):
 
     def render(self):
         s = self.stats
+        self._apply_page()
         if not s:
             self.subtitle.setText("暂无数据，点击刷新")
             return
 
         if self.source == "sn":
-            self.stack.setCurrentIndex(1)
-            self.range_box.setVisible(False)
             self.sn_page.render(s)
             return
 
         if self.source == "multi":
-            self.stack.setCurrentIndex(2)
-            self.range_box.setVisible(False)
             self._render_multi_page()
             return
-
-        self.stack.setCurrentIndex(0)
-        self.range_box.setVisible(True)
 
         daily = self._filtered_daily()
         agg = {}

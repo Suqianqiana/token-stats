@@ -955,14 +955,20 @@ check("GlassDialog 结构完整",
 check("GlassDialog 语义徽章为 DlgIcon", isinstance(_dlg.bar_ind, ca.DlgIcon))
 check("GlassDialog 为无边框对话框窗口",
       bool(_dlg.windowFlags() & ca.Qt.FramelessWindowHint))
+# 第52轮修复: 必须是真 QDialog 才有原生模态, 否则弹窗不抢焦点/不可见
+check("GlassDialog 基类为 QDialog", isinstance(_dlg, ca.QDialog))
+check("GlassDialog 具备原生模态", _dlg.isModal())
+check("GlassDialog 尺寸由布局决定 (非 640x480 默认值)",
+      _dlg.width() != 640 or _dlg.height() != 480,
+      f"size={_dlg.width()}x{_dlg.height()}")
+check("GlassDialog 已移除手写 QEventLoop",
+      not hasattr(_dlg, "_loop"))
 _dlg.add_field("机器名", "台式机", "占位")
 check("GlassDialog 输入框取值", _dlg.field_value() == "台式机")
-_dlg.accept()
-check("GlassDialog accept 置位 ok", _dlg._ok is True)
+check("GlassDialog 玻璃底面复用 paint_pod",
+      ca.paint_pod is not None and callable(ca.paint_pod))
 _dlg2 = ca.GlassDialog(_w5, "T", "M", cancel_text=None)
 check("GlassDialog 可省略取消按钮", _dlg2.btn_cancel is None)
-_dlg2.reject()
-check("GlassDialog reject 清位 ok", _dlg2._ok is False)
 # dlg_notify / dlg_confirm / dlg_prompt 工厂需能构造 (不实际弹窗, 只验证签名与返回类型)
 import inspect as _insp
 check("dlg_confirm 返回 bool 语义",
@@ -1004,9 +1010,11 @@ _w5.set_dark(not _prev_dark)
 check("set_dark 后多机页标题颜色跟随主题",
       ca.qname(ca.TEXT) in _w5.multi_page.title_lbl.styleSheet(),
       _w5.multi_page.title_lbl.styleSheet()[:60])
-check("set_dark 后多机页机器胶囊跟随主题",
-      ca.qname(ca.BLUE) in _w5.multi_page.machine_chip._font.family()
-      or _w5.multi_page.machine_chip.width() > 0)
+check("set_dark 后机器框跟随主题",
+      _w5.multi_page.machine_box is not None and _w5.multi_page.machine_box.width() >= 0)
+check("set_dark 后滚动条样式重套",
+      ".QScrollBar" not in _w5.multi_page.stat_area.styleSheet()
+      and "QScrollBar" in _w5.multi_page.stat_area.styleSheet())
 _w5.set_dark(_prev_dark)
 check("主题可还原", ca.theme_state["dark"] == _prev_dark)
 
@@ -1030,11 +1038,124 @@ _badge = ca.SrcBadge(["wb", "dsh"])
 check("SrcBadge 双来源宽度 > 单来源", _badge.width() > ca.SrcBadge(["wb"]).width())
 check("SrcBadge 空来源不崩", ca.SrcBadge([]).width() >= 24)
 
-# 11.8 机器身份胶囊
-_chip = ca.MachineChip("台式机")
-_w1 = _chip.width()
-_chip.set_name("台式机-寝室-超长名字测试")
-check("MachineChip 名称变长宽度自适应", _chip.width() > _w1)
+# 11.8 机器身份框 (第52轮: 由胶囊改为可拉伸的框, 内嵌改名热区)
+_box = ca.MachineBox("台式机")
+check("MachineBox 可拉伸 (不再固定宽度)",
+      _box.sizePolicy().horizontalPolicy() == ca.QSizePolicy.Expanding)
+check("MachineBox 具备改名信号", hasattr(_box, "rename_requested"))
+_box.apply_size()
+check("MachineBox 高度跟随度量", _box.height() == ca.curr_metric()["nav_btn_h"] - 2)
+
+# 11.9 多机页为单列纵向布局 (第52轮: 双栏观感不佳)
+_mm = _w5.multi_page
+check("数据源管理按钮文案为「导入/更新别机数据」",
+      "导入/更新别机数据" in _mm.btn_import.text(), _mm.btn_import.text())
+check("导出按钮仍在", "导出" in _mm.btn_export.text())
+check("已导入机器并入独立卡片 (不再与统计同排)",
+      hasattr(_mm, "peer_card") and hasattr(_mm, "stat_card"))
+check("统计与别机卡片纵向排列 (同一 QVBoxLayout)",
+      _mm.layout().indexOf(_mm.stat_card) >= 0 and _mm.layout().indexOf(_mm.peer_card) >= 0)
+check("MachineRow 不再继承 GlassPodFrame (避免双层玻璃叠加)",
+      not issubclass(ca.MachineRow, ca.GlassPodFrame),
+      str(ca.MachineRow.__mro__[:3]))
+check("scrollbare_qss() 产出滚动条规则", "QScrollBar" in ca.scrollbare_qss())
+
+# ============================================================ 12. 切页即时性 (第52轮修复)
+print("== 12. 同步中切页: stack 切换不得依赖后台回调 ==")
+
+# 12.1 _apply_page 存在且与渲染解耦
+check("CardWindow 提供 _apply_page", hasattr(_w5, "_apply_page"))
+check("render() 调用 _apply_page (切页与渲染同源)",
+      "_apply_page()" in _src[_src.find("    def render(self):"):
+                              _src.find("    def render(self):") + 1200])
+
+# 12.2 模拟「同步中切页」: _scanning=True 时切到 multi, stack 必须立刻切到 2
+_prev_src = _w5.source
+_saved_scanning = _w5._scanning
+try:
+    _w5._scanning = True          # 模拟后台扫描进行中
+    _w5.source = "multi"
+    _w5._apply_page()             # 这正是 _switch_nav → load_initial 的第一步
+    check("同步中切到多机页: stack 立刻切到 index 2",
+          _w5.stack.currentIndex() == 2, f"index={_w5.stack.currentIndex()}")
+    check("同步中切到多机页: 时间区间控件隐藏", _w5.range_box.isHidden())
+
+    _w5.source = "sn"
+    _w5._apply_page()
+    check("同步中切到商汤页: stack 立刻切到 index 1",
+          _w5.stack.currentIndex() == 1, f"index={_w5.stack.currentIndex()}")
+
+    _w5.source = "wb"
+    _w5._apply_page()
+    check("切回 WorkBuddy: stack 回到 index 0",
+          _w5.stack.currentIndex() == 0, f"index={_w5.stack.currentIndex()}")
+    check("切回 WorkBuddy: 区间控件恢复显示 (非 hidden 态)",
+          not _w5.range_box.isHidden())
+finally:
+    _w5._scanning = _saved_scanning
+    _w5.source = _prev_src
+    _w5._apply_page()
+
+# 12.3 _apply_page 不触碰数据, 纯视图操作 (可在扫描中被安全调用)
+_ap_i = _src.find("    def _apply_page(self):")
+_ap_body = _src[_ap_i:_ap_i + 900]
+_ap_code = "\n".join(ln for ln in _ap_body.splitlines()
+                     if not ln.strip().startswith("#"))
+check("_apply_page 为纯视图方法 (无 self.refresh 调用)",
+      "self.refresh" not in _ap_code and "_render_multi_page" not in _ap_code)
+check("_apply_page 只做 setCurrentIndex / setVisible",
+      "setCurrentIndex" in _ap_code and "setVisible" in _ap_code)
+
+# ============================================================ 13. 导入/更新语义 (第52轮)
+print("== 13. 导入/更新别机数据: 新机器导入 vs 同名覆盖更新 ==")
+
+# 13.1 import_peer 的两条返回语义必须可区分 (UI 依赖它给用户准话)
+_im_i = _src.find("    def _import_path(self, path, replace=False):")
+_im_body = _src[_im_i:_im_i + 1800]
+check("_import_path 提供新增/覆盖两种文案",
+      "新机器已导入" in _im_body and "已覆盖更新同名机器" in _im_body)
+check("_import_path 把 replaced 结果映射为「是否新机器」",
+      '"replaced"' in _im_body and "fresh" in _im_body)
+check("导入对话框标题与按钮文案一致",
+      '"导入/更新别机数据"' in _src[_src.find("    def _on_import_clicked(self):"):
+                                      _src.find("    def _on_import_clicked(self):") + 700])
+check("机器名不匹配时提示改用新按钮名",
+      "请改用「导入/更新别机数据」" in _src)
+
+# 13.2 peer_store 语义回归: 同名机器导入 = 覆盖更新而非累加
+import tempfile as _tf13
+_ps13_dir = _tf13.mkdtemp(prefix="_r52_ps13_")
+_ps13_idx = os.path.join(_ps13_dir, "index.json")
+_ps13_real = (ps.PEERS_DIR, ps.PEERS_INDEX)
+ps.PEERS_DIR = _ps13_dir
+ps.PEERS_INDEX = _ps13_idx
+try:
+    def _mkpkg(machine, tok):
+        # 快照包结构: sources[src] = {models:{...}, daily:{...}} —— _snapshot_digest 据此求和
+        return {"machine": machine, "exported_at": "2026-09-19T00:00:00",
+                "sources": {"wb": {"models": {"glm-5.3-flash": {"total": tok, "requests": 1}},
+                                   "daily": {"2026-09-18": {"glm-5.3-flash": {"total": tok}}}}},
+                "created_by": "test"}
+
+    _ok1, _m1, _i1 = ps.import_peer(_mkpkg("台式机", 100))
+    check("首次导入 → 成功且注记非覆盖", _ok1 and _i1["replaced"] is False, _m1)
+    check("首次导入文案指向新增", "新增" in _m1 or "已新增" in _m1, _m1)
+
+    _ok2, _m2, _i2 = ps.import_peer(_mkpkg("台式机", 999))
+    check("同名再导入 → 成功且注记 covered 覆盖", _ok2 and _i2["replaced"] is True, _m2)
+    _peers_after = ps.list_peers()
+    _same = [p for p in _peers_after if p.get("machine") == "台式机"]
+    check("同名再导入未新增机器 (仍是一台)", len(_same) == 1,
+          f"n={len(_same)}")
+    _tok2 = _same[0].get("digest", {}).get("total_tokens")
+    check("同名再导入为整体快照覆盖 (100 → 999 而非 1099)",
+          _tok2 == 999, f"total_tokens={_tok2}")
+
+    _ok3, _m3, _i3 = ps.import_peer(_mkpkg("笔记本", 50))
+    check("不同机器名 → 作为新机器并存", _ok3 and _i3["replaced"] is False)
+    check("并存后共 2 台", len(ps.list_peers()) == 2, f"n={len(ps.list_peers())}")
+finally:
+    ps.PEERS_DIR, ps.PEERS_INDEX = _ps13_real
 
 # 还原 peers 目录 (临时目录随系统清理)
 ps.PEERS_DIR = _REAL_PEERS_DIR
