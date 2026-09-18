@@ -21,6 +21,7 @@ import time
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
 import scanner  # noqa: E402
+import peer_store  # noqa: E402   # 2026-09-19 (第50轮): 多机数据源 导出/导入/合并
 
 
 # ============================================================ 打包(exe)支持
@@ -58,7 +59,8 @@ from PySide6.QtGui import (QColor, QFont, QPainter, QPen, QBrush, QPainterPath,
 from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QVBoxLayout,
                                QHBoxLayout, QGridLayout, QFrame, QPushButton,
                                QScrollArea, QMenu, QSizePolicy, QPlainTextEdit,
-                               QStackedWidget, QLineEdit, QSystemTrayIcon)
+                               QStackedWidget, QLineEdit, QSystemTrayIcon,
+                               QFileDialog, QMessageBox, QInputDialog)
 
 
 def app_icon():
@@ -3078,6 +3080,351 @@ class SNQuotaPage(QWidget):
         self.sync_panel.apply_theme()
         self.apply_size()
 
+# ============================================================ 多机数据源页 (2026-09-19 第50轮)
+class MachineRow(GlassPodFrame):
+    """别机列表中的一行: 机器名 / 来源徽标 / token 总量 / 请求 / 日期跨度 / 导入时间 + 操作。"""
+
+    remove = Signal(str)
+    replace = Signal(str)
+
+    def __init__(self, item, parent=None):
+        super().__init__(radius=10, parent=parent)
+        self.item = item
+        self.machine = item.get("machine", "")
+        self._build_ui()
+        self.apply_theme()
+
+    def _build_ui(self):
+        v = QVBoxLayout(self)
+        v.setContentsMargins(14, 10, 14, 10)
+        v.setSpacing(6)
+
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        self.bar = BarIndicator(BLUE)
+        top.addWidget(self.bar, 0, Qt.AlignVCenter)
+
+        self.name_lbl = QLabel(self.machine)
+        self.name_lbl.setFont(QFont("Microsoft YaHei UI", 10.0, QFont.Bold))
+        top.addWidget(self.name_lbl, 0, Qt.AlignVCenter)
+
+        # 来源徽标: 哪些源来自这台机器
+        srcs = self.item.get("sources") or []
+        self.src_lbl = QLabel(" · ".join(
+            {"wb": "WorkBuddy", "dsh": "DSH"}.get(s, s) for s in srcs) or "—")
+        top.addWidget(self.src_lbl, 0, Qt.AlignVCenter)
+        top.addStretch(1)
+
+        dig = self.item.get("digest") or {}
+        self.total_lbl = QLabel(f"{fmt_full(dig.get('total_tokens', 0))} tokens")
+        top.addWidget(self.total_lbl, 0, Qt.AlignVCenter)
+        v.addLayout(top)
+
+        bot = QHBoxLayout()
+        bot.setSpacing(10)
+        self.meta_lbl = QLabel(
+            f"请求 {dig.get('requests', 0):,} · "
+            f"{dig.get('first_day', '—') or '—'} ~ {dig.get('last_day', '—') or '—'} · "
+            f"导入 {self._short_time(self.item.get('imported_at', ''))}")
+        bot.addWidget(self.meta_lbl, 1)
+
+        self.btn_replace = QPushButton("覆盖更新")
+        self.btn_replace.setCursor(Qt.PointingHandCursor)
+        self.btn_replace.setFixedHeight(24)
+        self.btn_replace.clicked.connect(lambda: self.replace.emit(self.machine))
+        bot.addWidget(self.btn_replace)
+
+        self.btn_remove = QPushButton("删除")
+        self.btn_remove.setCursor(Qt.PointingHandCursor)
+        self.btn_remove.setFixedHeight(24)
+        self.btn_remove.clicked.connect(lambda: self.remove.emit(self.machine))
+        bot.addWidget(self.btn_remove)
+        v.addLayout(bot)
+
+    @staticmethod
+    def _short_time(s):
+        s = str(s or "")
+        return s.replace("T", " ")[5:16] if len(s) >= 16 else (s or "—")
+
+    def apply_size(self):
+        m = curr_metric()
+        self.name_lbl.setFont(QFont("Microsoft YaHei UI", m["row_pt"] + 0.6, QFont.Bold))
+        for w, pt in ((self.src_lbl, m["row_head_pt"]), (self.total_lbl, m["row_pt"]),
+                      (self.meta_lbl, m["row_head_pt"])):
+            w.setFont(QFont("Microsoft YaHei UI", pt))
+        for b in (self.btn_replace, self.btn_remove):
+            b.setFixedHeight(m["row_h"] - 2)
+
+    def apply_theme(self):
+        self.name_lbl.setStyleSheet(f"color:{qname(TEXT)};")
+        self.src_lbl.setStyleSheet(f"color:{qname(TEXT3)};")
+        self.total_lbl.setStyleSheet(f"color:{qname(BLUE)};")
+        self.meta_lbl.setStyleSheet(f"color:{qname(TEXT3)};")
+        btn_qss = (f"QPushButton{{background:transparent; border:1px solid {qrgba(BORDER)};"
+                   f" border-radius:6px; padding:2px 10px; color:{qname(TEXT2)};}}"
+                   f"QPushButton:hover{{background:{qrgba(HOVER)}; color:{qname(BLUE)};}}")
+        for b in (self.btn_replace, self.btn_remove):
+            b.setStyleSheet(btn_qss)
+        self.update()
+
+
+class MultiMachinePage(QWidget):
+    """多机数据源页: 本机身份 / 导出导入 / 别机列表 / 按机统计对比。"""
+
+    export_requested = Signal()
+    import_requested = Signal()
+    machine_remove = Signal(str)
+    machine_replace = Signal(str)
+    machine_rename = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._peers = []
+        self._summary = {}
+        self._build_ui()
+
+    def _build_ui(self):
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(10)
+
+        # ---- 1. 本机身份 + 操作卡
+        self.action_card = GlassPodFrame(radius=12)
+        self.action_card.setObjectName("multi_action_card")
+        av = QVBoxLayout(self.action_card)
+        av.setContentsMargins(16, 12, 16, 12)
+        av.setSpacing(8)
+
+        r1 = QHBoxLayout()
+        r1.setSpacing(8)
+        self.bar_action = BarIndicator(BLUE)
+        r1.addWidget(self.bar_action, 0, Qt.AlignVCenter)
+        self.title_lbl = QLabel("数据源管理")
+        self.title_lbl.setFont(QFont("Microsoft YaHei UI", 10.5, QFont.Bold))
+        r1.addWidget(self.title_lbl, 0, Qt.AlignVCenter)
+        r1.addStretch(1)
+        self.machine_lbl = QLabel("本机: —")
+        r1.addWidget(self.machine_lbl, 0, Qt.AlignVCenter)
+        self.btn_rename = QPushButton("改名")
+        self.btn_rename.setCursor(Qt.PointingHandCursor)
+        self.btn_rename.clicked.connect(lambda: self.machine_rename.emit(""))
+        r1.addWidget(self.btn_rename, 0, Qt.AlignVCenter)
+        av.addLayout(r1)
+
+        r2 = QHBoxLayout()
+        r2.setSpacing(8)
+        self.hint_lbl = QLabel("导出本机数据（含 WorkBuddy + DSH 两个来源的全部记录）为文件，"
+                               "可拷到其他电脑导入；导入不会覆盖本机数据，按机器名分别存放。")
+        self.hint_lbl.setWordWrap(True)
+        self.hint_lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        r2.addWidget(self.hint_lbl, 1)
+        av.addLayout(r2)
+
+        r3 = QHBoxLayout()
+        r3.setSpacing(8)
+        self.btn_export = QPushButton("⬆  导出本机数据")
+        self.btn_export.setCursor(Qt.PointingHandCursor)
+        self.btn_export.clicked.connect(self.export_requested)
+        r3.addWidget(self.btn_export)
+        self.btn_import = QPushButton("⬇  导入别机数据")
+        self.btn_import.setCursor(Qt.PointingHandCursor)
+        self.btn_import.clicked.connect(self.import_requested)
+        r3.addWidget(self.btn_import)
+        r3.addStretch(1)
+        self.peer_count_lbl = QLabel("")
+        r3.addWidget(self.peer_count_lbl, 0, Qt.AlignVCenter)
+        av.addLayout(r3)
+        v.addWidget(self.action_card)
+
+        # ---- 2. 按机统计对比卡
+        self.stat_card = GlassPodFrame(radius=12)
+        self.stat_card.setObjectName("multi_stat_card")
+        sv = QVBoxLayout(self.stat_card)
+        sv.setContentsMargins(16, 10, 16, 10)
+        sv.setSpacing(6)
+        sh = QHBoxLayout()
+        sh.setSpacing(8)
+        self.bar_stat = BarIndicator(GREEN)
+        sh.addWidget(self.bar_stat, 0, Qt.AlignVCenter)
+        self.stat_title = QLabel("按机统计")
+        self.stat_title.setFont(QFont("Microsoft YaHei UI", 10.5, QFont.Bold))
+        sh.addWidget(self.stat_title, 0, Qt.AlignVCenter)
+        sh.addStretch(1)
+        self.stat_scope_lbl = QLabel("")
+        sh.addWidget(self.stat_scope_lbl, 0, Qt.AlignVCenter)
+        sv.addLayout(sh)
+
+        self.stat_area = QScrollArea()
+        self.stat_area.setWidgetResizable(True)
+        self.stat_area.setFrameShape(QFrame.NoFrame)
+        self.stat_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.stat_host = QWidget()
+        self.stat_lay = QVBoxLayout(self.stat_host)
+        self.stat_lay.setContentsMargins(0, 0, 0, 0)
+        self.stat_lay.setSpacing(2)
+        self.stat_area.setWidget(self.stat_host)
+        sv.addWidget(self.stat_area, 1)
+        v.addWidget(self.stat_card, 1)
+
+        # ---- 3. 别机列表卡
+        self.peer_card = GlassPodFrame(radius=12)
+        self.peer_card.setObjectName("multi_peer_card")
+        pv = QVBoxLayout(self.peer_card)
+        pv.setContentsMargins(16, 10, 16, 10)
+        pv.setSpacing(6)
+        ph = QHBoxLayout()
+        ph.setSpacing(8)
+        self.bar_peer = BarIndicator(PURPLE)
+        ph.addWidget(self.bar_peer, 0, Qt.AlignVCenter)
+        self.peer_title = QLabel("已导入的机器")
+        self.peer_title.setFont(QFont("Microsoft YaHei UI", 10.5, QFont.Bold))
+        ph.addWidget(self.peer_title, 0, Qt.AlignVCenter)
+        ph.addStretch(1)
+        pv.addLayout(ph)
+
+        self.peer_area = QScrollArea()
+        self.peer_area.setWidgetResizable(True)
+        self.peer_area.setFrameShape(QFrame.NoFrame)
+        self.peer_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.peer_host = QWidget()
+        self.peer_lay = QVBoxLayout(self.peer_host)
+        self.peer_lay.setContentsMargins(0, 0, 0, 0)
+        self.peer_lay.setSpacing(6)
+        self.peer_area.setWidget(self.peer_host)
+        pv.addWidget(self.peer_area, 1)
+        v.addWidget(self.peer_card, 1)
+
+    # ---------------- 尺寸 ----------------
+    def apply_size(self):
+        m = curr_metric()
+        for w, pt in ((self.title_lbl, m["sn_title_pt"]), (self.stat_title, m["sn_title_pt"]),
+                      (self.peer_title, m["sn_title_pt"]), (self.machine_lbl, m["sn_sub_pt"]),
+                      (self.hint_lbl, m["sn_sub_pt"]), (self.peer_count_lbl, m["sn_date_pt"]),
+                      (self.stat_scope_lbl, m["sn_date_pt"])):
+            w.setFont(QFont("Microsoft YaHei UI", pt))
+        for b in (self.btn_export, self.btn_import, self.btn_rename):
+            b.setFixedHeight(m["nav_btn_h"] - 4)
+        for row in self.findChildren(MachineRow):
+            row.apply_size()
+        self.update()
+
+    # ---------------- 主题 ----------------
+    def apply_theme(self):
+        self.title_lbl.setStyleSheet(f"color:{qname(TEXT)};")
+        self.stat_title.setStyleSheet(f"color:{qname(TEXT)};")
+        self.peer_title.setStyleSheet(f"color:{qname(TEXT)};")
+        self.machine_lbl.setStyleSheet(f"color:{qname(BLUE)};")
+        self.hint_lbl.setStyleSheet(f"color:{qname(TEXT3)};")
+        self.peer_count_lbl.setStyleSheet(f"color:{qname(TEXT3)};")
+        self.stat_scope_lbl.setStyleSheet(f"color:{qname(TEXT3)};")
+        btn_primary = (
+            f"QPushButton{{background:{qrgba(BLUE, 38)}; border:1px solid {qrgba(BLUE, 90)};"
+            f" border-radius:7px; padding:3px 14px; color:{qname(BLUE)}; font-weight:600;}}"
+            f"QPushButton:hover{{background:{qrgba(BLUE, 62)};}}")
+        self.btn_export.setStyleSheet(btn_primary)
+        self.btn_import.setStyleSheet(btn_primary)
+        self.btn_rename.setStyleSheet(
+            f"QPushButton{{background:transparent; border:1px solid {qrgba(BORDER)};"
+            f" border-radius:6px; padding:2px 10px; color:{qname(TEXT2)};}}"
+            f"QPushButton:hover{{background:{qrgba(HOVER)}; color:{qname(BLUE)};}}")
+        for row in self.findChildren(MachineRow):
+            row.apply_theme()
+        self.update()
+
+    # ---------------- 渲染 ----------------
+    def render(self, peers, summary, machine_name=""):
+        self._peers = list(peers or [])
+        self._summary = dict(summary or {})
+        self.machine_lbl.setText(f"本机: {machine_name or '—'}")
+
+        # 别机列表
+        while self.peer_lay.count():
+            it = self.peer_lay.takeAt(0)
+            w = it.widget()
+            if w:
+                w.deleteLater()
+        if not self._peers:
+            empty = QLabel("尚未导入其他机器的数据。\n在另一台电脑上点「导出本机数据」，"
+                           "把文件拷过来后点「导入别机数据」即可。")
+            empty.setAlignment(Qt.AlignCenter)
+            empty.setWordWrap(True)
+            empty.setStyleSheet(f"color:{qname(TEXT3)}; padding:22px; font-size:11px;")
+            self.peer_lay.addWidget(empty)
+        else:
+            for it in self._peers:
+                row = MachineRow(it)
+                row.remove.connect(self.machine_remove)
+                row.replace.connect(self.machine_replace)
+                self.peer_lay.addWidget(row)
+        self.peer_lay.addStretch(1)
+        self.peer_count_lbl.setText(f"共 {len(self._peers)} 台别机")
+
+        # 按机统计对比
+        while self.stat_lay.count():
+            it = self.stat_lay.takeAt(0)
+            w = it.widget()
+            if w:
+                w.deleteLater()
+        rows = [(m, d) for m, d in self._summary.items() if d]
+        rows.sort(key=lambda kv: -kv[1].get("total", 0))
+        if not rows:
+            empty = QLabel("暂无统计数据。")
+            empty.setAlignment(Qt.AlignCenter)
+            empty.setStyleSheet(f"color:{qname(TEXT3)}; padding:22px; font-size:11px;")
+            self.stat_lay.addWidget(empty)
+        else:
+            mx = max(d.get("total", 0) for _m, d in rows) or 1
+            for m, d in rows:
+                is_local = bool(d.get("local"))
+                self.stat_lay.addWidget(self._stat_row(m, d, mx, is_local))
+        self.stat_lay.addStretch(1)
+        total_tok = sum(d.get("total", 0) for _m, d in rows)
+        self.stat_scope_lbl.setText(f"合计 {fmt_full(total_tok)} tokens · {len(rows)} 台机器")
+        self.apply_theme()
+        self.apply_size()
+
+    def _stat_row(self, machine, d, mx, is_local):
+        w = QWidget()
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(2, 2, 2, 2)
+        lay.setSpacing(8)
+
+        name = QLabel(("🖥 " if is_local else "💻 ") + machine)
+        name.setFixedWidth(150)
+        name.setToolTip("本机" if is_local else "别机")
+        lay.addWidget(name)
+
+        bar = SNProgressBar(d.get("total", 0) / mx if mx else 0,
+                            color="orange" if not is_local else "purple")
+        lay.addWidget(bar, 1)
+
+        tot = QLabel(fmt_full(d.get("total", 0)))
+        tot.setFixedWidth(110)
+        tot.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        lay.addWidget(tot)
+
+        req = QLabel(f"{d.get('requests', 0):,} 请求")
+        req.setFixedWidth(90)
+        req.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        lay.addWidget(req)
+
+        days = QLabel(f"{d.get('firstDay', '') or '—'} ~ {d.get('lastDay', '') or '—'}")
+        days.setFixedWidth(160)
+        days.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        lay.addWidget(days)
+
+        m = curr_metric()
+        for lbl, pt in ((name, m["row_pt"]), (tot, m["row_pt"]),
+                        (req, m["row_head_pt"]), (days, m["row_head_pt"])):
+            lbl.setFont(QFont("Microsoft YaHei UI", pt))
+        name.setStyleSheet(f"color:{qname(BLUE if is_local else TEXT2)};")
+        tot.setStyleSheet(f"color:{qname(TEXT)};")
+        req.setStyleSheet(f"color:{qname(TEXT3)};")
+        days.setStyleSheet(f"color:{qname(TEXT3)};")
+        bar.setFixedHeight(m.get("sn_prog_h", 10))
+        return w
+
+
 class NavButton(QPushButton):
     def __init__(self, text, icon_str="", parent=None):
         super().__init__(f"  {icon_str}  {text}", parent)
@@ -3205,14 +3552,17 @@ class CardWindow(QWidget):
         self.btn_nav_wb = NavButton("WorkBuddy", "📘")
         self.btn_nav_dsh = NavButton("DSH 本地", "🗄️")
         self.btn_nav_sn = NavButton("商汤额度", "⚡")
+        # 2026-09-19 (第50轮): 多机数据源 —— 导出本机 / 导入别机 / 按机统计
+        self.btn_nav_multi = NavButton("多机合并", "🔀")
 
-        for b in (self.btn_nav_wb, self.btn_nav_dsh, self.btn_nav_sn):
+        for b in (self.btn_nav_wb, self.btn_nav_dsh, self.btn_nav_sn, self.btn_nav_multi):
             side_lay.addWidget(b)
             b.clicked.connect(lambda _=False, bb=b: self._switch_nav(bb))
 
         self.btn_nav_wb.setChecked(self.source == "wb")
         self.btn_nav_dsh.setChecked(self.source == "dsh")
         self.btn_nav_sn.setChecked(self.source == "sn")
+        self.btn_nav_multi.setChecked(self.source == "multi")
 
         side_lay.addStretch(1)
 
@@ -3353,6 +3703,15 @@ class CardWindow(QWidget):
         self.sn_page.cleared.connect(self._on_sn_sync_saved)
         self.stack.addWidget(self.sn_page)
 
+        # Page 2: 多机数据源页 (2026-09-19 第50轮)
+        self.multi_page = MultiMachinePage()
+        self.multi_page.export_requested.connect(self._on_export_clicked)
+        self.multi_page.import_requested.connect(self._on_import_clicked)
+        self.multi_page.machine_remove.connect(self._on_peer_remove)
+        self.multi_page.machine_replace.connect(self._on_peer_replace)
+        self.multi_page.machine_rename.connect(self._on_rename_machine)
+        self.stack.addWidget(self.multi_page)
+
         work_lay.addWidget(self.stack, 1)
         main_layout.addWidget(self.workspace, 1)
 
@@ -3390,7 +3749,7 @@ class CardWindow(QWidget):
         self.subtitle.setFont(QFont("Microsoft YaHei UI", m["subtitle_pt"]))
         self.src_head.setFont(QFont("Microsoft YaHei UI", m["sn_date_pt"]))
 
-        for b in (self.btn_nav_wb, self.btn_nav_dsh, self.btn_nav_sn):
+        for b in (self.btn_nav_wb, self.btn_nav_dsh, self.btn_nav_sn, self.btn_nav_multi):
             b.apply_size()
 
         self.btn_refresh.setFixedHeight(m["refresh_h"])
@@ -3406,6 +3765,7 @@ class CardWindow(QWidget):
         self.chart.apply_size()
         self.heat.apply_size()
         self.sn_page.apply_size()
+        self.multi_page.apply_size()
 
         if self.isVisible():
             screen = QGuiApplication.screenAt(self.geometry().center()) or QApplication.primaryScreen()
@@ -3577,12 +3937,14 @@ class CardWindow(QWidget):
 
     def _switch_nav(self, btn):
         ChartTip.instance().hide_tip()
-        for b in (self.btn_nav_wb, self.btn_nav_dsh, self.btn_nav_sn):
+        for b in (self.btn_nav_wb, self.btn_nav_dsh, self.btn_nav_sn, self.btn_nav_multi):
             b.setChecked(b is btn)
         if btn is self.btn_nav_dsh:
             self.source = "dsh"
         elif btn is self.btn_nav_sn:
             self.source = "sn"
+        elif btn is self.btn_nav_multi:
+            self.source = "multi"
         else:
             self.source = "wb"
         theme_state["source"] = self.source
@@ -3610,6 +3972,8 @@ class CardWindow(QWidget):
         self._btn_busy(True)
         src = self.source
         if src == "dsh": self.subtitle.setText("正在读取 DSH 账本…")
+        elif src == "multi":
+            self.subtitle.setText("正在汇总多机数据…")
         elif src == "sn":
             # 进度反馈: 同步面板显示进度态, 避免更新按钮灰色像卡住
             self.sn_page.sync_panel.set_syncing("正在自动获取凭证并同步…" if force else "正在同步积分数据…")
@@ -3620,12 +3984,151 @@ class CardWindow(QWidget):
             try:
                 if src == "dsh": s = load_dsh_stats()
                 elif src == "sn": s = load_sn_stats(force=force, proactive=proactive)
+                elif src == "multi": s = self._build_multi_stats()
                 else: s = scanner.scan_full()
             except Exception as e:
                 s = {"error": str(e)}
             self.bridge.done.emit(src, s, gen)
 
         threading.Thread(target=work, daemon=True).start()
+
+    # ---------------- 多机数据源 (2026-09-19 第50轮) ----------------
+    def _build_multi_stats(self):
+        """汇总多机数据: 本机实时（WB+DSH）+ 各别机快照 → 合并视图。
+
+        返回结构与统计页同构（daily/models/dailySessions/firstDay/lastDay），
+        额外带 machines（按机摘要）与 peers（别机列表）供页面渲染。
+        """
+        local = {}
+        try:
+            local["wb"] = scanner.scan_full()
+        except Exception as e:
+            local["wb"] = {"error": str(e)}
+        try:
+            local["dsh"] = load_dsh_stats()
+        except Exception as e:
+            local["dsh"] = {"error": str(e)}
+        peer_pkgs = peer_store.load_all_peers()
+        entries = [{"machine": peer_store.load_machine_name(), "local": True, "stats": local}]
+        for name, pk in peer_pkgs.items():
+            entries.append({"machine": name, "local": False, "stats": pk.get("sources") or {}})
+        merged = peer_store.merge_machines(entries, include_local=True)
+        # 标记本机，供页面用 🖥 区分
+        local_name = peer_store.load_machine_name()
+        for name, d in merged["machines"].items():
+            d["local"] = (name == local_name)
+        merged["peers"] = peer_store.list_peers()
+        merged["machineName"] = local_name
+        merged["source"] = "multi"
+        return merged
+
+    def _on_export_clicked(self):
+        """导出本机数据（WB + DSH 全量快照）到用户选择的文件。"""
+        name = peer_store.load_machine_name()
+        default = f"token-stats-{name}-{time.strftime('%Y%m%d')}.json"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出本机数据", os.path.join(os.path.expanduser("~"), "Desktop", default),
+            "Token 统计数据包 (*.json)")
+        if not path:
+            return
+        local = {}
+        try:
+            local["wb"] = scanner.scan_full()
+        except Exception as e:
+            local["wb"] = {"error": str(e)}
+        try:
+            local["dsh"] = load_dsh_stats()
+        except Exception as e:
+            local["dsh"] = {"error": str(e)}
+        pkg = peer_store.build_export_package(name, local)
+        ok, err = peer_store.write_export(pkg, path)
+        if ok:
+            srcs = "+".join(sorted(pkg["sources"])) or "无"
+            self.subtitle.setText(f"已导出「{name}」数据（{srcs}）→ {os.path.basename(path)}")
+            self._show_toast(f"导出成功\n\n机器「{name}」\n来源: {srcs}\n文件: {path}")
+        else:
+            self.subtitle.setText(f"导出失败: {err}")
+            self._show_toast(f"导出失败\n\n{err}", error=True)
+
+    def _on_import_clicked(self):
+        """导入别机数据包（不影响本机数据，按机器名分别存放）。"""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "导入别机数据", os.path.expanduser("~"),
+            "Token 统计数据包 (*.json);;所有文件 (*)")
+        if not path:
+            return
+        self._import_path(path, replace=False)
+
+    def _on_peer_replace(self, machine):
+        """覆盖更新某台机器：重新选择该机器的数据包并替换其存档。"""
+        path, _ = QFileDialog.getOpenFileName(
+            self, f"选择「{machine}」的新数据包（覆盖更新）", os.path.expanduser("~"),
+            "Token 统计数据包 (*.json);;所有文件 (*)")
+        if not path:
+            return
+        pkg, err = peer_store.parse_package(path)
+        if pkg and pkg.get("machine") != machine:
+            self._show_toast(
+                f"机器名不匹配\n\n该包属于「{pkg.get('machine')}」，"
+                f"与要覆盖的「{machine}」不同。\n请改用「导入别机数据」。", error=True)
+            return
+        self._import_path(path, replace=True)
+
+    def _import_path(self, path, replace=False):
+        pkg, err = peer_store.parse_package(path)
+        if not pkg:
+            self.subtitle.setText(f"导入失败: {err}")
+            self._show_toast(f"导入失败\n\n{err}", error=True)
+            return
+        ok, msg, info = peer_store.import_peer(pkg, replace=replace)
+        if ok:
+            dig = (info or {}).get("digest", {})
+            self.subtitle.setText(f"已导入「{pkg['machine']}」· {msg}")
+            self._show_toast(
+                f"{msg}\n\n来源: {'+'.join(sorted(pkg['sources']))}\n"
+                f"Token: {dig.get('total_tokens', 0):,}\n"
+                f"请求: {dig.get('requests', 0):,}\n"
+                f"区间: {dig.get('first_day', '—')} ~ {dig.get('last_day', '—')}")
+            self.refresh(force=True)
+        else:
+            self.subtitle.setText(f"导入失败: {msg}")
+            self._show_toast(f"导入失败\n\n{msg}", error=True)
+
+    def _on_peer_remove(self, machine):
+        r = QMessageBox.question(
+            self, "删除机器数据", f"确定删除机器「{machine}」的已导入数据？\n\n"
+            f"（只删除本机保存的这台机器的快照，不影响对方电脑上的原始数据）",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if r != QMessageBox.Yes:
+            return
+        ok, msg = peer_store.remove_peer(machine)
+        self.subtitle.setText(msg if ok else f"删除失败: {msg}")
+        if ok:
+            self.refresh(force=True)
+
+    def _on_rename_machine(self, _arg=""):
+        name = peer_store.load_machine_name()
+        text, ok = QInputDialog.getText(self, "修改机器名", "机器名（导出时用于标识来源）:",
+                                        QLineEdit.Normal, name)
+        if not ok:
+            return
+        text = (text or "").strip()
+        if not text:
+            return
+        peer_store.save_machine_name(text)
+        self.subtitle.setText(f"本机机器名已设为「{text}」")
+        self.refresh(force=True)
+
+    def _show_toast(self, text, error=False):
+        """轻量结果提示: 直接复用系统消息框（父窗口置顶, 避免被卡片遮挡）。"""
+        box = QMessageBox(self)
+        box.setWindowTitle("Token 统计")
+        box.setIcon(QMessageBox.Warning if error else QMessageBox.Information)
+        box.setText("导出失败" if error else text.split("\n")[0])
+        if not error and "\n" in text:
+            box.setInformativeText(text[text.index("\n") + 1:].strip())
+        box.setStandardButtons(QMessageBox.Ok)
+        box.exec()
 
     def _on_scan_done(self, src, s, gen=None):
         # 代次校验: 看门狗超时后线程若才回来, 其结果已作废, 不能覆盖新状态
@@ -3647,6 +4150,11 @@ class CardWindow(QWidget):
             self.render()
             if src == "dsh":
                 self.subtitle.setText(f"DSH · {s.get('firstDay','—')} ~ {s.get('lastDay','—')} · 累计花费 ¥{s.get('totalCost', 0):.2f} · 已更新 {time.strftime('%H:%M:%S')}")
+            elif src == "multi":
+                n_peer = len(s.get("peers") or [])
+                self.subtitle.setText(
+                    f"多机合并 · 本机 + {n_peer} 台别机 · "
+                    f"{s.get('firstDay','—')} ~ {s.get('lastDay','—')} · 已更新 {time.strftime('%H:%M:%S')}")
             elif src == "sn":
                 ws = time.strftime("%H:%M", time.localtime(s.get("window_start", 0)))
                 we = time.strftime("%H:%M", time.localtime(s.get("window_end", 0)))
@@ -3668,6 +4176,16 @@ class CardWindow(QWidget):
             self.stats = self._sn_cache or {"source": "sn", "pools": []}
         elif self.source == "dsh":
             self.stats = load_dsh_stats()
+        elif self.source == "multi":
+            # 多机页首次进入: 先渲染一份快速的轻量视图（仅别机列表 + 本机摘要），
+            # 完整合并交给随后的后台 refresh，避免切页卡顿
+            self.stats = {"source": "multi", "machines": {}, "peers": peer_store.list_peers(),
+                          "machineName": peer_store.load_machine_name(),
+                          "daily": {}, "models": {}, "dailySessions": {},
+                          "firstDay": "", "lastDay": ""}
+            self._render_multi_page()
+            QTimer.singleShot(100, self.refresh)
+            return
         else:
             try:
                 with open(scanner.STATS_FILE, "r", encoding="utf-8") as f:
@@ -3701,6 +4219,12 @@ class CardWindow(QWidget):
             self.stack.setCurrentIndex(1)
             self.range_box.setVisible(False)
             self.sn_page.render(s)
+            return
+
+        if self.source == "multi":
+            self.stack.setCurrentIndex(2)
+            self.range_box.setVisible(False)
+            self._render_multi_page()
             return
 
         self.stack.setCurrentIndex(0)
@@ -3753,6 +4277,14 @@ class CardWindow(QWidget):
 
         self.chart.set_data(daily, rows)
         self.heat.set_data(self.stats.get("daily", {}))
+
+    def _render_multi_page(self):
+        """渲染多机数据源页（别机列表 + 按机统计）。"""
+        s = self.stats or {}
+        peers = s.get("peers") or []
+        machines = s.get("machines") or {}
+        name = s.get("machineName") or peer_store.load_machine_name()
+        self.multi_page.render(peers, machines, name)
 
     # ---------------- 交互与右键菜单 ----------------
     def hideEvent(self, ev):

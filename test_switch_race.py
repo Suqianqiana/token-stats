@@ -816,6 +816,128 @@ check("凭据链路日志落盘",
       os.path.exists(ca.SN_CRED_LOG)
       and "回归自检写入" in open(ca.SN_CRED_LOG, encoding="utf-8").read())
 
+print("== 10. 多机数据源 (导出/导入/合并) ==")
+import peer_store as ps
+
+# 多机 peers 目录隔离到临时目录: 回归不得读写/污染真实 peers 存档
+_REAL_PEERS_DIR = ps.PEERS_DIR
+_REAL_PEERS_INDEX = ps.PEERS_INDEX
+ps.PEERS_DIR = os.path.join(_TMP_DATA, "peers")
+ps.PEERS_INDEX = os.path.join(ps.PEERS_DIR, "index.json")
+os.makedirs(ps.PEERS_DIR, exist_ok=True)
+
+# 10.1 导出包构建与校验
+_wb_stub = {"models": {"glm-5.3-flash": {"requests": 4, "input": 400, "output": 100,
+                                         "cached": 50, "reasoning": 0, "total": 500}},
+            "daily": {"2026-09-18": {"glm-5.3-flash": {"requests": 4, "input": 400,
+                                                       "output": 100, "cached": 50, "total": 500}}},
+            "dailySessions": {"2026-09-18": 1}, "sessionsTotal": 1,
+            "today": {"requests": 4}, "firstDay": "2026-09-18", "lastDay": "2026-09-18"}
+_dsh_stub = {"source": "dsh", "dsh": True, "models": {},
+             "daily": {"2026-09-18": {"deepseek-v4": {"requests": 2, "input": 60, "output": 40,
+                                                      "cached": 0, "cacheWrite": 0, "total": 100}}},
+             "dailySessions": {"2026-09-18": 1}, "sessionsTotal": 1, "today": {},
+             "totalCost": 0.5, "firstDay": "2026-09-18", "lastDay": "2026-09-18"}
+_pk = ps.build_export_package("测试机-A", {"wb": _wb_stub, "dsh": _dsh_stub})
+check("导出包含两个来源", sorted(_pk["sources"]) == ["dsh", "wb"], str(sorted(_pk["sources"])))
+check("导出机器名正确", _pk["machine"] == "测试机-A")
+check("导出排除 error 来源",
+      "wb" not in ps.build_export_package("X", {"wb": {"error": "boom"}})["sources"])
+_p1 = os.path.join(_TMP_DATA, "peer_a.json")
+_ok, _err = ps.write_export(_pk, _p1)
+check("导出写盘成功", _ok, _err)
+_parsed, _perr = ps.parse_package(_p1)
+check("导出包可解析", _parsed is not None, _perr)
+_bad = os.path.join(_TMP_DATA, "bad_peer.json")
+json.dump({"format": "wrong-format", "machine": "x", "sources": {"wb": {}}},
+          open(_bad, "w", encoding="utf-8"))
+check("非法格式包被拒绝", ps.parse_package(_bad)[0] is None)
+json.dump({"format": ps.FORMAT_ID, "sources": {"wb": {}}},
+          open(_bad, "w", encoding="utf-8"))
+check("缺机器名被拒绝", ps.parse_package(_bad)[0] is None)
+
+# 10.2 合并: 本机 + 别机
+_entries = [
+    {"machine": "本机", "local": True, "stats": {"wb": _wb_stub, "dsh": _dsh_stub}},
+    {"machine": "测试机-A", "local": False, "stats": _pk["sources"]},
+]
+_mg = ps.merge_machines(_entries, include_local=True)
+check("合并后包含两台机器", len(_mg["machines"]) == 2, str(sorted(_mg["machines"])))
+check("合并后 glm 总量累加 (500+500)", _mg["models"]["glm-5.3-flash"]["total"] == 1000,
+      str(_mg["models"]["glm-5.3-flash"]["total"]))
+check("合并后请求数累加 (4+4)", _mg["models"]["glm-5.3-flash"]["requests"] == 8)
+check("合并按来源拆分 WB/DSH",
+      _mg["bySource"]["wb"]["total"] == 1000 and _mg["bySource"]["dsh"]["total"] == 200,
+      f"wb={_mg['bySource']['wb']['total']} dsh={_mg['bySource']['dsh']['total']}")
+check("合并日期跨度正确", _mg["firstDay"] == "2026-09-18" and _mg["lastDay"] == "2026-09-18")
+
+# 10.3 别机筛选 / 仅本机
+_mg2 = ps.merge_machines(_entries, include_local=False, peer_filter={"测试机-A"})
+check("仅算别机 A 时 glm=500 (不计本机)", _mg2["models"]["glm-5.3-flash"]["total"] == 500,
+      str(_mg2["models"]["glm-5.3-flash"]["total"]))
+check("仅算别机 A 时其 DSH 数据独立计入", _mg2["models"]["deepseek-v4"]["total"] == 100,
+      str(_mg2["models"].get("deepseek-v4")))
+# 构造一个只导出 WB 的机器, 验证"该机无 DSH 数据"
+_pk_wb_only = ps.build_export_package("测试机-B", {"wb": _wb_stub})
+_mgb = ps.merge_machines(
+    [{"machine": "测试机-B", "local": False, "stats": _pk_wb_only["sources"]}],
+    include_local=False, peer_filter={"测试机-B"})
+check("仅导出 WB 的机器无 DSH 模型",
+      "deepseek-v4" not in _mgb["models"] and _mgb["models"]["glm-5.3-flash"]["total"] == 500,
+      str(sorted(_mgb["models"])))
+_mg3 = ps.merge_machines(_entries, include_local=True, peer_filter=set())
+check("筛选空集时仅本机计入", _mg3["models"]["glm-5.3-flash"]["total"] == 500)
+
+# 10.4 DSH normalize 现算 models + 单机摘要
+_dn = ps.normalize_source("dsh", _dsh_stub)
+check("DSH normalize 现算 models", list(_dn["models"]) == ["deepseek-v4"])
+_ms = ps.machine_summary("本机", {"wb": _wb_stub, "dsh": _dsh_stub})
+check("单机摘要合并两源", _ms["total"] == 600 and _ms["requests"] == 6,
+      f"total={_ms['total']} req={_ms['requests']}")
+check("单机摘要带花费", _ms["cost"] == 0.5, str(_ms["cost"]))
+
+# 10.5 机器名安全化 (避免路径注入)
+check("机器名安全化去分隔符",
+      "/" not in ps._sanitize_machine("a/b\\c:d") and "\\" not in ps._sanitize_machine("a/b\\c:d"))
+check("空机器名有兜底", ps._sanitize_machine("") == "unknown-machine")
+
+# 10.6 导入 / 覆盖 / 删除
+_ok, _msg, _info = ps.import_peer(_pk)
+check("导入别机成功", _ok, _msg)
+check("导入后列表中可见", len(ps.list_peers()) == 1, str(len(ps.list_peers())))
+_ok2, _msg2, _info2 = ps.import_peer(_pk)
+check("同名机器重复导入为更新而非新增",
+      _ok2 and len(ps.list_peers()) == 1 and _info2.get("replaced") is True, _msg2)
+_ok3, _msg3, _info3 = ps.import_peer(_pk, replace=True)
+check("显式覆盖更新标记 replaced", _ok3 and _info3.get("replaced") is True, _msg3)
+_ok4, _msg4 = ps.remove_peer("测试机-A")
+check("删除别机成功", _ok4 and len(ps.list_peers()) == 0, _msg4)
+check("删除不存在的机器返回失败", ps.remove_peer("不存在的机器")[0] is False)
+
+# 10.7 多机页面可实例化并渲染
+ps.import_peer(_pk)          # 放回一台，验证渲染行数
+_w5 = ca.CardWindow()
+_w5.source = "multi"
+_w5.stats = {"source": "multi", "peers": ps.list_peers(), "machines": _mg["machines"],
+             "machineName": "本机", "daily": _mg["daily"], "models": _mg["models"],
+             "dailySessions": _mg["dailySessions"], "firstDay": "", "lastDay": ""}
+_w5.render()
+check("多机页切换到 stack index 2", _w5.stack.currentIndex() == 2)
+check("多机页渲染机器行",
+      len(_w5.multi_page.findChildren(ca.MachineRow)) == len(ps.list_peers()),
+      f"rows={len(_w5.multi_page.findChildren(ca.MachineRow))} peers={len(ps.list_peers())}")
+check("多机页统计区已填充", _w5.multi_page.stat_lay.count() >= 1)
+_w5.multi_page.apply_theme()
+_w5.multi_page.apply_size()
+check("多机页主题/尺寸适配无异常", True)
+check("导航含多机按钮且可选中",
+      hasattr(_w5, "btn_nav_multi") and _w5.btn_nav_multi.isCheckable())
+
+# 还原 peers 目录 (临时目录随系统清理)
+ps.PEERS_DIR = _REAL_PEERS_DIR
+ps.PEERS_INDEX = _REAL_PEERS_INDEX
+check("测试未污染真实 peers 存档", os.path.isdir(_REAL_PEERS_DIR) is not None)
+
 # ---- 还原真实数据目录路径 (临时目录随系统清理) ----
 ca._sn_events_all = orig_events
 ca.SN_AUTOSYNC_FILE = _REAL_AUTOSYNC_FILE

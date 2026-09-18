@@ -17,10 +17,18 @@ import sys
 import time
 
 # ---- 可移植性兜底（exe 不在项目目录里时使用）----
-FALLBACK_PROJECT = r"C:\Users\a3564\WorkBuddy\2026-08-25-04-20-35\token-stats"
+# 全部基于当前用户目录动态推导, 不再写死用户名, 跨机器可直接复用
+HOME = os.path.expanduser("~")
+# 兜底项目目录候选（优先 exe 同目录, 见 find_project）；以下按顺序回退
+FALLBACK_CANDIDATES = [
+    os.path.join("F:\\杂事", "token-stats"),            # 本机工作区常见位置
+    os.path.join(HOME, "WorkBuddy", "token-stats"),    # 另一台电脑的标准位置
+    os.path.join(HOME, "token-stats"),
+]
 PYTHONW_CANDIDATES = [
-    r"C:\Users\a3564\.workbuddy\binaries\python\envs\pyside6\Scripts\pythonw.exe",
-    r"C:\Users\a3564\.workbuddy\binaries\python\envs\default\Scripts\pythonw.exe",
+    os.path.join(HOME, ".workbuddy", "binaries", "python", "envs", "pyside6", "Scripts", "pythonw.exe"),
+    os.path.join(HOME, ".workbuddy", "binaries", "python", "envs", "default", "Scripts", "pythonw.exe"),
+    os.path.join(HOME, ".workbuddy", "binaries", "python", "versions", "3.13.12", "pythonw.exe"),
 ]
 DATA_DIR = os.path.join(os.path.expanduser("~"), ".workbuddy", "plugins", "data", "token-usage-stats")
 LOG = os.path.join(DATA_DIR, "launcher.log")
@@ -43,7 +51,10 @@ def find_project():
     for cand in (here, os.path.dirname(here)):
         if os.path.exists(os.path.join(cand, APP_SCRIPT)):
             return cand
-    return FALLBACK_PROJECT
+    for cand in FALLBACK_CANDIDATES:
+        if os.path.exists(os.path.join(cand, APP_SCRIPT)):
+            return cand
+    return FALLBACK_CANDIDATES[-1]
 
 
 def find_pythonw():
