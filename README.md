@@ -96,7 +96,18 @@
 
 ### 5.1 为机器命名
 
-首次使用先给本机起个名字（如「台式机」「笔记本」），导出时用于标识来源。在「多机合并」页点「改名」即可。
+首次使用先给本机起个名字（如「台式机」「笔记本」），导出时用于标识来源。
+
+**点名字框即可就地改名，不再弹窗**（第 53 轮调整）：点一下机器名区域进入编辑态，
+输入框已预填当前名字并全选，改完后：
+
+| 操作 | 结果 |
+|---|---|
+| 按 `Enter` / 点「保存」/ 点输入框外任意处 | **提交**新名字 |
+| 按 `Esc` / 点「取消」 | **放弃**修改，恢复原名字 |
+
+名字为空或与原名相同时不会落盘、不触发任何写入。改动会立刻写进本机配置，
+下次导出即用新名字标识。
 
 ### 5.2 导出本机数据
 
@@ -156,6 +167,25 @@
 
 > ⚠️ **基类必须是真正的 `QDialog`，不能是 `QFrame`。** 第 52 轮踩过的坑：早期用 `GlassPodFrame(QFrame)` + 手写 `QEventLoop` + `Qt.Dialog` 标志来"假装"模态，实测 `isModal()` 为 `False`、`adjustSize()` 算不出 `sizeHint`（尺寸恒为 640×480 默认值），Windows 下既不抢焦点也压不住主窗，**表现为弹窗根本看不见**。改用 `QDialog` + 原生 `exec()` 后模态与尺寸均正常。
 
+> ⚠️ **`add_field()` 里必须补一次 `apply_theme()`。** 第 53 轮的 bug：`__init__` 在末尾调 `apply_theme()`，而那时 `self._field` 还是 `None`，于是"给输入框套主题样式"那段分支**从未执行过**——输入框在亮/暗两种主题下都渲染成纯白（实测 `styleSheet` 长度为 0，中心像素 `rgb(255,255,255)`）。现在 `add_field()` 建好 `QLineEdit` 后立刻 `self.apply_theme()`。
+
+> ⚠️ **`add_field()` 后必须重算高度，且要逐层 `invalidate()`。** 构造期的 `sizeHint` 只反映**当时已有**的内容，并会把 `minimumHeight` 锁死在该值上。追加输入框后直接 `adjustSize()` **不会长高**（实测 113 → 113，输入框被裁）。`_fit()` 里的做法：先 `invalidate()+activate()` 内层 `_wrap_lay`（输入框加在这个内层 `QHBoxLayout` 上），再处理外层 `QVBoxLayout`，然后 `setMinimumHeight(0)` 解开旧锁再重设。实测 `sizeHint` 113 → 160，输入框 `y=27` 不再被裁。
+
+### 6.2.2 列表重绘：必须清空全部 layout item
+
+刷新 `peer_lay` / `stat_lay` 时**不能**只 `while lay.count(): takeAt(0).widget()`：
+
+1. `addStretch()` 插入的是 **spacer item**，`widget()` 返回 `None` —— 取不到就会永远排在最前，越积越多；
+2. `deleteLater()` 是"稍后删除"，旧控件仍挂在 parent 上 —— `findChildren()` 越数越多（实测骨架行渲染完 1 个后一直残留）。
+
+统一走 `MultiMachinePage._clear_layout(lay)`：逐项 `takeAt(0)`，`widget` 非空则 `setParent(None)` + `deleteLater()`。
+
+### 6.2.3 首帧占位：不要先显示空态再长数据
+
+进入多机页时，合并统计要等后台扫描返回（约 100ms）。这段时间若先渲染"暂无统计数据"，数据到位后整列统计条会**突然长出来**（浅猫反馈的"刷的一下出来"）。
+
+`MultiMachinePage.render(..., pending=True)` 时改用 `StatRankRow(placeholder=True)` 骨架行（与真实行**同高 70px**，画暗色条块），scope 文案显示「正在汇总…」。`_skeleton_n` 记住上一轮台数，让骨架与内容同高，切换时不跳变。
+
 ### 6.2.1 玻璃底板必须唯一（禁止双层叠加）
 
 `GlassPodFrame` 的子卡片**不能**再放一个 `GlassPodFrame` 当行容器：两层玻璃底叠加后内层明显比外层深/亮，暗色模式下尤其突兀（外壳浅灰、内层近黑）。行级容器（如 `MachineRow`）用普通 `QWidget`，自己画**一层**中性浅底 + 细描边即可。
@@ -209,7 +239,7 @@ QT_QPA_PLATFORM=offscreen \
 ~/.workbuddy/binaries/python/envs/pyside6/Scripts/python.exe tools/syntax_check.py
 ```
 
-> 测试覆盖：切页 race 防护、同步数学、cURL 解析、指纹/零指纹、真实接口样例、单列渲染、窗口位置统一、代理 10061 直连重试、多机数据源（导出/导入/合并/覆盖/命名）、视觉基座（按钮工厂/自绘弹窗/导航自绘/主题联动/排行条），共 **192 项断言**，需全过。
+> 测试覆盖：切页 race 防护、同步数学、cURL 解析、指纹/零指纹、真实接口样例、单列渲染、窗口位置统一、代理 10061 直连重试、多机数据源（导出/导入/合并/覆盖/命名）、导入语义（新增 vs 覆盖）、视觉基座（按钮工厂/自绘弹窗/导航自绘/主题联动/排行条）、暗色输入框、内联改名、骨架占位行，共 **268 项断言**，需全过。
 
 > **截图复核技巧**：`QT_QPA_PLATFORM=offscreen` 下 Qt 找不到系统字体，需手工 `QFontDatabase.addApplicationFont()` 注册 `C:\Windows\Fonts\msyh.ttc` 等，否则中文全是豆腐块。另外 `widget.grab()` 会把圆角外的透明区合成成 `#efefef` 灰，**不要据此误判卡片底色**——要看真实底色请 `grab()` 整个窗口并按坐标采样。
 
@@ -226,7 +256,7 @@ QT_QPA_PLATFORM=offscreen \
 ### 7.3 提交流程（Git · 本地仓库）
 
 1. 在 `pyside6` venv 下 `python -m py_compile card_app.py scanner.py peer_store.py`；
-2. 跑 `test_switch_race.py` 确认 192 项全绿；
+2. 跑 `test_switch_race.py` 确认 268 项全绿；
 3. **先更新根目录《协作进度.md》**（§二 演进历程 + §八 协作者备注登记本轮）；
 4. 定点 `git add` 相关文件后提交，信息格式：`第N轮：<一句话说明>`；**勿用 `add -A`**；
 5. 仓库仅本地管理，**不 `git push`**、不添加远程；回滚用 `git log --oneline` 查哈希。
@@ -240,19 +270,58 @@ token-stats/
 ├── card_app.py          # 主程序（UI + 商汤同步）
 ├── scanner.py           # 增量扫描聚合
 ├── peer_store.py        # 多机数据源：导出/导入/合并/命名
-├── test_switch_race.py  # 回归测试（192 项）
+├── test_switch_race.py  # 回归测试（268 项）
 ├── 协作进度.md           # ★ 主协作文档（架构/演进/Git 规范/备注区）
+├── README.md            # 本文件
+├── .gitignore           # 版本库排除规则
+├── TokenStats.exe       # 编译产物（launcher.py 的 PyInstaller onefile）
+├── launcher.py          # 轻启动器源码（不含 PySide6）
+├── sn_login.py          # 商汤登录
+├── sn_autologin_fetch.py# 商汤积分抓取
 ├── start_card.bat       # 启动器（规范名）
 ├── 启动统计悬浮球.bat    # 启动器别名
 ├── 启动统计悬浮球.vbs    # 静默启动（日常主推）
 ├── enable_autostart.bat # 开机自启
-├── legacy/              # 已弃用旧方案（app.py / panel.html，不入库）
-└── docs/assets/previews/ # 界面预览图
+├── 桌面图标指向exe.bat   # 桌面快捷方式
+├── 商汤自动登录.bat      # 商汤登录入口
+├── 重新打包exe.bat       # 重新打包 exe
+├── assets/              # 现役素材（含 4 个并行桌宠主题）
+│   ├── pet/             #   v1 经典素材
+│   ├── pet_v2/          #   v2 新版素材（高清）
+│   ├── pet_v3r/         #   v3 最新素材（与原版合并）
+│   ├── pet_v4/          #   v4 deepseek娘V4Pro
+│   ├── pet_alt/         #   退役帧存档（测试依赖，勿动）
+│   ├── pet_v3_add/      #   补充帧（测试依赖，勿动）
+│   └── app_icon.{ico,png}
+├── docs/                # 文档与预览
+│   ├── 素材饱和度优化.md
+│   ├── V3补充素材清单.md
+│   └── assets/previews/ #   界面预览图
+├── tools/               # 现役脚本
+│   ├── syntax_check.py      # 全量语法检查
+│   ├── restart_app.py       # 重启卡片应用
+│   ├── build_exe.py         # 打包主程序 exe
+│   ├── build_launcher.py    # 打包轻启动器
+│   ├── make_app_icon.py     # 生成应用图标
+│   └── metrics_regression.py# 指标回归
+└── _archive/            # 归档区（不入库，见 _archive/README.md）
+    ├── assets-debug/        #   根级调试截图（22 项）
+    ├── assets-pet-legacy/   #   桌宠历史版本（12 项）
+    ├── docs-reviews/        #   历史审查页（15 项）
+    ├── root-legacy/         #   根目录历史物（3 项）
+    └── tools-once/          #   一次性诊断脚本（46 项）
 ```
 
+**归档约定**（2026-09-19 第 53 轮建立）：一切**历史备份、调试中间产物、一次性脚本、
+已废弃的审查页**统一放进 `_archive/` 对应分类，不进版本库；项目内只保留
+「跑起来必需 + 当前在维护」的东西。归档清单与取回方法见
+[`_archive/README.md`](_archive/README.md)。
+
 - 协作与版本管理：[`协作进度.md`](协作进度.md)
+- 归档说明：[`_archive/README.md`](_archive/README.md)
 - 外部数据/配置目录：`~/.workbuddy/plugins/data/token-usage-stats/`
 - 别机数据源目录：`~/.workbuddy/plugins/data/token-usage-stats/peers/`
+- 归档前遗留目录：`legacy/`（app.py / panel.html）已移入 `_archive/root-legacy/`
 
 ---
 

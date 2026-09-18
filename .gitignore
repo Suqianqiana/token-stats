@@ -1,54 +1,34 @@
-# 字节码与缓存
+# ============================================================
+# .gitignore  —  token-stats
+# 仓库定位：以「源码 + 文档」为唯一真相源。
+# 一切可再生的、历史的、体积大的中间产物都不进版本库（磁盘保留）。
+# 2026-09-19 第53轮整理：历史物已集中到 _archive/，故原先逐条列的
+# 素材/审查页排除规则全部收敛为一条 /_archive/。
+# ============================================================
+
+# --- 归档区：历史物集中存放，磁盘保留、不进版本库 ---
+/_archive/
+
+# --- 字节码与缓存 ---
 __pycache__/
 *.pyc
 
-# 归档（磁盘保留，不进版本库：仓库以「源码 + 文档」为唯一真相源）
-legacy/
-
-# 运行日志
+# --- 运行日志 ---
 *.log
 
-# 调试与临时产物（2026-09-15 整理）
+# --- 调试与临时产物 ---
 /_*.png
 /assets/_*.png
-/%SystemDrive%/
+/_*.txt
 *.bak
 *.bak.*
 
-# 误生成的重复副本与本地快捷方式（2026-09-19 第51轮整理）
-/ (*).*
+# --- 本地快捷方式 / 误生成的重复副本 ---
 *.lnk
+/ (*).*
 
-# 素材归档与中间产物（磁盘保留，不进版本库：仓库以「源码 + 文档」为唯一真相源）
-/assets/pet_v2_bak_preGreen/
-/assets/pet_v2_bak_preAlpha2/
-/assets/pet_v3r_bak_preV5/
-/assets/pet_*_discard/
-/assets/pet_v2_green/
-/assets/pet_v2_alpha/
-/assets/pet_v2_src/
-/assets/pet_v4_src/
-/assets/pet_v3/
-/assets/pet_v5/
-/assets/pet_v2_r24_windows.json
-/assets/pet_v2_green_qc.json
-/assets/pet_v3_qc.json
-/assets/pet_v3_windows.json
-/assets/pet_v5_qc.json
-/assets/pet_v5_windows.json
-
-# 体积较大的生成型检视页（可用 tools/review_*.py 重新生成）
-/docs/pet_v3_review.html
-/docs/pet_v2_green_review.html
-/docs/pet_v2_new_review.html
-/docs/pet_v4_review.html
-/docs/pet_v5_review.html
-/docs/pet_v3_add_review.png
-/docs/pet_v3r_review.png
-/docs/*_review.png
-/docs/pet_saturation_*.png
-
-# 饱和度实验区（可用 tools/enhance_pet_saturation.py 重新生成）
-/assets/pet_v3_sat/
-# 饱和度替换前的素材备份（体积大；git 历史里同样留有替换前的原素材，可回退）
-/assets/pet_v3r_bak_preSat_*/
+# --- 打包中间产物 ---
+/build/
+/dist/
+*.spec
+!TokenStats.spec

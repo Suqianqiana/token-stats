@@ -1157,6 +1157,155 @@ try:
 finally:
     ps.PEERS_DIR, ps.PEERS_INDEX = _ps13_real
 
+# ============================================================ 14. 第53轮: 输入框暗色 / 就地改名 / 统计骨架
+print("== 14. 弹窗输入框暗色 + 机器框就地编辑 + 按机统计骨架 ==")
+
+# 14.1 弹窗输入框必须真正拿到主题样式 (曾经: __init__ 的 apply_theme 早于 add_field,
+#      导致 _field 为 None 时那段分支从不执行 → styleSheet 长度 0、暗色下渲染纯白)
+_theme_backup_53 = ca.theme_state["dark"]
+try:
+    for _dk in (False, True):
+        ca.theme_state["dark"] = _dk
+        ca.refresh_palette()
+        _d53 = ca.GlassDialog(None, "修改机器名", "说明", icon="ask", ok_text="保存")
+        _h_before = _d53.height()          # 加输入框前的高度
+        _d53.add_field("机器名", "台式机", "例如：笔记本")
+        _f53 = _d53._field
+        check("add_field 后输入框非空 (dark=%s)" % _dk, _f53 is not None)
+        check("add_field 后输入框已套主题样式 (dark=%s)" % _dk,
+              len(_f53.styleSheet()) > 0, "len=%d" % len(_f53.styleSheet()))
+        _qss = _f53.styleSheet()
+        check("输入框背景走全局调色板 TRACK (dark=%s)" % _dk,
+              ca.qrgba(ca.TRACK) in _qss, _qss[:90])
+        check("输入框文字色走全局调色板 TEXT (dark=%s)" % _dk,
+              ca.qname(ca.TEXT) in _qss, _qss[:90])
+        # 暗色下必须是深底 + 浅字, 不能是浅底
+        if _dk:
+            _dark_bg = ca.qrgba(ca.TRACK)
+            check("暗色输入框底色为深色 (非浅底)", "rgba(38,43,53" in _dark_bg, _dark_bg)
+            check("暗色输入框文字为浅色", ca.qname(ca.TEXT) == "#f0f3f8", ca.qname(ca.TEXT))
+        # 加输入框后弹窗必须变高 (否则输入框被裁) —— 用增量断言, 不写死绝对高度
+        check("add_field 后弹窗已按新增一行重算高度 (dark=%s)" % _dk,
+              _d53.height() > _h_before, "before=%d after=%d" % (_h_before, _d53.height()))
+        _d53.close()
+finally:
+    ca.theme_state["dark"] = _theme_backup_53
+    ca.refresh_palette()
+
+# 14.2 机器框就地编辑 (改名不再弹窗)
+_mb53 = ca.MachineBox("台式机")
+check("MachineBox 提供 name_edited 信号", hasattr(_mb53, "name_edited"))
+check("MachineBox 内嵌常驻输入框", isinstance(_mb53._edit, ca.QLineEdit))
+check("输入框初始隐藏 (非编辑态)", _mb53._edit.isHidden())
+check("MachineBox 初始非编辑态", _mb53._edit_mode is False)
+_mb53.start_edit()
+check("start_edit 后进入编辑态", _mb53._edit_mode is True)
+check("start_edit 后输入框显示", not _mb53._edit.isHidden())
+check("start_edit 预填当前机器名", _mb53._edit.text() == "台式机", _mb53._edit.text())
+_mb53.cancel_edit()
+check("cancel_edit 退出编辑态且隐藏输入框",
+      _mb53._edit_mode is False and _mb53._edit.isHidden())
+# 提交: 名字变化才发信号
+_got53 = []
+_mb53.name_edited.connect(lambda s: _got53.append(s))
+_mb53.start_edit()
+_mb53._edit.setText("新台式机")
+_mb53.commit_edit()
+check("commit_edit 发出 name_edited(新名字)", _got53 == ["新台式机"], str(_got53))
+check("commit_edit 后退出编辑态", _mb53._edit_mode is False)
+check("commit_edit 后本地名字已更新", _mb53.machine_name() == "新台式机")
+_mb53.start_edit()
+_mb53._edit.setText("新台式机")      # 同名
+_mb53.commit_edit()
+check("同名提交不重复发信号", _got53 == ["新台式机"], str(_got53))
+_mb53.start_edit()
+_mb53._edit.setText("   ")           # 空名
+_mb53.commit_edit()
+check("空名提交被忽略 (不落盘)", _got53 == ["新台式机"] and _mb53.machine_name() == "新台式机")
+# Esc 取消
+_mb53.start_edit()
+check("编辑态显示 保存/取消 两个按钮",
+      _mb53._saved_rect.width() > 0 and _mb53._cancel_rect.width() > 0)
+# 回归: 改名方法不得再使用弹窗 (断言"代码"而非注释 —— 该方法的 docstring 里
+# 为了记录决策仍会提到 dlg_prompt, 所以必须先剥掉文档串与注释再断言)
+_src_rename = _src[_src.find("    def _on_rename_machine(self"):]
+_src_rename = _src_rename[:_src_rename.find("\n    def ", 10)]
+# 剥掉三引号文档串
+_rn_body = _src_rename
+while '"""' in _rn_body:
+    _i1 = _rn_body.find('"""')
+    _i2 = _rn_body.find('"""', _i1 + 3)
+    if _i2 < 0:
+        break
+    _rn_body = _rn_body[:_i1] + _rn_body[_i2 + 3:]
+# 剥掉 # 行注释
+_rn_code = "\n".join(ln for ln in _rn_body.splitlines()
+                     if not ln.strip().startswith("#"))
+check("_on_rename_machine 代码中不再调用 dlg_prompt",
+      "dlg_prompt" not in _rn_code, _rn_code[:120].replace("\n", " | "))
+check("_on_rename_machine 代码中不再使用原生弹窗",
+      "QInputDialog" not in _rn_code and "QMessageBox" not in _rn_code)
+check("_on_rename_machine 直接落盘传入的名字",
+      "save_machine_name" in _rn_code and "text" in _rn_code)
+check("机器框 name_edited 已接到 machine_rename",
+      "machine_box.name_edited.connect(self.machine_rename.emit)" in _src)
+
+# 14.3 按机统计骨架态: 首帧不得显示「暂无统计数据」空态
+_w6 = ca.CardWindow()
+_w6.source = "multi"
+_src_peers53 = [{"machine": "笔记本", "sources": ["wb"], "imported_at": "2026-09-19T01:00:00",
+                 "digest": {"total_tokens": 100, "requests": 1,
+                            "first_day": "2026-09-01", "last_day": "2026-09-19"}}]
+# 初始骨架行数 (首次进入时 _skeleton_n=0 → 至少 1 行骨架)
+check("MultiMachinePage 有 _skeleton_n 记录", hasattr(_w6.multi_page, "_skeleton_n"))
+_w6.stats = {"source": "multi", "machines": {}, "peers": list(_src_peers53),
+             "machineName": "本机", "daily": {}, "models": {}, "dailySessions": {},
+             "firstDay": "", "lastDay": "", "pending": True}
+_w6._render_multi_page()
+_sks = [r for r in _w6.multi_page.findChildren(ca.StatRankRow) if r.placeholder]
+check("pending 首帧渲染骨架行 (非空态文案)", len(_sks) >= 1, f"n={len(_sks)}")
+check("骨架态 scope 文案为「正在汇总…」",
+      "正在汇总" in _w6.multi_page.stat_scope_lbl.text(),
+      _w6.multi_page.stat_scope_lbl.text())
+check("骨架行不显示空态提示",
+      len(_w6.multi_page.findChildren(ca.QLabel, "multi_empty_title")) == 0)
+# 数据到位: 骨架被真实行替换, 且行高一致 (观感不跳变)
+_full53 = {"本机": {"total": 999, "requests": 5, "firstDay": "a", "lastDay": "b", "local": True},
+           "笔记本": {"total": 100, "requests": 1, "firstDay": "a", "lastDay": "b", "local": False}}
+_w6.stats = {"source": "multi", "machines": dict(_full53), "peers": list(_src_peers53),
+             "machineName": "本机", "daily": {}, "models": {}, "dailySessions": {},
+             "firstDay": "", "lastDay": ""}
+_w6._render_multi_page()
+_sks2 = [r for r in _w6.multi_page.findChildren(ca.StatRankRow) if r.placeholder]
+_real2 = [r for r in _w6.multi_page.findChildren(ca.StatRankRow) if not r.placeholder]
+check("数据到位后骨架行全部清除", len(_sks2) == 0, f"n={len(_sks2)}")
+check("数据到位后渲染 2 条真实行", len(_real2) == 2, f"n={len(_real2)}")
+_hs = sorted({r.height() for r in _real2})
+check("骨架与真实行同高 (观感不跳变)", len(_hs) == 1, str(_hs))
+check("数据到位后 scope 恢复合计文案",
+      "合计" in _w6.multi_page.stat_scope_lbl.text(),
+      _w6.multi_page.stat_scope_lbl.text())
+
+# 14.4 布局清理: 反复 render 不得累积残留控件 / spacer
+_w6._render_multi_page()
+_w6._render_multi_page()
+_w6._render_multi_page()
+_rows_final = _w6.multi_page.findChildren(ca.StatRankRow)
+check("反复 render 不累积统计行 (无 deleteLater 泄漏)",
+      len(_rows_final) == 2, f"n={len(_rows_final)}")
+check("stat_lay 条目数稳定 (含 1 个 stretch)",
+      _w6.multi_page.stat_lay.count() == 3,
+      f"count={_w6.multi_page.stat_lay.count()}")
+check("peer_lay 条目数稳定 (含 1 个 stretch)",
+      _w6.multi_page.peer_lay.count() == 2,
+      f"count={_w6.multi_page.peer_lay.count()}")
+check("MultiMachinePage 提供 _clear_layout",
+      hasattr(_w6.multi_page, "_clear_layout"))
+check("render 使用 _clear_layout 清理两个列表",
+      "_clear_layout(self.stat_lay)" in _src and "_clear_layout(self.peer_lay)" in _src)
+_w6.close()
+check("CardWindow 提供 _apply_page", hasattr(_w5, "_apply_page"))
+
 # 还原 peers 目录 (临时目录随系统清理)
 ps.PEERS_DIR = _REAL_PEERS_DIR
 ps.PEERS_INDEX = _REAL_PEERS_INDEX

@@ -53,9 +53,10 @@ def res(*parts):
 
 
 from PySide6.QtCore import (Qt, QRectF, QObject, Signal, QTimer, QPoint, QRect,
-                            QPointF)
+                            QPointF, QEvent, QSize)
 from PySide6.QtGui import (QColor, QFont, QPainter, QPen, QBrush, QPainterPath,
-                           QLinearGradient, QImage, QGuiApplication, QIcon, QAction)
+                           QLinearGradient, QImage, QGuiApplication, QIcon, QAction,
+                           QFontMetrics)
 from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QVBoxLayout,
                                QHBoxLayout, QGridLayout, QFrame, QPushButton,
                                QScrollArea, QMenu, QSizePolicy, QPlainTextEdit,
@@ -576,6 +577,7 @@ class GlassDialog(QDialog):
         self._drag = None
         self._ok = False
         self._field = None
+        self._tag = None
         self._width = width
         self._build(title, message, ok_text, cancel_text, icon)
         self.apply_theme()
@@ -635,7 +637,15 @@ class GlassDialog(QDialog):
         self._brow = brow
 
     def add_field(self, label, text="", placeholder="", password=False):
-        """在正文下方追加一个带标签的输入框 (用于「改名」等场景)。"""
+        """在正文下方追加一个带标签的输入框 (用于「改名」等场景)。
+
+        @⚠ 2026-09-19 第53轮修复: 本方法是在 __init__ 之后才被调用的, 而
+        __init__ 里的 apply_theme() 执行时 self._field 还是 None —— 于是
+        「给输入框套主题样式」那段分支**从未执行过**。实测证据: 输入框
+        styleSheet 长度为 0、暗色模式下中心像素仍渲染成纯白 rgb(255,255,255),
+        表现为"弹窗输入框没适配暗色"。
+        现在本方法末尾补一次 apply_theme(), 保证控件建好即拿到当前主题样式。
+        """
         row = QHBoxLayout()
         row.setSpacing(8)
         row.setContentsMargins(0, 0, 0, 0)
@@ -654,6 +664,9 @@ class GlassDialog(QDialog):
         row.addWidget(edit, 1)
         self._wrap_lay.addLayout(row)
         self._field = edit
+        self._tag = tag
+        self.apply_theme()      # ← 建好即套主题 (修复: 原缺失)
+        self._fit()             # ← 加高后重算尺寸, 否则输入框会被裁掉
         return edit
 
     def field_value(self):
@@ -665,9 +678,26 @@ class GlassDialog(QDialog):
 
         QDialog + FramelessWindowHint 下 adjustSize() 会走布局的 sizeHint,
         这是它相对旧 QFrame 实现的关键区别 (旧实现恒得 640x480 默认值)。
+
+        @⚠ 2026-09-19 第53轮修正: 构造期的 sizeHint 只反映**当时已有**的内容,
+        且会把 minimumHeight 锁死在该值上 —— 之后 add_field() 追加输入框时,
+        若直接 adjustSize(), 高度**不会增长**(实测 113 → 113, 输入框被裁)。
+        根因: 布局需要一次 show/activate 周期才会重新协商尺寸约束。
+        解法: 先 `setMinimumHeight(0)` 解开旧约束, 再 activate → adjustSize。
         """
         self.setFixedWidth(self._width)
-        self.layout().activate()
+        lay = self.layout()
+        # 逐层 invalidate + activate: 只顶层的 invalidate 不够 —— add_field 把输入框
+        # 加在 **wrap 的内层 QHBoxLayout** 上, 必须让内层先算出自己的 sizeHint,
+        # 外层才拿得到正确总高。否则实测高度会停在旧值(113/145), 输入框被裁。
+        for sub in (self._wrap_lay, lay):
+            try:
+                sub.invalidate()
+                sub.activate()
+            except Exception:
+                pass
+        self.setMinimumHeight(0)              # 解开上一次锁定的最小高度
+        self.setMinimumHeight(lay.sizeHint().height())
         self.adjustSize()
         self._center_on(self._parent_win)
 
@@ -726,14 +756,18 @@ class GlassDialog(QDialog):
             " border-radius:6px; font-size:11px; }"
             "QPushButton:hover{ background:rgba(224,82,82,0.14); color:#e05252; }" % qname(TEXT3))
         if self._field is not None:
-            tag = self.findChild(QLabel, "dlg_tag")
+            tag = getattr(self, "_tag", None) or self.findChild(QLabel, "dlg_tag")
             if tag is not None:
-                tag.setStyleSheet(f"color:{qname(TEXT3)}; font-size:{m['sn_sub_pt'] + 0.3}pt;")
+                tag.setStyleSheet(f"color:{qname(TEXT3)}; font-size:{m['sn_sub_pt'] + 0.3}pt;"
+                                  " background:transparent;")
+            # 输入框必须走全局调色板: 暗色下若是浅底, 浅色文字会完全不可读
             self._field.setStyleSheet(
                 f"QLineEdit{{ background:{qrgba(TRACK)}; color:{qname(TEXT)};"
                 f" border:1px solid {qrgba(BORDER)}; border-radius:7px; padding:5px 9px;"
-                f" font-size:{m['opt_btn_px']}px; }}"
-                f"QLineEdit:focus{{ border:1px solid #3b6fe0; }}")
+                f" font-size:{m['opt_btn_px']}px; selection-background-color:#3b6fe0;"
+                f" selection-color:#ffffff; }}"
+                f"QLineEdit:hover{{ border:1px solid #6b8fe8; }}"
+                f"QLineEdit:focus{{ border:1px solid #3b6fe0; background:{qrgba(HOVER)}; }}")
         style_btn(self.btn_ok, "primary")
         if self.btn_cancel is not None:
             style_btn(self.btn_cancel, "ghost")
@@ -3606,15 +3640,21 @@ class StatRankRow(QWidget):
       · 上行: 名次徽标 + 机器名 (+本机圆点) ............ Token 总量 (右, 加大)
       · 下行: 用量占比条 (从名次后通栏铺到右侧)
       · 底行: 请求数 · 数据区间 (小字, 右对齐)
+
+    @2026-09-19 第53轮: 新增 `placeholder` 骨架态 —— 首次进入多机页时完整合并
+    数据要等后台 scan 回来(约 100ms), 旧实现这段时间是「空态文案」, 数据到位后
+    整列统计条突然长出来, 观感就是浅猫说的「刷的一下出来」。骨架态用同样行高
+    画一条暗淡占位条, 让首帧就有稳定骨架, 数据到位后原地替换不再跳变。
     """
 
-    def __init__(self, rank, machine, d, mx, is_local, parent=None):
+    def __init__(self, rank, machine, d, mx, is_local, parent=None, placeholder=False):
         super().__init__(parent)
         self.rank = rank
         self.machine = machine
         self.total = d.get("total", 0)
         self.mx = mx or 1
         self.is_local = is_local
+        self.placeholder = placeholder
         self.requests = d.get("requests", 0)
         self.first_day = d.get("firstDay", "") or "—"
         self.last_day = d.get("lastDay", "") or "—"
@@ -3629,14 +3669,22 @@ class StatRankRow(QWidget):
         self.setFixedHeight(int(self.FOOT_Y + m["sn_date_pt"] + 14))
 
     def enterEvent(self, ev):
+        # 骨架态不响应 hover (还没有真实内容可强调)
+        if self.placeholder:
+            return
         self._hover = True
         self.update()
 
     def leaveEvent(self, ev):
+        if self.placeholder:
+            return
         self._hover = False
         self.update()
 
     def paintEvent(self, ev):
+        if self.placeholder:
+            self._paint_placeholder(ev)
+            return
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
@@ -3726,83 +3774,267 @@ class StatRankRow(QWidget):
                    Qt.AlignLeft | Qt.AlignTop,
                    f"{self.requests:,} 请求   ·   {self.first_day} ~ {self.last_day}")
 
+    def _paint_placeholder(self, ev):
+        """骨架占位: 与真实行**同高同结构**, 只把内容换成暗淡色块。
+
+        @2026-09-19 第53轮新增。目的不是"转圈提示", 而是让首帧与数据到位后的
+        帧在**几何上完全一致** —— 用户看不到"从无到有"的突增, 只看到占位块被
+        真实内容原地替换。色块用 TEXT3 低透明度, 深浅色都自然。
+        """
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        C = RANK_COL
+
+        base = QColor(ZEBRA if self.rank % 2 == 0 else CARD)
+        base.setAlpha(150 if theme_state["dark"] else (255 if self.rank % 2 == 0 else 0))
+        if base.alpha() > 0:
+            p.setPen(Qt.NoPen)
+            p.setBrush(base)
+            p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 9, 9)
+
+        sk = QColor(TEXT3)
+        sk.setAlpha(46 if theme_state["dark"] else 40)
+        p.setPen(Qt.NoPen)
+        p.setBrush(sk)
+
+        # 上行: 名次圆 + 机器名占位块 (+ 右侧总量占位块)
+        cy = 8.0 + self.ROW_TOP_H / 2.0
+        p.drawEllipse(QRectF(C["rank_x"], cy - C["rank_d"] / 2.0, C["rank_d"], C["rank_d"]))
+        p.drawRoundedRect(QRectF(C["name_x"], cy - 5.0, 84.0, 10.0), 5, 5)
+        tw = 68.0
+        p.drawRoundedRect(QRectF(w - C["right_pad"] - tw, cy - 6.0, tw, 12.0), 6, 6)
+
+        # 中行: 占比条占位 (细条, 只用 30% 宽度以示"未填满")
+        by, bh = self.BAR_Y, self.BAR_H
+        bar_x = C["name_x"]
+        avail = max(40.0, w - bar_x - C["right_pad"])
+        p.drawRoundedRect(QRectF(bar_x, by, avail * 0.30, bh), bh / 2, bh / 2)
+
+        # 底行: 请求/区间占位
+        fy = self.FOOT_Y
+        p.drawRoundedRect(QRectF(bar_x, fy + 2.0, 148.0, 8.0), 4, 4)
+        p.end()
+
 
 class MachineBox(QWidget):
-    """本机机器框 (2026-09-19 第52轮新增)
+    """本机机器框 —— 内联编辑式改名 (2026-09-19 第53轮重做)
 
-    替代原来的 MachineChip 胶囊: 胶囊只够放一个名字, 而浅猫要求「框框放到左边,
-    导出导入按钮放到右边」→ 需要一个**占满左侧、有明确边界**的容器, 既能显示
-    「本机 · 机器名」又能内嵌「改名」入口。自绘描边框 + 左侧主机图标 + 名字 +
-    右侧改名文字链, 宽度由布局拉伸决定 (不再固定宽度)。
+    浅猫："改名不需要弹窗，直接在原有名字框就能输入修改然后保存会不会更好？"
+    → 把原来「点改名 → 弹模态框 → 输入 → 保存」的三步流程, 改成**框内就地编辑**:
+      点「改名」→ 名字原地变输入框 + 出现 保存/取消 → Enter 提交 / Esc 取消。
+
+    实现要点 (踩坑记录):
+      - 输入框是**常驻子控件**、平时 hide(), 进入编辑态才 show() 并 setFocus()。
+        不要每次新建 QLineEdit, 否则焦点/事件循环时序难控。
+      - `_overlay` 为真时 paintEvent **提前 return**: 让子控件完整露出,
+        否则自绘的名字文字会跟输入框叠在一起。
+      - 保存走 `name_edited` 信号把新名字交给页面, 由页面落盘并刷新。
     """
 
     rename_requested = Signal()
+    name_edited = Signal(str)
 
     def __init__(self, name="—", parent=None):
         super().__init__(parent)
         self._name = name or "—"
         self._hover = False
         self._rename_rect = QRectF()
+        self._saved_rect = QRectF()
+        self._cancel_rect = QRectF()
+        self._edit_mode = False
+        self._edit_hover = ""          # "" / "save" / "cancel"
         self._font = QFont("Microsoft YaHei UI", 9.0, QFont.Bold)
         self._sub_font = QFont("Microsoft YaHei UI", 8.0)
         self.setMouseTracking(True)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        # 常驻输入框 (平时隐藏)
+        self._edit = QLineEdit(self)
+        self._edit.setObjectName("machine_edit")
+        self._edit.hide()
+        self._edit.returnPressed.connect(self.commit_edit)
+        self._edit.installEventFilter(self)
+
         self.apply_size()
 
+    # ---------- 名字 ----------
     def set_name(self, name):
         self._name = name or "—"
         self.update()
 
+    def machine_name(self):
+        return self._name
+
+    # ---------- 尺寸 / 主题 ----------
     def apply_size(self):
         m = curr_metric()
         self._font = QFont("Microsoft YaHei UI", m["sn_sub_pt"] + 0.2, QFont.Bold)
         self._sub_font = QFont("Microsoft YaHei UI", m["sn_date_pt"] - 0.2)
-        self.setFixedHeight(m["nav_btn_h"] - 2)
+        h = m["nav_btn_h"] - 2
+        self.setFixedHeight(h)
+        self._edit.setFixedHeight(h - 8)
+        self._edit.setStyleSheet(
+            f"QLineEdit#machine_edit{{ background:{qrgba(TRACK)}; color:{qname(TEXT)};"
+            f" border:1px solid #3b6fe0; border-radius:6px; padding:1px 7px;"
+            f" font-size:{m['opt_btn_px']}px; selection-background-color:#3b6fe0;"
+            f" selection-color:#ffffff; }}")
         self.update()
 
     def apply_theme(self):
+        self.apply_size()
+
+    # ---------- 编辑态 ----------
+    def start_edit(self):
+        """进入就地编辑: 输入框覆盖名字区, 右侧「改名」换成 保存/取消。"""
+        if self._edit_mode:
+            return
+        self._edit_mode = True
+        # 先算好按钮与输入框几何 —— 命中判定不能等 paintEvent 才建立,
+        # 否则"刚进入编辑态就点保存"会因矩形为空而落空。
+        self._recalc_edit_btns()
+        self._layout_edit()
+        self._edit.setText(self._name if self._name != "—" else "")
+        self._edit.selectAll()
+        self.update()
+        self._edit.show()
+        self._edit.raise_()
+        self._edit.setFocus()
+
+    def cancel_edit(self):
+        if not self._edit_mode:
+            return
+        self._edit_mode = False
+        self._edit_hover = ""
+        self._edit.hide()
         self.update()
 
+    def commit_edit(self):
+        """提交新名字: 去空白后经信号交给页面落盘。名字未变则等同取消。"""
+        if not self._edit_mode:
+            return
+        text = self._edit.text().strip()
+        self.cancel_edit()
+        if not text or text == self._name:
+            return
+        self._name = text          # 先本地生效, 页面落盘后再 set_name 覆盖一次即可
+        self.update()
+        self.name_edited.emit(text)
+
     # ---------- 交互 ----------
+    def eventFilter(self, obj, ev):
+        """输入框失焦时自动提交 (点空白处也不会丢改动)。"""
+        if obj is self._edit and ev.type() == QEvent.FocusOut:
+            if self._edit_mode:
+                self.commit_edit()
+        return super().eventFilter(obj, ev)
+
     def enterEvent(self, ev):
         self._hover = True
         self.update()
 
     def leaveEvent(self, ev):
         self._hover = False
+        self._edit_hover = ""
         self.update()
 
+    def keyPressEvent(self, ev):
+        if self._edit_mode and ev.key() == Qt.Key_Escape:
+            self.cancel_edit()
+            ev.accept()
+            return
+        super().keyPressEvent(ev)
+
+    def resizeEvent(self, ev):
+        self._layout_edit()
+        super().resizeEvent(ev)
+
+    def mouseMoveEvent(self, ev):
+        pos = ev.position()
+        was = self._edit_hover
+        if self._edit_mode:
+            if self._saved_rect.contains(pos):
+                self._edit_hover = "save"
+            elif self._cancel_rect.contains(pos):
+                self._edit_hover = "cancel"
+            else:
+                self._edit_hover = ""
+        else:
+            self._edit_hover = ""
+        self.setCursor(Qt.PointingHandCursor if (
+            self._rename_rect.contains(pos) or self._edit_hover) else Qt.ArrowCursor)
+        if was != self._edit_hover:
+            self.update()
+        super().mouseMoveEvent(ev)
+
     def mouseReleaseEvent(self, ev):
-        if ev.button() == Qt.LeftButton and self._rename_rect.contains(ev.position()):
+        if ev.button() != Qt.LeftButton:
+            super().mouseReleaseEvent(ev)
+            return
+        pos = ev.position()
+        if self._edit_mode:
+            if self._saved_rect.contains(pos):
+                self.commit_edit()
+                ev.accept()
+                return
+            if self._cancel_rect.contains(pos):
+                self.cancel_edit()
+                ev.accept()
+                return
+        elif self._rename_rect.contains(pos):
             self.rename_requested.emit()
+            self.start_edit()
             ev.accept()
             return
         super().mouseReleaseEvent(ev)
 
+    # ---------- 几何 ----------
     def _recalc_rename(self, p):
-        """改名热区的几何: 靠右对齐, 命中判定与绘制共用同一矩形。"""
+        """「改名」热区几何: 靠右对齐, 命中判定与绘制共用同一矩形。"""
         p.setFont(self._sub_font)
         tw = p.fontMetrics().horizontalAdvance("改名")
         rw = tw + 16
         self._rename_rect = QRectF(self.width() - rw - 10, 1.0, rw, self.height() - 2.0)
 
+    def _recalc_edit_btns(self):
+        """编辑态两个按钮的几何 (保存 / 取消), 靠右排布。"""
+        fm = QFontMetrics(self._sub_font)
+        w1 = fm.horizontalAdvance("保存") + 18
+        w2 = fm.horizontalAdvance("取消") + 18
+        h = self.height() - 8.0
+        y = 4.0
+        x2 = self.width() - w2 - 8.0
+        x1 = x2 - w1 - 6.0
+        self._saved_rect = QRectF(x1, y, w1, h)
+        self._cancel_rect = QRectF(x2, y, w2, h)
+        self._name_end_x = x1 - 8.0
+
+    def _layout_edit(self):
+        """把输入框摆到「名字」原本占的位置上。"""
+        if not hasattr(self, "_edit"):
+            return
+        self._recalc_edit_btns()
+        tx = 32.0
+        fm = QFontMetrics(self._sub_font)
+        tag_w = fm.horizontalAdvance("本机")
+        name_x = tx + tag_w + 7
+        w = max(60.0, self._name_end_x - name_x)
+        self._edit.setGeometry(int(name_x), 4, int(w), self.height() - 8)
+
+    # ---------- 绘制 ----------
     def paintEvent(self, ev):
+        # 编辑态: 让出画面给子控件, 不画自绘文字 (否则与输入框叠字)
+        if self._edit_mode:
+            p = QPainter(self)
+            p.setRenderHint(QPainter.Antialiasing)
+            self._paint_shell(p)
+            p.end()
+            return
+
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
-        dark = theme_state["dark"]
-
-        # 底: 低饱和填充 + 明确描边 (暗色下同样走全局调色板, 不写死颜色)
-        bg = QColor(CARD)
-        bg.setAlpha(150 if dark else 190)
-        p.setPen(Qt.NoPen)
-        p.setBrush(bg)
-        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 9, 9)
-        bd = QColor(BLUE)
-        bd.setAlpha(120 if dark else 90)
-        p.setBrush(Qt.NoBrush)
-        p.setPen(QPen(bd, 1.0))
-        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 9, 9)
+        self._paint_shell(p)
 
         # 左: 主机图标 (自绘方屏 + 底座, 避免依赖 emoji 字体)
         cy = h / 2.0
@@ -3836,12 +4068,69 @@ class MachineBox(QWidget):
         p.setFont(self._sub_font)
         if self._hover:
             hv = QColor(BLUE)
-            hv.setAlpha(30 if dark else 22)
+            hv.setAlpha(30 if theme_state["dark"] else 22)
             p.setPen(Qt.NoPen)
             p.setBrush(hv)
             p.drawRoundedRect(self._rename_rect, 6, 6)
         p.setPen(QColor(BLUE))
         p.drawText(self._rename_rect, Qt.AlignCenter, "改名")
+        p.end()
+
+    def _paint_shell(self, p):
+        """外壳: 低饱和填充 + 明确描边 (暗色下同样走全局调色板)。"""
+        w, h = self.width(), self.height()
+        bg = QColor(CARD)
+        bg.setAlpha(150 if theme_state["dark"] else 190)
+        p.setPen(Qt.NoPen)
+        p.setBrush(bg)
+        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 9, 9)
+        bd = QColor(BLUE)
+        bd.setAlpha(120 if theme_state["dark"] else 90)
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(bd, 1.0))
+        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 9, 9)
+
+        # 编辑态下: 右侧两个按钮 (保存 / 取消) 由自绘负责
+        if not self._edit_mode:
+            return
+        self._recalc_edit_btns()
+        for rect, label, key in ((self._saved_rect, "保存", "save"),
+                                 (self._cancel_rect, "取消", "cancel")):
+            on = self._edit_hover == key
+            if key == "save":
+                c = QColor(BLUE) if on else QColor(HOVER)
+                if on:
+                    c = QColor(BLUE).darker(110)
+                p.setPen(Qt.NoPen)
+                p.setBrush(c)
+                p.drawRoundedRect(rect, 6, 6)
+                p.setPen(QColor("#ffffff") if on else QColor(BLUE))
+            else:
+                if on:
+                    c = QColor(RED); c.setAlpha(28)
+                    p.setPen(Qt.NoPen)
+                    p.setBrush(c)
+                    p.drawRoundedRect(rect, 6, 6)
+                p.setPen(QColor(RED) if on else QColor(TEXT3))
+            p.setFont(self._sub_font)
+            p.drawText(rect, Qt.AlignCenter, label)
+
+        # 编辑态左侧: 主机图标 + 「本机」小字 (与静态态一致, 保持视觉连续)
+        h2 = self.height()
+        cy = h2 / 2.0
+        ic = QColor(BLUE)
+        p.setPen(QPen(ic, 1.4))
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(QRectF(11.5, cy - 6.0, 13.0, 9.5), 2.0, 2.0)
+        p.setPen(Qt.NoPen)
+        p.setBrush(ic)
+        p.drawRoundedRect(QRectF(16.0, cy + 4.0, 4.0, 1.6), 0.8, 0.8)
+        p.drawRoundedRect(QRectF(13.5, cy + 6.0, 9.0, 1.4), 0.7, 0.7)
+        p.setFont(self._sub_font)
+        p.setPen(QColor(TEXT3))
+        tag = "本机"
+        tag_w = p.fontMetrics().horizontalAdvance(tag)
+        p.drawText(QRectF(32.0, 0, tag_w + 2, h2), Qt.AlignLeft | Qt.AlignVCenter, tag)
 
 
 class StatHeaderRow(QWidget):
@@ -3891,6 +4180,7 @@ class MultiMachinePage(QWidget):
         super().__init__(parent)
         self._peers = []
         self._summary = {}
+        self._skeleton_n = 0      # 骨架行数: 记住上次真实台数, 让骨架与内容同高
         self._build_ui()
 
     # ---------- 面板头工厂 (统一「小细条 + 标题 + 右侧说明」语言) ----------
@@ -3949,7 +4239,8 @@ class MultiMachinePage(QWidget):
         row.setSpacing(9)
 
         self.machine_box = MachineBox("—")
-        self.machine_box.rename_requested.connect(lambda: self.machine_rename.emit(""))
+        # 就地编辑: 保存时直接抛新名字给页面落盘 (不再走弹窗)
+        self.machine_box.name_edited.connect(self.machine_rename.emit)
         row.addWidget(self.machine_box, 1)
 
         self.btn_export = make_btn("primary", "⬆  导出本机数据")
@@ -4070,17 +4361,40 @@ class MultiMachinePage(QWidget):
         self.update()
 
     # ---------------- 渲染 ----------------
-    def render(self, peers, summary, machine_name=""):
+    def _clear_layout(self, lay):
+        """清空一个 QVBoxLayout 里**全部**条目 (含 addStretch 的 spacer)。
+
+        @2026-09-19 第53轮: 原来只 takeAt(0).widget(), 有两个后果 ——
+          ① addStretch 产生的 spacer item 取不到 widget, 会永远排在最前,
+             新内容全被挤到它后面 (隐性布局错位);
+          ② deleteLater() 只是"稍后删除", 同一轮里反复 clear/重建时旧控件
+             仍挂在 parent 上 → findChildren 越数越多, 内存与绘制都白耗。
+        现在: 逐项 takeAt(0) 并**按类型收尾** (widget→setParent(None)+deleteLater,
+        spacer→交给 PySide 回收), 同时先把旧行 setParent(None) 立刻脱离可见树,
+        避免新内容已加、旧内容还没删的"叠影"帧。
+        """
+        while lay.count():
+            it = lay.takeAt(0)
+            w = it.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+            # 其余是 spacer / layout item: takeAt 已将其从布局移除, 无需额外处理
+
+    def render(self, peers, summary, machine_name="", pending=False):
+        """渲染多机页。
+
+        @2026-09-19 第53轮: 新增 pending 参数。首次进入多机页时完整合并数据要等
+        后台 scan 返回(约 100ms), 这段时间**不能**显示「暂无统计数据」空态 ——
+        否则数据到位后整列统计条突然长出来, 就是浅猫说的「刷的一下出来」。
+        pending=True 时按上一帧的机器台数画**同高骨架行**, 数据到位后原地替换。
+        """
         self._peers = list(peers or [])
         self._summary = dict(summary or {})
         self.machine_box.set_name(machine_name or "—")
 
         # 别机列表
-        while self.peer_lay.count():
-            it = self.peer_lay.takeAt(0)
-            w = it.widget()
-            if w:
-                w.deleteLater()
+        self._clear_layout(self.peer_lay)
         if not self._peers:
             self.peer_lay.addWidget(self._empty_hint(
                 "尚未导入其他机器的数据",
@@ -4095,23 +4409,28 @@ class MultiMachinePage(QWidget):
         self.peer_count_lbl.setText(f"{len(self._peers)} 台")
         self.peer_scope_lbl.setText(f"{len(self._peers)} 台别机")
         self.peer_scope_lbl.setVisible(bool(self._peers))
+
         # 按机统计对比
-        while self.stat_lay.count():
-            it = self.stat_lay.takeAt(0)
-            w = it.widget()
-            if w:
-                w.deleteLater()
+        self._clear_layout(self.stat_lay)
         rows = [(m, d) for m, d in self._summary.items() if d]
         rows.sort(key=lambda kv: -kv[1].get("total", 0))
-        if not rows:
+        if pending and not rows:
+            # 数据在途: 画骨架而非空态文案, 避免"从无到有"的突增观感
+            for i in range(max(self._skeleton_n, 1)):
+                self.stat_lay.addWidget(StatRankRow(
+                    i + 1, "", {"total": 0}, 1, False, placeholder=True))
+        elif not rows:
             self.stat_lay.addWidget(self._empty_hint("暂无统计数据", "导入/更新别机数据后这里会显示各机器的用量对比。"))
         else:
             mx = max(d.get("total", 0) for _m, d in rows) or 1
             for i, (m, d) in enumerate(rows, 1):
                 self.stat_lay.addWidget(StatRankRow(i, m, d, mx, bool(d.get("local"))))
+            self._skeleton_n = len(rows)
         self.stat_lay.addStretch(1)
         total_tok = sum(d.get("total", 0) for _m, d in rows)
-        self.stat_scope_lbl.setText(f"合计 {fmt_full(total_tok)} · {len(rows)} 台机器")
+        self.stat_scope_lbl.setText(
+            "正在汇总…" if (pending and not rows)
+            else f"合计 {fmt_full(total_tok)} · {len(rows)} 台机器")
         self.apply_theme()
         self.apply_size()
 
@@ -4927,15 +5246,16 @@ class CardWindow(QWidget):
         if ok:
             self.refresh(force=True)
 
-    def _on_rename_machine(self, _arg=""):
-        name = peer_store.load_machine_name()
-        text, ok = dlg_prompt(
-            self, "修改机器名",
-            "给这台电脑起个名字，导出时会用它标识数据来源。",
-            default=name, label="机器名", placeholder="例如：台式机 / 笔记本")
-        if not ok:
-            return
+    def _on_rename_machine(self, name=""):
+        """保存机器名 —— 就地编辑版 (2026-09-19 第53轮)。
+
+        浅猫："改名不需要弹窗，直接在原有名字框就能输入修改然后保存"
+        → 名字由 MachineBox 内联输入框直接给出, 这里不再弹 dlg_prompt。
+        兼容旧调用 (传空串时回退到读当前存档值, 不会覆盖为空)。
+        """
+        text = (name or "").strip()
         if not text:
+            # 无新名字传入: 说明是旧式触发, 回退读当前值, 不做任何写入
             return
         peer_store.save_machine_name(text)
         self.subtitle.setText(f"本机机器名已设为「{text}」")
@@ -5019,11 +5339,14 @@ class CardWindow(QWidget):
             self.stats = load_dsh_stats()
         elif self.source == "multi":
             # 多机页首次进入: 先渲染一份快速的轻量视图（仅别机列表 + 本机摘要），
-            # 完整合并交给随后的后台 refresh，避免切页卡顿
+            # 完整合并交给随后的后台 refresh，避免切页卡顿。
+            # @2026-09-19 第53轮: 打上 pending 标记 —— 轻量视图没有 machines 数据,
+            # 若按空态渲染, 后台数据回来后整列统计条会突然长出来("唰一下")。
+            # pending 让页面改画同高骨架行, 数据到位后原地替换。
             self.stats = {"source": "multi", "machines": {}, "peers": peer_store.list_peers(),
                           "machineName": peer_store.load_machine_name(),
                           "daily": {}, "models": {}, "dailySessions": {},
-                          "firstDay": "", "lastDay": ""}
+                          "firstDay": "", "lastDay": "", "pending": True}
             self._render_multi_page()
             QTimer.singleShot(100, self.refresh)
             return
@@ -5114,12 +5437,16 @@ class CardWindow(QWidget):
         self.heat.set_data(self.stats.get("daily", {}))
 
     def _render_multi_page(self):
-        """渲染多机数据源页（别机列表 + 按机统计）。"""
+        """渲染多机数据源页（别机列表 + 按机统计）。
+
+        @2026-09-19 第53轮: 源里有 `pending` 标记时(首次进入、合并尚未算完)
+        传 pending=True 给页面 → 画骨架行而非空态, 消除"唰一下出来"的观感。
+        """
         s = self.stats or {}
         peers = s.get("peers") or []
         machines = s.get("machines") or {}
         name = s.get("machineName") or peer_store.load_machine_name()
-        self.multi_page.render(peers, machines, name)
+        self.multi_page.render(peers, machines, name, pending=bool(s.get("pending")))
 
     # ---------------- 交互与右键菜单 ----------------
     def hideEvent(self, ev):
