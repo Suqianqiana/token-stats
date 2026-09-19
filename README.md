@@ -1,317 +1,532 @@
-# Token 审计卡片（Token Audit Card）
+# Token 统计（Token Audit Card）
 
-> 常驻桌面的轻量 Token 用量审计浮窗：统计 WorkBuddy / DSH 会话的 Token 消耗，实时查看商汤（SenseNova / 日日新）模型积分额度，并支持多台机器用量合并。
-> 桌面端 PySide6 程序，无后端依赖，数据全部来自本地 WorkBuddy 会话记录与本地运行数据目录。
-> 当前版本 **v9.1-pet-v4**。
+> 常驻桌面的 Token 用量审计浮窗：统计 WorkBuddy / DSH 本地会话的 Token 消耗，实时跟踪商汤（SenseNova / 日日新）积分额度，并支持多台机器的数据导出与合并。
 
-> 代码托管在 GitHub：**https://github.com/Suqianqiana/token-stats**（默认分支 `main`；当前为公开仓库，可见性可在仓库 Settings → Danger Zone 中调整）。
-
----
-
-## 1. 项目简介
-
-「Token 审计卡片」由两部分组成：
-
-- **悬浮球**：屏幕右下角常驻（置顶、可拖动、位置记忆），单击弹出统计卡片，右键打开菜单。
-- **卡片窗口**：无边框圆角、液态玻璃主题、可拖动；内置四个数据源 **WorkBuddy / DSH 本地 / 商汤额度 / 多机合并**，并支持深浅色切换。
-
-核心能力一览：
-
-| 模块 | 能力 |
+| 项 | 值 |
 |---|---|
-| WB / DSH 用量 | 2×2 汇总卡、按模型明细、堆叠柱状图、GitHub 风活跃热力图；支持今日/近7天/近30天/全部 |
-| 多机合并 | 单列纵向三段（数据源管理 / 按机统计 / 已导入机器）；导出本机数据（WB + DSH 全部记录）、**导入/更新别机数据**（新机器导入、同名机器覆盖更新）；机器框内嵌改名热区 |
-| 商汤额度 | 通用积分池、Flash-Lite 专属积分池、活动固定积分（1:1 返赠）；支持 cURL 零指纹自动同步 |
-| 交互 | 无边框置顶卡片、悬浮球、位置记忆、右键菜单、深浅色 / 玻璃主题；全程序统一自绘弹窗与按钮语言 |
-| 桌宠形态 | DeepSeek 娘帧动画（待机/入睡/拖拽/点击互动/摸摸头）；四个素材主题（v1 经典 / v2 高清 / v3 最新合并 / v4 deepseek娘V4Pro）右键菜单切换；双击打开统计面板 |
-
-架构与实现细节、演进历程、Git 提交规范见根目录主协作文档 [`协作进度.md`](协作进度.md)。
-
----
-
-## 2. 环境要求
-
-- **操作系统**：Windows（已验证）；理论上 PySide6 跨平台，但启动脚本为 Windows 批处理
-- **Python**：3.13（使用托管运行时，无需自行安装）
-- **虚拟环境**：`~/.workbuddy/binaries/python/envs/pyside6`，已含 **PySide6 6.11.1**
-- **第三方依赖**：仅 PySide6；扫描 / HTTP / JSON 均为标准库
-- **数据来源**：`~/.workbuddy/projects/**/*.jsonl`（WorkBuddy 会话记录）
-- **持久化目录**：`~/.workbuddy/plugins/data/token-usage-stats/`
-
-> 无需 `pip install`，venv 已就绪。直接双击启动脚本即可。
+| **当前构建** | `v9.1-pet-v4` |
+| **平台** | Windows（已验证；PySide6 本身跨平台，但启动脚本为 Windows 批处理） |
+| **运行时** | Python 3.13 · PySide6 6.11.1 |
+| **第三方依赖** | **仅 PySide6**（扫描 / HTTP / JSON / 打包辅助全部标准库） |
+| **数据来源** | 本机 `~/.workbuddy/projects/**/*.jsonl` + DSH 账本 + 商汤控制台接口 |
+| **代码仓库** | <https://github.com/Suqianqiana/token-stats>（默认分支 `main`） |
 
 ---
 
-## 3. 启动与使用
+## 目录
 
-### 3.1 启动（推荐双击）
-
-在文件资源管理器中进入本项目目录，双击以下任一启动器：
-
-- **`start_card.bat`**（英文，规范入口）
-- **`启动统计悬浮球.bat`**（中文别名，内容相同）
-- **`启动统计悬浮球.vbs`**（静默启动，不弹控制台窗口，适合日常使用）
-
-启动后：
-
-1. 右下角出现悬浮球；
-2. **单击悬浮球** → 弹出卡片窗口；
-3. 卡片顶部标题栏可拖动；`–` 最小化、`✕` 隐藏（不退出，悬浮球仍在）；右键菜单可「打开 / 立即刷新 / 退出」。
-
-### 3.2 开机自启
-
-双击 `enable_autostart.bat`，会在「开始菜单 → 启动」创建快捷方式，下次开机自动运行。
-
-### 3.3 数据源与界面
-
-- 顶部第二行为 **数据源** 切换：`WorkBuddy` / `DSH 本地` / `商汤额度` / `多机合并`；
-- 顶部第一行为 **时间区间** 切换：`今日` / `近7天` / `近30天` / `全部`，以及 `⟳` 刷新、`–` 最小化、`✕` 隐藏；
-- `商汤额度` 页底部为同步设置面板（见第 4 节）；
-- `多机合并` 页为多机数据源管理与按机统计（见第 5 节）。
+- [一、项目简介](#一项目简介)
+- [二、界面预览](#二界面预览)
+- [三、功能详解](#三功能详解)
+- [四、技术架构](#四技术架构)
+- [五、数据与文件格式](#五数据与文件格式)
+- [六、环境要求与安装](#六环境要求与安装)
+- [七、启动与使用](#七启动与使用)
+- [八、商汤积分自动同步配置](#八商汤积分自动同步配置)
+- [九、打包与发布](#九打包与发布)
+- [十、开发与调试](#十开发与调试)
+- [十一、代码规范与视觉系统](#十一代码规范与视觉系统)
+- [十二、GitHub 协作与跨机同步](#十二github-协作与跨机同步)
+- [十三、目录结构](#十三目录结构)
+- [十四、已知限制与注意事项](#十四已知限制与注意事项)
 
 ---
 
-## 4. 商汤积分自动同步配置
+## 一、项目简介
 
-商汤官方未提供积分查询 API，本工具通过「抓取官网控制台接口」实现自动同步：
+「Token 统计」由两块组成：
 
-1. 浏览器打开商汤控制台「积分额度」页；
-2. 按 **F12** → **Network（网络）**；
-3. 刷新页面，找到响应中含有积分数字的请求（如 `tokenplan/pool-usage`）；
-4. 在该请求上 **右键 → Copy → Copy as cURL**；
-5. 回到工具「商汤额度」页底部的 **同步设置** 面板，粘贴 cURL，点击 **保存并测试**；
-6. 字段由程序**零指纹自动识别**，无需手动填写任何数字。
+- **悬浮球 / 桌宠**：常驻屏幕（置顶、可拖动、位置记忆），单击弹出统计卡片，右键打开菜单。
+- **卡片窗口**：无边框圆角、液态玻璃主题、可拖动；内置四个数据源页签，支持深浅色与三档玻璃通透度。
 
-> 说明：
-> - 同步凭据（JWT）约 **3 小时**过期；过期后余额回退到**本地估算**并提示重新抓包。
-> - 程序每 **5 分钟**自动更新一次；点卡片 `⟳` 可立即强制刷新。
-> - **活动固定积分**仅来自接口返回；未配置同步时为占位状态。
+四个数据源页签：
 
-如不再需要，点击「清除配置」即可回到本地估算模式。
-
----
-
-## 5. 多机数据源合并
-
-多台电脑的用量数据互相独立。本工具提供「导出 → 导入 → 合并展示」的闭环，用于把多台机器的数据汇总到一起查看。
-
-> 单机统计仍以**本机实时扫描**为准；别机数据以**快照文件**形式常驻在本机，随时可删除或覆盖更新。导入**绝不会影响本机原有数据**。
-
-### 5.1 为机器命名
-
-首次使用先给本机起个名字（如「台式机」「笔记本」），导出时用于标识来源。
-
-**点名字框即可就地改名，不再弹窗**：点一下机器名区域进入编辑态，输入框已预填当前名字并全选，改完后：
-
-| 操作 | 结果 |
+| 页签 | 内容 |
 |---|---|
-| 按 `Enter` / 点「保存」/ 点输入框外任意处 | **提交**新名字 |
-| 按 `Esc` / 点「取消」 | **放弃**修改，恢复原名字 |
+| **WorkBuddy** | 本机 WorkBuddy 会话的 Token 用量（按模型 / 按日） |
+| **DSH 本地** | 本机 Deepseek-Harness-EAC 的用量与花费 |
+| **商汤额度** | 商汤日日新积分池额度（滚动 5h / 滚动周），支持控制台接口自动同步 |
+| **多机合并** | 多台机器的用量导出 / 导入 / 合并对比 |
 
-名字为空或与原名相同时不会落盘、不触发任何写入。改动会立刻写进本机配置，下次导出即用新名字标识。
+设计取向：**本机数据始终实时扫描，不落快照**；别机数据以文件快照形式常驻本机，随时可覆盖或删除。整个过程无后端、无账号体系、不联网（商汤同步除外，且仅在你主动配置后启用）。
 
-### 5.2 导出本机数据
+---
 
-在「多机合并」页点 **⬆ 导出本机数据** → 选择保存位置 → 生成一个 JSON 数据包（默认在桌面），其中**包含 WorkBuddy 与 DSH 两个来源的全部记录**。
+## 二、界面预览
 
-### 5.3 导入 / 更新别机数据
+> 截图由 offscreen 渲染生成，使用**合成匿名数据**，不含任何真实用量与账号信息。
 
-把数据包拷到另一台电脑，点 **⬇ 导入/更新别机数据** 选择该文件即可。这一个按钮覆盖两种情形：
+### WorkBuddy 页
+
+![WorkBuddy 页](docs/assets/previews/01-workbuddy.png)
+
+### DSH 本地页
+
+![DSH 页](docs/assets/previews/02-dsh.png)
+
+### 商汤额度页
+
+![商汤额度页](docs/assets/previews/03-sensenova.png)
+
+### 多机合并页
+
+![多机合并页](docs/assets/previews/04-multi-machine.png)
+
+### 深色主题（商汤页）
+
+![深色主题](docs/assets/previews/05-dark-theme.png)
+
+### 桌宠形态
+
+![桌宠形态](docs/assets/previews/pet_mode.png)
+
+---
+
+## 三、功能详解
+
+### 3.1 用量页（WorkBuddy / DSH）
+
+- **四张汇总卡**：合计 Token、缓存命中（含命中率）、输入 / 输出、会话 / 请求。
+- **今日概况条**：请求 / 输入 / 输出 / 会话 / 缓存命中率；DSH 页额外显示今日花费。
+- **模型明细表**：按 Token 总量降序，含占比条、缓存命中率、请求数；DSH 页表头为「调用」。
+- **每日用量堆叠图**：按日按模型堆叠，支持**鼠标锚点滚轮缩放 + 拖动平移**。
+- **活跃热力图**：GitHub 风格，按日着色。
+- **时间区间**：`今日` / `7天` / `30天` / `全部`（商汤页与多机页隐藏该切换）。
+
+### 3.2 商汤额度页
+
+- **两张积分池卡**：通用积分池（紫）、Flash-Lite 专属积分池（橙），各显示**周周期额度**与 **5h 窗口额度**（剩余 / 总额 + 百分比 + 重置时间）。
+- **活动固定积分卡**：总量余额 + 最近一次到期时间与到期额度。
+- **积分卡常驻**：数据或凭证尚未就绪时，卡片仍固定显示，数值取**官方公测期默认满额**（见 §14 变更记录）；底部状态提示行此时才会出现，数据到齐后自动隐藏。
+- **同步面板**：账号密码（用于凭证过期自动重登）+ 手动 cURL 两段式，支持就地保存 / 清除。
+
+### 3.3 多机合并页
+
+单列纵向三段：
+
+1. **数据源管理** —— 本机机器框（点名字即可就地改名）+ 「导出本机数据」「导入 / 更新别机数据」。
+2. **按机统计** —— 各机器（🖥 本机 / 💻 别机）Token 总量排行条、请求数、日期区间；顶部显示合计与机器数。
+3. **已导入的机器** —— 别机快照列表（来源徽标、导入时间），每行可 **覆盖更新** 或 **删除**。
+
+**导入语义（一个按钮覆盖两种情形）：**
 
 | 情形 | 行为 |
 |---|---|
-| 包内机器名**从未出现过** | 作为**一台新机器**加入统计（提示「新机器已导入」） |
-| 包内机器名**已存在** | 视为同一台机器的新快照，**覆盖其旧数据**（提示「已覆盖更新同名机器」，不是累加） |
+| 包内机器名**从未出现过** | 作为**一台新机器**加入统计 |
+| 包内机器名**已存在** | 视为同一台机器的新快照，**覆盖其旧数据**（不是累加） |
 
-- 数据按**机器名分别存放**（`peers/<机器名>.json`），互不干扰；
-- 导入**绝不会影响本机数据**，也不会影响其他机器的快照；
-- 「已导入的机器」列表中每行可 **覆盖更新**（重新选择该机的新数据包，会校验机器名是否匹配）或 **删除**。
+导入**绝不影响本机数据**，也不影响其他机器的快照。存在别机数据时，WorkBuddy / DSH 页也会把别机数据一并计入（副标题标注「含 N 台别机」）。
 
-### 5.4 查看合并结果
+### 3.4 桌宠形态
 
-导入后，「多机合并」页按**单列纵向三段**组织：
+双击悬浮球或右键菜单「打开面板」进入统计面板；右键菜单可在四个素材主题间切换：
 
-1. **数据源管理** —— 左侧是本机机器框（含「改名」热区），右侧是「导出本机数据」与「导入/更新别机数据」两个按钮；
-2. **按机统计** —— 通栏列出每台机器（🖥 本机 / 💻 别机）的 token 总量、请求数与日期区间，按总量降序排列，顶部显示合计与机器数；
-3. **已导入的机器** —— 通栏列出全部别机快照及其导入时间、来源徽标。
-
----
-
-## 6. 桌宠形态
-
-桌宠随卡片呼吸动画呈现，**双击**悬浮球或右键菜单「打开面板」进入统计面板；右键菜单可在四个素材主题间切换：
-
-| 主题 | 名称 | 素材目录 |
+| 主题键 | 名称 | 素材目录 |
 |---|---|---|
 | `v1` | 经典素材（旧版） | `assets/pet` |
 | `v2` | 新版素材（高清） | `assets/pet_v2` |
 | `v3` | 最新素材（与原版合并） | `assets/pet_v3r` |
 | `v4` | deepseek娘V4Pro | `assets/pet_v4` |
 
-互动姿态：待机、入睡（随机）、拖拽（随机姿势）、点击互动（角色**顶部 1/3 为摸摸头、底部 2/3 为点击**，分区以 `paintEvent` 记录的「实际绘制区」`_pet_draw_rect` 的 1/3 为准，不按窗口算）。退役帧存档在 `assets/pet_alt/`、补充帧源在 `assets/pet_v3_add/`，二者被回归测试读取，**勿动**。
+八组动画 `PET_ANIMS`：`idle` / `sleep` / `wake` / `drag` / `click` / `sidle` / `pat` / `special`。
+点击分区按**角色实际绘制区**（`_pet_draw_rect`）的 1/3 划分：**顶部 1/3 为摸摸头，底部 2/3 为点击**。
+
+### 3.5 交互与主题
+
+- **双尺寸**：标准模式 `990×610` / 舒适大窗口 `1180×730`，字重与行高分别标定，不做粗暴放大。
+- **三档玻璃通透度**：`晶透水滴（高通透）` / `标准液态（推荐）` / `柔和微透（防眩光）`。
+- **深浅色**：全程序统一调色板，切换后所有自绘控件同步刷新。
+- **单一实例**：重复启动不会起第二个常驻实例。
+- **一键重启 / 开机自启**：见 §7。
 
 ---
 
-## 7. GitHub 协作与跨机同步
+## 四、技术架构
 
-代码托管在 **https://github.com/Suqianqiana/token-stats**，默认分支 **`main`**。两位协作者通过 `git clone` / `pull` / `push` 协同开发（第 56 轮接入）。
+### 4.1 分层与模块职责
 
-### 7.1 首次接入（另一台机器）
+| 层 | 文件 | 职责 |
+|---|---|---|
+| 数据采集 | `scanner.py` | 遍历 `~/.workbuddy/projects/**/*.jsonl`，解析 `providerData.usage`；按 **mtime+size 增量**（`cache.json`），聚合落 `stats.json`。纯标准库 |
+| 数据采集 | `card_app.load_dsh_stats()` | 读取 DSH 账本并聚合。⚠️ **不返回 `models`**（需现算）——统计 DSH 用量必须走 `peer_store.normalize_source()` |
+| 数据合并 | `peer_store.py` | 多机快照的导出 / 导入 / 覆盖 / 合并；`merge_machines()`（跨来源总览）与 `source_view()`（**单来源**合并）。纯标准库 |
+| 商汤数据 | `card_app` 商汤段 + `sn_login.py` / `sn_autologin_fetch.py` | 本地估算 + 控制台接口同步；JWT 解析与提前续期；cURL 零指纹字段探测 |
+| 界面 | `card_app.py` | 全部 UI（卡片 / 悬浮球 / 桌宠 / 弹窗 / 图表）、主题系统、线程与缓存调度 |
+| 启动 | `launcher.py` | 轻量启动器（不含 PySide6，8~10MB exe）：定位项目目录与 `pythonw.exe`，`DETACHED + CREATE_NO_WINDOW` 拉起主程序后立即退出 |
+| 回归 | `test_switch_race.py` | offscreen 回归测试，**当前 289 项断言**，需全绿 |
 
-```bash
-git clone https://github.com/Suqianqiana/token-stats.git
-cd token-stats
-# 提交身份（让提交关联到 GitHub 账号，且不暴露真实邮箱）
-git config user.email "318013379+Suqianqiana@users.noreply.github.com"
-git config user.name  "浅浅猫"
+### 4.2 数据流
+
+```
+WorkBuddy jsonl ──► scanner.scan_full() ──┐
+                                          ├─► CardWindow.refresh()（后台线程）
+DSH 账本 ─────────► load_dsh_stats() ─────┤        │
+                                          │        ▼
+商汤控制台接口 ───► sn_autosync_fetch() ──┘   _on_scan_done(src, stats)
+                                                      │
+                    peer_store.merge_machines() ◄─────┤（多机快照参与合并）
+                    peer_store.source_view()    ◄─────┤
+                                                      ▼
+                                        按来源缓存（如 `_sn_cache`）→ render()
 ```
 
-推送 / 拉取需要 GitHub 凭据：本机可双击 **`推送到GitHub.bat`**（走浏览器授权，凭据进 Windows 凭据管理器，只需一次）；或使用 Personal Access Token（fine-grained PAT 需开启 `Contents: Read and write` 权限）。
+关键约定：
 
-### 7.2 日常节奏
+- **切页与渲染解耦**：`_apply_page()` 只做 `setCurrentIndex` / 可见性；`render()` 由数据回调触发。历史上 `setCurrentIndex` 只写在 `render()` 里，导致"同步过程中无法切页"。
+- **迟到结果丢弃**：长任务带代次/序号，看门狗超时后旧线程的返回不会覆盖新状态。
+- **首帧骨架**：多机页首帧画**同高骨架行**而非空态文案，避免数据到位后整列"唰一下长出来"。
+- **本机不落快照**：本机永远实时扫描；导出的只是一次性副本。
 
-**开工先 `git pull`，收工 `git push`**；只在 `main` 上协作。
+### 4.3 关键实现要点
 
-### 7.3 三条硬规矩
-
-1. **禁止 `rebase` / `amend` 已推送的提交。** 一旦重写历史，另一台机器的 commit hash 会全部对不上（第 54 轮正是靠「同一 commit 即同源」确认两边一致）。
-2. **`_archive/` 永远不随 git 同步**（在 `.gitignore` 里）—— 归档区是「本机磁盘整理」的产物，换机器需要时得单独拷贝。
-3. **本机运行期数据不在仓库里**（`~/.workbuddy/plugins/data/token-usage-stats/`）。跨机共享用量走程序内「导出 / 导入别机数据」，别把数据塞进仓库。
-
----
-
-## 8. 视觉设计系统（面向维护者）
-
-全程序走同一套「液态玻璃」语言，新增界面必须复用以下基座，不要另起样式。
-
-### 8.1 按钮：四档统一工厂
-
-所有按钮经 `make_btn(kind, text)` 创建、`style_btn(btn, ...)` 重刷：
-
-| kind | 用途 | 外观 |
-|---|---|---|
-| `primary` | 每个面板的**主操作**（导出 / 保存 / 删除确认） | 实心蓝底白字，hover 加深 |
-| `ghost` | 次要操作（改名 / 覆盖更新） | 透明底 + 描边，hover 转蓝 |
-| `danger` | 破坏性操作（删除） | 同 ghost，hover 转红 |
-| `icon` | 标题栏轻量开关 | 无边框，仅 hover 底色 |
-
-改主题或字号后**必须重调 `style_btn`**，否则按钮颜色不跟随（QSS 不会自动重算）。
-
-### 8.2 弹窗：一律自绘，禁用原生
-
-`QMessageBox` / `QInputDialog` 的字体与圆角跟卡片语言不搭，**已全部替换**为 `GlassDialog`（`QDialog` 子类，玻璃底面 + 菲涅尔描边 + `DlgIcon` 语义圆形徽章 + 可拖拽标题区 + `Esc` 取消 / `Enter` 确认）。需要输入框时调 `add_field(label, text, placeholder)`；建好 `QLineEdit` 后必须补一次 `apply_theme()`，并逐层 `invalidate()` 重算高度（否则输入框会被裁或渲染成纯白）。
-
-### 8.3 侧边导航 / 卡片 / 主题联动
-
-- `NavButton` 纯自绘（左侧 3px 选中竖条 + 固定 22px 图标槽），新增数据源要把新按钮加进 `apply_styles` 的**所有** `for b in (...)` 循环。
-- 卡片底板用 `GlassPodFrame(radius=12)`；面板头 = `BarIndicator(accent)` 小细条 + 加粗标题 + 右侧说明胶囊（`_panel_head()` 工厂）。
-- `set_dark` / `set_glass` 只调 `update()` **不会重算 QSS**；子页面必须经 `_refresh_subpages_theme()` 显式重刷。局部 `setStyleSheet` 会「顶掉」全局 QSS，滚动条样式必须打包重设（`style_scroll_area()`）。
-- 自绘控件颜色一律走全局调色板（`TEXT` / `TEXT2` / `TEXT3`…），不要缓存到实例属性。
-
-更多视觉坑（双层玻璃叠加、列表重绘必须清空 spacer、骨架占位行、切页不依赖后台回调）记录在 [`协作进度.md`](协作进度.md) 对应轮次。
+- **打包资源解析**：未打包时 `APP_DIR` = 脚本目录；已打包时优先取 **exe 同级 `assets/`**（把素材放 exe 旁边即可替换，无需重新打包），否则回退到包内（`sys._MEIPASS`）。
+- **spawn 子进程前剥离 `_PYI_*` 环境变量**：PyInstaller onefile 的子进程引导器会校验「父进程可执行文件是否与自己一致」，`exe → launcher → pythonw` 一路继承后会误判并拒启（`card_app._clean_spawn_env()` 与 `launcher.py` 两处都要清）。
+- **商汤事件缓存**：`sn_events_cache.json` 按 `size+mtime` 失效，把商汤页刷新从 ~14.4s 降到 ~0.16s（冷启动首次数秒）。
 
 ---
 
-## 9. 开发、调试与发布
+## 五、数据与文件格式
 
-### 9.1 常用命令
+### 5.1 落盘位置
+
+全部运行期数据位于 `~/.workbuddy/plugins/data/token-usage-stats/`（**不在仓库内**）：
+
+| 文件 | 内容 |
+|---|---|
+| `cache.json` | 扫描增量游标（文件 mtime + size） |
+| `stats.json` | WorkBuddy 聚合结果（每日 / 每模型明细） |
+| `settings.json` | 界面与主题设置（见 §5.2） |
+| `machine.json` | 本机机器名（可改名） |
+| `sn_autosync.json` | 商汤同步配置（cURL / 账号）与最后已知值 |
+| `sn_token.json` | 商汤 JWT 与解析出的过期时间 |
+| `sn_cred.log` | 商汤凭据链路轻量日志（走了哪条路 / 耗时 / 成败） |
+| `sn_events_cache.json` | 商汤事件磁盘缓存 |
+| `peers/index.json` | 别机注册表 |
+| `peers/<机器名>.json` | 各别机快照（文件名经安全化处理） |
+
+### 5.2 `settings.json`
+
+实际落盘的就是内存里的 `theme_state`：
+
+```json
+{
+  "dark": false,
+  "glass": false,
+  "source": "wb",
+  "pet": false,
+  "pet_theme": "v3",
+  "window_size": "default",
+  "glass_transparency": "balanced"
+}
+```
+
+> ⚠️ 一次性迁移的**标记位必须写进这个结构**，否则 `save_settings()` 一落盘就丢，迁移会每次启动重跑（曾把用户新选的主题反复改回旧值）。
+
+### 5.3 导出包格式（`token-stats.peer/1`）
+
+```json
+{
+  "format": "token-stats.peer/1",
+  "version": 1,
+  "app": "Token 审计卡片",
+  "exported_at": "2026-09-19T03:30:00",
+  "machine": "台式机",
+  "sources": {
+    "wb":  { "...scanner.scan_full() 完整返回..." },
+    "dsh": { "...load_dsh_stats() 完整返回..." }
+  }
+}
+```
+
+改动 `FORMAT_ID` 或字段名时，务必同步更新回归测试 fixture 与本文档。
+
+### 5.4 商汤额度口径
+
+| 项 | 值 |
+|---|---|
+| 5h 窗口 | 以 0 点为起点的**固定 5 小时分块**（00–05、05–10、10–15、15–20、20–24） |
+| 池 5h 上限 | `60,000` |
+| 池周上限 | `600,000`（7 天滚动周，内部锚点 `2026-08-28`） |
+| 凭证类型 | JWT（RS256），寿命 **3 小时**；剩余 < 120s 直接提前续期 |
+| 自动刷新 | 每 **5 分钟**（`SN_AUTOSYNC_TTL = 300`）；点 ⟳ 可强制绕过 |
+| 凭据域名 | 必须是 `sensenova.cn`，否则视为无效 |
+| 界面口径 | 大数字 = 本周余额；进度条/左侧数字 = 5h「剩余 / 总额」；百分比 = 剩余占比 |
+
+> 「已用」是按本地 WB / DSH 调用次数估算的（非官方口径），页面页脚与 tooltip 已标注。
+
+---
+
+## 六、环境要求与安装
+
+- **操作系统**：Windows（PySide6 可行于其他平台，但启动脚本仅提供 Windows 批处理）
+- **Python**：3.13（本项目使用托管运行时，无需自行安装）
+- **虚拟环境**：`~/.workbuddy/binaries/python/envs/pyside6`，已含 **PySide6 6.11.1**
+- **依赖安装**：**无需 `pip install`**，venv 已就绪
+- **素材**：`assets/` 随仓库提供（含四套桌宠素材与图标）
+
+---
+
+## 七、启动与使用
+
+### 7.1 启动
+
+双击以下任一启动器：
+
+| 脚本 | 说明 |
+|---|---|
+| `start_card.bat` | 规范入口 |
+| `启动统计悬浮球.bat` | 中文别名（内容相同） |
+| `启动统计悬浮球.vbs` | **静默启动**，不弹控制台窗口（日常推荐） |
+| `TokenStats.exe` | 打包产物，双击即用（图标正式，便于放桌面） |
+
+启动后：出现悬浮球 → **单击**弹出卡片；标题栏可拖动；`–` 最小化、`✕` 隐藏（不退出）。
+
+### 7.2 常用脚本
+
+| 脚本 | 作用 |
+|---|---|
+| `enable_autostart.bat` | 在「开始菜单 → 启动」创建快捷方式，开机自启 |
+| `桌面图标指向exe.bat` | 在桌面创建指向 exe 的快捷方式 |
+| `商汤自动登录.bat` | 单独跑一次商汤登录（获取 / 刷新凭证） |
+| `重新打包exe.bat` | 重新打包主程序 exe |
+| `推送到GitHub.bat` | GitHub 首次授权 + 推送（见 §12） |
+
+---
+
+## 八、商汤积分自动同步配置
+
+商汤官方**未提供积分查询 API**，本工具通过抓取官网控制台接口实现自动同步：
+
+1. 浏览器打开商汤控制台「积分额度」页；
+2. 按 **F12** → **Network（网络）**；
+3. 刷新页面，找到响应中含积分数字的请求（如 `tokenplan/pool-usage`）；
+4. 在该请求上 **右键 → Copy → Copy as cURL**；
+5. 回到工具「商汤额度」页的 **商汤同步** 面板，粘贴 cURL，点击 **保存并测试**；
+6. 字段由程序**零指纹结构探测**自动识别，**无需手动填写任何数字**。
+
+可选：在「账号密码」分支填入商汤账号密码，凭证过期时程序会自动重登（仅存本机）。
+
+> - 凭证（JWT）约 **3 小时**过期；过期且无账号密码时，余额回退到**本地估算**并提示重新抓包。
+> - 程序每 **5 分钟**自动刷新；切页也会按频控刷新，点 `⟳` 立即强制刷新。
+
+---
+
+## 九、打包与发布
 
 ```bash
-# 运行主程序（用 pyside6 venv 的 pythonw，无控制台窗口）
+# 主程序单文件 exe（产物：<构建目录>/dist/TokenStats.exe，并复制一份到桌面）
+python tools/build_exe.py
+python tools/build_exe.py --onedir     # 目录模式：体积更大但启动更快
+
+# 轻量启动器（不含 PySide6，8~10MB）
+python tools/build_launcher.py
+
+# 生成应用图标（assets/app_icon.ico / .png）
+python tools/make_app_icon.py
+```
+
+打包约定：
+
+- **只打包"在用"的素材**：`assets/pet`、`pet_v2`、`pet_v3r`、`pet_v4` 与 `app_icon`。
+  备份 / 实验目录（如 `pet_alt`、`pet_v3_add`、`pet_v5*`、`*_bak_*`）**不进包**，否则体积白白翻几倍。
+- 图标单一来源 `assets/app_icon.ico`：exe 图标、任务栏、托盘三处统一。
+- 构建临时目录优先放 **D 盘**（经 `TMP`/`TEMP` 传给 PyInstaller 子进程），避免塞满 C 盘。
+
+---
+
+## 十、开发与调试
+
+### 10.1 常用命令
+
+```bash
+# 运行主程序（pyside6 venv 的 pythonw，无控制台窗口）
 ~/.workbuddy/binaries/python/envs/pyside6/Scripts/pythonw.exe card_app.py
 
 # 单独调试扫描引擎（输出聚合摘要）
 ~/.workbuddy/binaries/python/envs/pyside6/Scripts/python.exe scanner.py --force
 
-# 全量语法检查（内存编译，不写 .pyc —— 避免火绒误杀字节码）
+# 全量语法检查（内存编译，不写 .pyc）
 ~/.workbuddy/binaries/python/envs/pyside6/Scripts/python.exe tools/syntax_check.py
 
-# 回归测试（必须在 offscreen 下，用 pyside6 venv）
+# 回归测试（必须在 offscreen 下运行）
 QT_QPA_PLATFORM=offscreen \
   ~/.workbuddy/binaries/python/envs/pyside6/Scripts/python.exe test_switch_race.py
 ```
 
-> **回归覆盖**：切页 race 防护、同步数学、cURL 解析、指纹/零指纹、真实接口样例、单列渲染、窗口位置统一、代理 10061 直连重试、多机数据源（导出/导入/合并/覆盖/命名）、导入语义（新增 vs 覆盖）、视觉基座（按钮工厂/自绘弹窗/导航自绘/主题联动/排行条）、暗色输入框、内联改名、骨架占位行 —— **200+ 项断言**，需全过。
->
-> **截图复核技巧**：`QT_QPA_PLATFORM=offscreen` 下 Qt 找不到系统字体，需手工 `QFontDatabase.addApplicationFont()` 注册 `C:\Windows\Fonts\msyh.ttc` 等，否则中文全是豆腐块。另外 `widget.grab()` 会把圆角外的透明区合成成 `#efefef` 灰，**不要据此误判卡片底色**——要看真实底色请 `grab()` 整个窗口并按坐标采样。
+`tools/` 其余脚本：
 
-### 9.2 代码规范
+| 脚本 | 作用 |
+|---|---|
+| `syntax_check.py` | 全项目语法检查（内存编译，不落 `.pyc`） |
+| `restart_app.py` | 重启卡片应用（改动生效） |
+| `metrics_regression.py` | 素材指标回归 |
+| `build_exe.py` / `build_launcher.py` / `make_app_icon.py` | 打包与图标 |
 
-- **语言**：Python；UI 用 PySide6；扫描/HTTP 仅用标准库（不引入第三方网络库，venv 无 requests）。
-- **主题**：颜色一律走 `refresh_palette()` 全局调色板，经 `qrgba()` / `qname()` 输出样式表；禁止散落硬编码颜色。
-- **布局**：卡片宽度锁定 664px；长数字卡片用**竖向堆叠**避免横向截断（参考 `SNPromoCard`）。窄面板优先**两行式**布局（上信息 / 下操作），不要硬塞横向多列。
-- **商汤同步**：优先扩展零指纹结构探测；改动 `pools[]` 字段映射务必同步更新测试 fixture。
-- **Windows 安全**：托管 Python 严禁进入交互 REPL；语法检查走 `tools/syntax_check.py`（不写 `.pyc`，规避火绒误杀）。
-- **数据层**：多机导入/导出的格式与合并语义集中在 `peer_store.py`（纯标准库），UI 只负责调用；改动 `FORMAT_ID` 或字段名务必同步更新测试 fixture 与 §5 文档。
+### 10.2 回归测试覆盖
 
-### 9.3 提交与推送流程（Git · GitHub）
+切页 race 防护、同步数学、cURL 解析（bash / cmd）、指纹与零指纹探测、真实接口 fixture、单列渲染、窗口位置统一、代理 10061 直连重试、多机数据源（导出 / 导入 / 合并 / 覆盖 / 命名）、导入语义（新增 vs 覆盖）、视觉基座（按钮工厂 / 自绘弹窗 / 导航自绘 / 主题联动 / 排行条）、暗色输入框、内联改名、骨架占位行、商汤页池卡常驻与占位满额 —— **289 项断言，需全过**。
 
-1. 跑 `tools/syntax_check.py` 确认无语法错误；
-2. `QT_QPA_PLATFORM=offscreen python test_switch_race.py` 确认 200+ 项全绿；
-3. **先更新根目录《协作进度.md》**（§二 演进历程 + §八 协作者备注登记本轮）；
-4. 定点 `git add` 相关文件后提交，信息格式：`第N轮：<一句话说明>`；**勿用 `add -A`**；
-5. `git push` 推到 `origin/main`（首次授权见 §7.1；凭据已存则直接推）。
+> 测试开头备份、结尾还原用户真实配置；商汤 / settings / peers 全部隔离到临时目录，**不得写入真实数据目录**。
+
+### 10.3 offscreen 截图 / 渲染技巧（踩坑记录）
+
+1. Qt 找不到系统字体 → 手工 `QFontDatabase.addApplicationFont()` 注册 `C:\Windows\Fonts\msyh.ttc` 等，否则中文全是豆腐块。
+2. `render()` 里旧控件走 `deleteLater()`，而 `processEvents()` **默认不处理 DeferredDelete** → 旧控件从布局摘除后仍是子控件、留在原位继续绘制，会画成「表头与首行重叠」的假象。截图前需 `QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)`。
+3. 图表（`StackedBarChart`）的 `view_start` / `view_count` 有「末日期未变则保留缩放平移」逻辑，截图前需显式复位到全览。
+4. `widget.grab()` 对透明窗口**保留 alpha**，可直接叠到自选背板上；若发现角落被合成成实色，先查 alpha 是否被覆盖。
+
+### 10.4 语法检查与杀软误报
+
+本项目的开发环境装有国产杀软，会把 `__pycache__/*.pyc` **误判为木马并连带结束进程**，症状是「命令退出码 0 但零输出」或"进程莫名消失"。因此：
+
+- 语法检查一律走 `tools/syntax_check.py`（内存 `compile()`，不落 `.pyc`），**不要用 `python -m py_compile`**；
+- 任何 `import card_app` 的脚本开头加 `sys.dont_write_bytecode = True`，或命令行加 `-B`；
+- 根治办法是把项目目录加入杀软信任区。
 
 ---
 
-## 10. 目录导航
+## 十一、代码规范与视觉系统
+
+### 11.1 提交与版本
+
+- 提交信息格式：`第N轮：<一句话说明>`；**定点 `git add`**，不要 `add -A`。
+- 每轮先更新根目录 [`协作进度.md`](协作进度.md)（演进历程 + 协作者备注），提交紧随其后。
+- 版本标识：`card_app.py` 内 `APP_BUILD`（当前 `v9.1-pet-v4`）。
+
+### 11.2 按钮：四档统一工厂
+
+所有按钮经 `make_btn(kind, text)` 创建、`style_btn(btn, ...)` 重刷：
+
+| kind | 用途 | 外观 |
+|---|---|---|
+| `primary` | 面板主操作（导出 / 保存 / 删除确认） | 实心蓝底白字，hover 加深 |
+| `ghost` | 次要操作（改名 / 覆盖更新） | 透明底 + 描边，hover 转蓝 |
+| `danger` | 破坏性操作（删除） | 同 ghost，hover 转红 |
+| `icon` | 标题栏轻量开关 | 无边框，仅 hover 底色 |
+
+改主题或字号后**必须重调 `style_btn`**，否则颜色不跟随。
+
+### 11.3 弹窗：一律自绘
+
+`QMessageBox` / `QInputDialog` 已全部替换为 `GlassDialog`（**真正的 `QDialog` 子类**，玻璃底 + 菲涅尔描边 + 语义徽章 + 可拖拽标题区 + `Esc` 取消 / `Enter` 确认）。上层封装：
+
+- `dlg_confirm()` → bool
+- `dlg_notify()` → 单按钮通知
+- `dlg_prompt()` → (text, ok)
+
+> 基类必须是 `QDialog`：早期用 `QFrame` + 手写事件循环"假装"模态，实测 `isModal()` 为假、`adjustSize()` 算不出 `sizeHint`，**表现为弹窗根本看不见**。
+
+### 11.4 输入框：与商汤页同源
+
+输入类控件的视觉配方统一为 **`TRACK` 填充 + `BORDER` 细描边（圆角 6）+ focus 转蓝**。
+靠"填充与卡片底的明度差"读出输入框感，而不是靠粗 / 艳的描边——这是"边缘清晰"的关键。
+
+### 11.5 卡片、导航与主题联动
+
+- 卡片底板用 `GlassPodFrame(radius=12)`；面板头 = `BarIndicator` 小细条 + 加粗标题 + 说明胶囊。
+- `NavButton` 纯自绘（左侧 3px 选中竖条 + 22px 图标槽），新增数据源要把按钮加进 `apply_styles` 的**所有**循环。
+- `set_dark` / `set_glass` 只调 `update()` **不会重算 QSS**，子页面必须经 `_refresh_subpages_theme()` 显式重刷。
+- 局部 `setStyleSheet` 会**替换**该子树继承的全局 QSS（不是叠加）→ 滚动条样式必须打包重设（`style_scroll_area()`）。
+- 自绘控件颜色一律取全局调色板（`TEXT` / `TEXT2` / `TEXT3` / `BORDER` / `TRACK` / `HOVER` / `ZEBRA`），**不要缓存到实例属性**。
+- 列表重绘必须清空**全部** layout item（含 spacer）；`deleteLater()` 的旧控件不会立即消失。
+
+---
+
+## 十二、GitHub 协作与跨机同步
+
+代码托管在 <https://github.com/Suqianqiana/token-stats>，默认分支 **`main`**。
+
+### 12.1 首次接入（另一台机器）
+
+```bash
+git clone https://github.com/Suqianqiana/token-stats.git
+cd token-stats
+git config user.email "318013379+Suqianqiana@users.noreply.github.com"   # 提交才能关联账号
+git config user.name  "浅浅猫"
+```
+
+推送 / 拉取需要 GitHub 凭据：双击 **`推送到GitHub.bat`**（走浏览器授权，凭据进 Windows 凭据管理器，只需一次）；或使用 Personal Access Token（fine-grained PAT 需开启 `Contents: Read and write`）。
+
+### 12.2 日常节奏
+
+**开工先 `git pull`，收工 `git push`**；只在 `main` 上协作。
+
+### 12.3 三条硬规矩
+
+1. **禁止 `rebase` / `amend` 已推送的提交** —— 一旦重写历史，另一台机器的 commit hash 全部对不上。
+2. **`_archive/` 永远不随 git 同步**（在 `.gitignore` 里）—— 换机器需要归档内容时得单独拷贝。
+3. **本机运行期数据不在仓库里**（`~/.workbuddy/plugins/data/token-usage-stats/`）—— 跨机共享用量走程序内「导出 / 导入别机数据」。
+
+---
+
+## 十三、目录结构
 
 ```
 token-stats/
-├── card_app.py          # 主程序（UI + 商汤同步 + 桌宠），当前 v9.1-pet-v4
-├── scanner.py           # 增量扫描聚合
-├── peer_store.py        # 多机数据源：导出/导入/合并/命名（纯标准库）
-├── launcher.py          # 轻启动器源码（不含 PySide6）
-├── sn_login.py          # 商汤登录
-├── sn_autologin_fetch.py# 商汤积分抓取
-├── test_switch_race.py  # offscreen 回归测试（200+ 项断言）
-├── 协作进度.md           # ★ 主协作文档（架构/演进/Git 规范/备注区）
-├── README.md            # 本文件
-├── .gitignore           # 版本库排除规则
-├── TokenStats.exe       # 编译产物（launcher.py 的 PyInstaller onefile）
-├── start_card.bat           # 启动器（规范名）
-├── 启动统计悬浮球.bat       # 启动器别名
-├── 启动统计悬浮球.vbs       # 静默启动（日常主推）
-├── enable_autostart.bat     # 开机自启
-├── 推送到GitHub.bat         # GitHub 首次授权 + 推送（双击即用）
-├── 桌面图标指向exe.bat      # 桌面快捷方式
-├── 商汤自动登录.bat         # 商汤登录入口
-├── 重新打包exe.bat          # 重新打包 exe
-├── assets/              # 现役素材
-│   ├── pet/             #   v1 经典素材
-│   ├── pet_v2/          #   v2 新版素材（高清）
-│   ├── pet_v3r/         #   v3 最新素材（与原版合并）
-│   ├── pet_v4/          #   v4 deepseek娘V4Pro
-│   ├── pet_alt/         #   退役帧存档（测试依赖，勿动）
-│   ├── pet_v3_add/      #   补充帧（测试依赖，勿动）
-│   ├── app_icon.{ico,png}
+├── card_app.py             # 主程序：UI + 主题系统 + 商汤同步 + 桌宠（当前 v9.1-pet-v4）
+├── scanner.py              # WorkBuddy 增量扫描聚合（cache.json / stats.json）
+├── peer_store.py           # 多机数据源：导出 / 导入 / 覆盖 / 合并（纯标准库）
+├── launcher.py             # 轻量启动器源码（不含 PySide6）
+├── sn_login.py             # 商汤登录
+├── sn_autologin_fetch.py   # 商汤积分抓取
+├── test_switch_race.py     # offscreen 回归测试（289 项断言）
+├── 协作进度.md              # ★ 主协作文档：架构 / 演进历程 / Git 规范 / 协作者备注
+├── README.md               # 本文件
+├── .gitignore              # 版本库排除规则
+├── TokenStats.exe          # 打包产物（单文件）
+├── start_card.bat               # 启动器（规范名）
+├── 启动统计悬浮球.bat            # 启动器别名
+├── 启动统计悬浮球.vbs            # 静默启动（日常推荐）
+├── enable_autostart.bat         # 开机自启
+├── 桌面图标指向exe.bat           # 桌面快捷方式
+├── 商汤自动登录.bat              # 商汤登录入口
+├── 重新打包exe.bat               # 重新打包 exe
+├── 推送到GitHub.bat              # GitHub 首次授权 + 推送
+├── assets/                 # 现役素材
+│   ├── pet/                #   v1 经典素材
+│   ├── pet_v2/             #   v2 新版素材（高清）
+│   ├── pet_v3r/            #   v3 最新素材（与原版合并，含 _saturation.json 调色标记）
+│   ├── pet_v4/             #   v4 deepseek娘V4Pro
+│   ├── pet_alt/            #   退役帧存档（测试依赖，勿动）
+│   ├── pet_v3_add/         #   补充帧源（测试依赖，勿动）
+│   ├── app_icon.ico / .png
 │   └── *_qc.json / *_windows.json   # 各版本 QC 质检参考文件
-├── docs/                # 文档与预览
+├── docs/
 │   ├── 素材饱和度优化.md
 │   ├── V3补充素材清单.md
-│   └── assets/previews/ #   界面预览图
-├── tools/               # 现役脚本
-│   ├── syntax_check.py      # 全量语法检查（内存编译，不写 pyc）
-│   ├── restart_app.py       # 重启卡片应用
-│   ├── build_exe.py         # 打包主程序 exe
-│   ├── build_launcher.py    # 打包轻启动器
-│   ├── make_app_icon.py     # 生成应用图标
-│   └── metrics_regression.py# 指标回归
-└── _archive/            # 归档区（不入库，见 _archive/README.md）
-    ├── assets-debug/        #   根级调试截图
-    ├── assets-pet-legacy/   #   桌宠历史版本
-    ├── docs-reviews/        #   历史审查页
-    ├── root-legacy/         #   根目录历史物
-    └── tools-once/          #   一次性诊断脚本
+│   └── assets/previews/    #   界面预览图（README 引用）
+├── tools/                  # 现役脚本（6 个）
+│   ├── syntax_check.py
+│   ├── restart_app.py
+│   ├── build_exe.py
+│   ├── build_launcher.py
+│   ├── make_app_icon.py
+│   └── metrics_regression.py
+└── _archive/               # 归档区（不入版本库，见 _archive/README.md）
+    ├── assets-debug/           # 根级调试截图
+    ├── assets-pet-legacy/      # 桌宠历史版本
+    ├── docs-reviews/           # 历史审查页
+    ├── root-legacy/            # 根目录历史物
+    └── tools-once/             # 一次性诊断脚本
 ```
 
-**归档约定**（第 53 轮建立）：一切**历史备份、调试中间产物、一次性脚本、已废弃的审查页**统一放进 `_archive/` 对应分类，不进版本库；项目内只保留「跑起来必需 + 当前在维护」的东西。归档清单与取回方法见 [`_archive/README.md`](_archive/README.md)。
-
-- 协作与版本管理：[`协作进度.md`](协作进度.md)
-- 归档说明：[`_archive/README.md`](_archive/README.md)
-- 外部数据/配置目录：`~/.workbuddy/plugins/data/token-usage-stats/`
-- 别机数据源目录：`~/.workbuddy/plugins/data/token-usage-stats/peers/`
+**归档约定**：历史备份、调试中间产物、一次性脚本、废弃审查页一律放进 `_archive/` 对应分类，**不进版本库**；项目内只保留「跑起来必需 + 当前在维护」的东西。清单与取回方法见 [`_archive/README.md`](_archive/README.md)。
 
 ---
 
-*本 README 面向使用者速览；《协作进度.md》为主协作文档，二者需同步维护。*
+## 十四、已知限制与注意事项
+
+1. **商汤无官方 API**：额度靠抓取控制台接口，控制台改版可能失效；凭证 3 小时过期，需账号密码或重新抓包。
+2. **Windows 专用启动脚本**：`.bat` / `.vbs` 仅 Windows 可用。
+3. **仓库当前为公开（public）**：仓库内含桌宠素材与预览图。如需私有，在仓库 **Settings → Danger Zone → Change visibility** 调整。
+4. **`_archive/` 与运行期数据不随 git 走**：换机器时归档内容需单独拷贝；用量数据走程序内导出 / 导入。
+5. **变更记录**：商汤页两张积分池卡于 2026-09-20 改为**常驻渲染**（未就绪时用官方公测期默认满额占位，原提示文字下移至页面底部）；多机页机器框与内联改名输入框的描边同步改为「`TRACK` 填充 + `BORDER` 细描边」，与商汤页输入框同源。
+
+---
+
+## 附：相关文档
+
+- 主协作文档：[`协作进度.md`](协作进度.md) —— 完整演进历程、架构演进、Git 规范、协作者备注
+- 归档说明：[`_archive/README.md`](_archive/README.md)
+- 素材调色记录：[`docs/素材饱和度优化.md`](docs/素材饱和度优化.md)
+- 素材清单：[`docs/V3补充素材清单.md`](docs/V3补充素材清单.md)

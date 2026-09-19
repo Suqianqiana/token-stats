@@ -2526,6 +2526,41 @@ def _next_weekly_reset_str():
     return f"{nxt.month}月{nxt.day}日 {nxt:%H:%M}"
 
 
+def _default_sn_pools():
+    """凭证 / 数据未就绪时的占位积分池: 两张卡以「官方公测期满额」渲染。
+
+    update 2026-09-20 (第57轮): 浅猫要求「不管怎样积分卡都固定在那里, 只是没加载
+    凭证的时候数据是默认满额数据」。原实现在 pools 为空时把整个卡片区换成一段文字,
+    首次打开要等凭证加载完卡片才"长出来"(先文字后卡片的跳变)。
+    这里返回的字段与 load_sn_stats().build_pool 完全一致 —— 即占位卡与真实卡**同形**,
+    唯一区别是还没有消耗(remaining == total); 重置时间也取真实的下一次 5h 窗口边界与
+    滚动周锚点, 避免出现 "—" 的空洞感。
+    """
+    try:
+        _ws, we = sn_window_bounds()
+        win_reset = _fmt_reset(we)
+    except Exception:
+        win_reset = "—"
+    try:
+        week_reset = _next_weekly_reset_str()
+    except Exception:
+        week_reset = "—"
+
+    def mk(pid, name, scope, color):
+        return {
+            "id": pid, "name": name, "scope": scope, "color": color,
+            "window_total": SN_POOL_WINDOW_QUOTA,
+            "window_remaining": float(SN_POOL_WINDOW_QUOTA),
+            "weekly_total": SN_POOL_WEEKLY_QUOTA,
+            "weekly_remaining": float(SN_POOL_WEEKLY_QUOTA),
+            "window_reset": win_reset, "next_weekly_reset": week_reset,
+            "synced": False, "sync_time": None, "placeholder": True,
+        }
+
+    return [mk("general", "通用积分池", "所有 Free 模型可用", "purple"),
+            mk("flash_lite", "Flash-Lite 专属积分池", "仅 Flash-Lite 系列模型", "orange")]
+
+
 def load_sn_stats(force=False, proactive=False):
     import collections
     wb = _load_wb_stats()
@@ -3371,9 +3406,12 @@ class SNQuotaPage(QWidget):
         v.setSpacing(10)
 
         # 1. 左右对称双积分池 (额度文字加大醒目)
+        # update 2026-09-20 (第57轮): 两张卡改为**常驻** —— 数据/凭证未就绪时用
+        # 「默认满额占位」(见 _default_sn_pools), 不再退化成一段文字等待加载。
         self.pools_layout = QHBoxLayout()
         self.pools_layout.setSpacing(10)
         v.addLayout(self.pools_layout)
+        self._pools_placeholder = True
 
         # 2. 活动固定积分卡片 (双列平衡排版)
         self.promo_card = SNPromoCard()
@@ -3387,7 +3425,15 @@ class SNQuotaPage(QWidget):
         self.sync_panel.account_saved.connect(self._on_account_saved)
         v.addWidget(self.sync_panel)
 
-        # 4. 底部微型注释
+        # 4. 状态提示行 (原先占据积分卡的位置, 第57轮按浅猫要求挪到页面底部)
+        self.hint_lbl = QLabel(
+            "尚未获取商汤额度数据，上方两张卡片显示的是官方公测期默认满额额度；"
+            "在「商汤同步」面板粘贴官网 cURL 即可开启实时自动同步。")
+        self.hint_lbl.setWordWrap(True)
+        self.hint_lbl.hide()
+        v.addWidget(self.hint_lbl)
+
+        # 5. 底部微型注释
         self.foot_lbl = QLabel("注: 上限为官方公开的公测期固定额度 (60,000/5h · 600,000/周)；数据均以控制台实际调用与配额为准。")
         self.foot_lbl.setStyleSheet(f"color:{qname(TEXT3)};")
         v.addWidget(self.foot_lbl)
@@ -3397,6 +3443,7 @@ class SNQuotaPage(QWidget):
     def apply_size(self):
         m = curr_metric()
         self.foot_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_date_pt"]))
+        self.hint_lbl.setFont(QFont("Microsoft YaHei UI", m["sn_date_pt"]))
 
         for i in range(self.pools_layout.count()):
             w = self.pools_layout.itemAt(i).widget()
@@ -3421,26 +3468,39 @@ class SNQuotaPage(QWidget):
             if w:
                 w.deleteLater()
 
-        pools = s.get("pools", [])
-        if not pools:
-            empty_lbl = QLabel("未检测到商汤模型调用记录。\n可在下方配置官网 cURL 开启实时自动同步。")
-            empty_lbl.setAlignment(Qt.AlignCenter)
-            empty_lbl.setStyleSheet(f"color:{qname(TEXT3)}; padding: 36px; font-size:11.5px;")
-            self.pools_layout.addWidget(empty_lbl)
+        pools = s.get("pools") or []
+        by_id = {p.get("id"): p for p in pools if isinstance(p, dict)}
+
+        # update 2026-09-20 (第57轮): 两张积分卡**常驻渲染** —— 缺哪一张就用
+        # 「默认满额占位」补齐(_default_sn_pools), 并亮起底部提示行说明是占位数据;
+        # 数据到齐后提示行自动隐藏。这样首次打开(凭证还在加载)时卡片就已就位,
+        # 不会出现"先一段文字、稍后卡片才长出来"的跳变。
+        missing = [pid for pid in ("general", "flash_lite") if not by_id.get(pid)]
+        if missing:
+            for p in _default_sn_pools():
+                if p["id"] in missing:
+                    by_id[p["id"]] = p
+
+        for pid in ("general", "flash_lite"):
+            self.pools_layout.addWidget(SNPoolCard(by_id[pid]), 1)
+
+        promo = by_id.get("promo")
+        if promo:
+            self.promo_card.set_data(promo.get("total_balance", 0),
+                                     promo.get("nearest_expire", "—"))
         else:
-            for p in pools:
-                if p.get("id") in ("general", "flash_lite"):
-                    self.pools_layout.addWidget(SNPoolCard(p), 1)
-                elif p.get("id") == "promo":
-                    tot = p.get("total_balance", 0)
-                    exp = p.get("nearest_expire", "—")
-                    self.promo_card.set_data(tot, exp)
+            self.promo_card.set_data(0, "—")
+
+        self._pools_placeholder = bool(missing)
+        self.hint_lbl.setVisible(self._pools_placeholder)
 
         self.sync_panel.set_status(s)
         self.apply_theme()
 
     def apply_theme(self):
         self.foot_lbl.setStyleSheet(f"color:{qname(TEXT3)};")
+        # update 2026-09-20 (第57轮): 底部状态提示行 —— 与脚注同色系, 占位时显示。
+        self.hint_lbl.setStyleSheet(f"color:{qname(TEXT3)};")
 
         for i in range(self.pools_layout.count()):
             w = self.pools_layout.itemAt(i).widget()
@@ -3876,9 +3936,12 @@ class MachineBox(QWidget):
         self._edit.setFixedHeight(h - 8)
         self._edit.setStyleSheet(
             f"QLineEdit#machine_edit{{ background:{qrgba(TRACK)}; color:{qname(TEXT)};"
-            f" border:1px solid #3b6fe0; border-radius:6px; padding:1px 7px;"
+            f" border:1px solid {qrgba(BORDER)}; border-radius:6px; padding:2px 8px;"
             f" font-size:{m['opt_btn_px']}px; selection-background-color:#3b6fe0;"
-            f" selection-color:#ffffff; }}")
+            f" selection-color:#ffffff; }}"
+            # update 2026-09-20 (第57轮): 边框由「常亮蓝」改为与商汤输入框同源的
+            # BORDER 细线 + focus 变蓝 —— 与 _paint_shell 的新配方成一套语言。
+            f"QLineEdit#machine_edit:focus{{ border:1px solid #3b6fe0; }}")
         self.update()
 
     def apply_theme(self):
@@ -4077,17 +4140,26 @@ class MachineBox(QWidget):
         p.end()
 
     def _paint_shell(self, p):
-        """外壳: 低饱和填充 + 明确描边 (暗色下同样走全局调色板)。"""
+        """外壳: 与商汤页输入框同源配方 —— TRACK 填充 + BORDER 细描边。
+
+        update 2026-09-20 (第57轮): 浅猫反馈「多机名字的框框和输入时候的框框边缘
+        都有点不清晰, 没有商汤页输密码那个框框清晰」。定位原因:
+          原实现用 CARD(近白/近黑) alpha 150~190 填充 + BLUE alpha 90~120 描边 ——
+          填充与所在玻璃卡片**几乎同色**(毫无对比), 描边又是低透明度淡蓝,
+          于是整体只剩一条若隐若现的线, 自然"边缘不清晰"。
+        而商汤页 QLineEdit 清晰的真因是 **TRACK 填充与卡片底形成明度差** +
+        BORDER 细描边(不是靠粗/艳的描边)。此处改为同一配方, 两处输入框视觉同源。
+        """
         w, h = self.width(), self.height()
-        bg = QColor(CARD)
-        bg.setAlpha(150 if theme_state["dark"] else 190)
+
+        # 填充: TRACK (与卡片底拉开明度差, 这是"看得见是输入框"的主因)
         p.setPen(Qt.NoPen)
-        p.setBrush(bg)
+        p.setBrush(QColor(TRACK))
         p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 9, 9)
-        bd = QColor(BLUE)
-        bd.setAlpha(120 if theme_state["dark"] else 90)
+
+        # 描边: BORDER 全不透明 1px 细线 (与商汤输入框同款)
         p.setBrush(Qt.NoBrush)
-        p.setPen(QPen(bd, 1.0))
+        p.setPen(QPen(QColor(BORDER), 1.0))
         p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 9, 9)
 
         # 编辑态下: 右侧两个按钮 (保存 / 取消) 由自绘负责

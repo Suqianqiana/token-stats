@@ -399,6 +399,37 @@ check("活动积分条存在", w2.sn_page.promo_bar is not None)
 check("内嵌同步面板存在", w2.sn_page.sync_panel is not None)
 check("面板状态行=自动同步", "自动同步" in w2.sn_page.sync_panel.status_lbl.text(),
       w2.sn_page.sync_panel.status_lbl.text())
+
+# ========== 6.1 商汤页池卡常驻 (2026-09-20 第57轮) ==========
+# 浅猫: "第一次打开程序的时候商汤页面上面两个积分卡会不显示, 而是显示一段文字,
+#        要等加载好凭证才会出现积分卡" → 改为卡片常驻 + 未就绪时默认满额占位,
+#        原提示文字挪到页面底部(占位时显示, 数据到齐自动隐藏)。
+w3 = ca.CardWindow()
+w3.refresh = lambda *a, **k: None
+w3._switch_nav(w3.btn_nav_sn)
+w3.sn_page.render({"source": "sn", "pools": [], "synced": False, "autosync_error": None})
+_lay3 = w3.sn_page.pools_layout
+check("空 pools → 仍渲染 2 张池卡(不再退化成一段文字)",
+      _lay3.count() == 2, f"count={_lay3.count()}")
+_c0 = _lay3.itemAt(0).widget()
+check("占位池卡为默认满额 (remaining == total)",
+      _c0.pool["window_remaining"] == _c0.pool["window_total"]
+      and _c0.pool["weekly_remaining"] == float(_c0.pool["weekly_total"]),
+      f'{_c0.pool["window_remaining"]:.0f}/{_c0.pool["window_total"]}')
+check("占位态: 底部提示行可见", w3.sn_page.hint_lbl.isHidden() is False)
+w3.sn_page.render({"source": "sn", "pools": RENDER_POOLS, "synced": True,
+                   "autosync_error": None})
+check("数据到齐: 底部提示行自动隐藏", w3.sn_page.hint_lbl.isHidden() is True)
+check("数据到齐: 池卡仍为 2 张", w3.sn_page.pools_layout.count() == 2)
+_dp = ca._default_sn_pools()
+check("_default_sn_pools 覆盖两池 / 满额 / 与真实池同形",
+      [p["id"] for p in _dp] == ["general", "flash_lite"]
+      and all(p["weekly_remaining"] == float(p["weekly_total"])
+              and p["window_remaining"] == p["window_total"] for p in _dp)
+      and all(k in _dp[0] for k in ("name", "scope", "color", "window_total",
+                                    "window_reset", "next_weekly_reset")),
+      str([p["id"] for p in _dp]))
+
 w2.layout().activate()
 h_sn = w2.height()
 check("SN 窗口高度在合理区间", 500 <= h_sn <= 1000, f"h={h_sn}")
@@ -1045,6 +1076,10 @@ check("MachineBox 可拉伸 (不再固定宽度)",
 check("MachineBox 具备改名信号", hasattr(_box, "rename_requested"))
 _box.apply_size()
 check("MachineBox 高度跟随度量", _box.height() == ca.curr_metric()["nav_btn_h"] - 2)
+# update 2026-09-20 (第57轮): 框的描边改为走全局 BORDER 令牌 (与商汤页输入框同源),
+# 不再硬编码蓝色 —— 加断言防止日后被改回低透明度淡蓝而重新变"边缘不清晰"。
+check("机器框描边走全局 BORDER (与商汤输入框同源)",
+      ca.qrgba(ca.BORDER) in _box._edit.styleSheet(), _box._edit.styleSheet()[:70])
 
 # 11.9 多机页为单列纵向布局 (第52轮: 双栏观感不佳)
 _mm = _w5.multi_page
