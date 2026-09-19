@@ -396,10 +396,15 @@ def machine_summary(machine, stats):
     ⚠️ 注意: load_dsh_stats() 的返回值**只有 daily、没有 models**（models 是按需现算的），
     所以这里不能只累加 models —— 走 normalize_source 统一结构后再统计，
     否则 DSH 那部分用量会被整块漏掉。
+
+    update 2026-09-20 (第59轮): 新增 `today` 字段 —— 按机统计要支持「今日 / 总量」切换，
+    而原来只有全程 total/requests，没有分机的当日用量。这里按**当天日期**从规范化后的
+    daily 里现取（别机快照若当天没同步，自然为 0，这是诚实的口径）。
     """
     out = {"machine": machine, "total": 0, "requests": 0, "input": 0,
            "output": 0, "cached": 0, "sessions": 0,
-           "firstDay": "", "lastDay": "", "cost": None}
+           "firstDay": "", "lastDay": "", "cost": None, "today": 0}
+    today_key = time.strftime("%Y-%m-%d")
     days = []
     for key in SOURCE_KEYS:
         raw = (stats or {}).get(key)
@@ -414,6 +419,9 @@ def machine_summary(machine, stats):
             out["input"] += int(a.get("input", 0) or 0)
             out["output"] += int(a.get("output", 0) or 0)
             out["cached"] += int(a.get("cached", 0) or 0)
+        for m, a in ((norm.get("daily") or {}).get(today_key) or {}).items():
+            if isinstance(a, dict):
+                out["today"] += int(a.get("total", 0) or 0)
         for d in (norm.get("daily") or {}):
             if d and d != "unknown":
                 days.append(d)

@@ -1,6 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-Token 统计卡片 V8.7 — iOS 27 液态玻璃 (Pure Crystal Glass) + 精致双尺寸仪表盘
+Token 统计卡片 V9.2 — iOS 27 液态玻璃 (Pure Crystal Glass) + 精致双尺寸仪表盘
+
+V9.2 highlights (Multi-Machine Sync):
+  Export this machine's full WorkBuddy + DSH usage snapshot to a JSON package, import
+  it on another machine, and view every machine side by side. Imports are additive and
+  never touch local data; re-importing an existing machine name overwrites that
+  machine's snapshot instead of double-counting. Per-machine stats ship as two-column
+  cards (rank bar on the left, share ring on the right) with a Today / All-time toggle.
+
 核心规范:
   - 产品标识全面更名为「Token 统计」
   - 彻底去除色相色散畸变，回归纯净物理级菲涅尔镜面高光与透明晶体折射
@@ -8,6 +16,8 @@ Token 统计卡片 V8.7 — iOS 27 液态玻璃 (Pure Crystal Glass) + 精致双
   - 顶部指标卡核心数字垂直重心上移，消除贴底压迫感，留出黄金透气间隙
   - 重构舒适大窗口 (1180×730) 字体层级体系，字重与行高开阔舒展，拒绝粗暴放大
   - 三档玻璃通透度无级调谐 + 右键多入口切换 + 每日柱状图鼠标锚点滚轮缩放与平移
+  - 商汤额度页两张积分池卡**常驻**（未就绪用公测期满额占位）；按机统计双栏 + 环形占比圈
+  - ⚠️ 属性名不要用 `metric`：QWidget 有虚函数 QPaintDevice::metric()，会与 PySide6 覆写冲突而崩
 """
 import base64
 import json
@@ -3520,8 +3530,11 @@ SRC_META = {
 }
 
 # 按机统计列的几何常量 (绘制与列头共用, 保证像素级对齐)
+# update 2026-09-20 (第59轮): 新增右栏「环形占比圈」——
+#   ring_w = 右栏总宽; 左栏内容一律按 (w - ring_w) 布局, 两栏之间在 ring_w 处画细竖线分隔。
 RANK_COL = dict(rank_x=6.0, rank_d=18.0, name_x=32.0, name_w=132.0, bar_gap=10.0,
-                right_pad=6.0, tot_w=110.0, req_w=74.0, day_w=158.0)
+                right_pad=6.0, tot_w=110.0, req_w=74.0, day_w=158.0,
+                ring_w=104.0)
 
 
 class SrcBadge(QWidget):
@@ -3694,12 +3707,24 @@ class MachineRow(QWidget):
 
 
 class StatRankRow(QWidget):
-    """按机统计的一行 (第51轮视觉重做)
+    """按机统计的一行 (第51轮视觉重做 / 第59轮改为双栏)
 
-    布局为**两行式**, 避免窄面板下横向列互相挤压:
-      · 上行: 名次徽标 + 机器名 (+本机圆点) ............ Token 总量 (右, 加大)
-      · 下行: 用量占比条 (从名次后通栏铺到右侧)
-      · 底行: 请求数 · 数据区间 (小字, 右对齐)
+    布局为**双栏** (浅猫第59轮: "改成双栏的, 中间用细线隔开, 左边还是之前的呈现方式,
+    右边是环形占比圈"):
+
+      ┌───────────────────────────────┬──────────┐
+      │ ① 机器名 (+本机圆点)   Token 总量 │          │
+      │ ── 用量占比条 (相对最大机器) ──── │  ◯ 占比%  │  ← 环形占比圈 (对总量真实占比)
+      │ 请求数 · 数据区间               │          │
+      └───────────────────────────────┴──────────┘
+                    左栏(原有)          细竖线      右栏(环形)
+
+    · 左栏: 与第51轮完全一致 —— 名次徽标 / 机器名 / Token 总量 / 占比条 / 请求·区间;
+      只是可用宽度收窄为 `w - RANK_COL["ring_w"]`。
+    · 右栏: **环形占比圈** —— 弧长 = 本机占全部机器总量的比例, 圆心写百分比。
+      注意两条"占比"口径不同且互补: 左栏的条是**相对最大机器**归一(排行用),
+      右栏的环是**占总量**的真实百分比(份额用)。
+    · `metric` 决定取哪一口径: "total"(总量) 或 "today"(今日)。
 
     @2026-09-19 第53轮: 新增 `placeholder` 骨架态 —— 首次进入多机页时完整合并
     数据要等后台 scan 回来(约 100ms), 旧实现这段时间是「空态文案」, 数据到位后
@@ -3707,12 +3732,21 @@ class StatRankRow(QWidget):
     画一条暗淡占位条, 让首帧就有稳定骨架, 数据到位后原地替换不再跳变。
     """
 
-    def __init__(self, rank, machine, d, mx, is_local, parent=None, placeholder=False):
+    def __init__(self, rank, machine, d, mx, is_local, parent=None, placeholder=False,
+                 grand_total=None, metric="total"):
         super().__init__(parent)
         self.rank = rank
         self.machine = machine
-        self.total = d.get("total", 0)
+        # ⚠️ 属性名**不能**叫 `metric` —— QWidget 有虚函数 QPaintDevice::metric(),
+        #    PySide6 会去取 self.metric 当覆写调用, 赋成字符串会在构造 QPainter 时
+        #    抛 "Error calling Python override of QWidget::metric(): 'str' object is
+        #    not callable" → 进程直接 abort (2026-09-20 踩到, 排查了一整轮)。
+        self.stat_metric = metric or "total"
+        # update 2026-09-20 (第59轮): 双口径 —— value 按 stat_metric 取, share 对 grand_total 求。
+        self.total = int(d.get(self.stat_metric, 0) or 0)
         self.mx = mx or 1
+        self.grand_total = int(grand_total or 0)
+        self.share = (self.total / self.grand_total) if self.grand_total else 0.0
         self.is_local = is_local
         self.placeholder = placeholder
         self.requests = d.get("requests", 0)
@@ -3751,6 +3785,8 @@ class StatRankRow(QWidget):
         m = curr_metric()
         dark = theme_state["dark"]
         C = RANK_COL
+        # 左栏可用宽度: 右栏固定让给环形占比圈
+        lw = max(120.0, w - C["ring_w"])
 
         if self._hover:
             hv = QColor(HOVER)
@@ -3767,7 +3803,13 @@ class StatRankRow(QWidget):
                 p.setBrush(zb)
                 p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 9, 9)
 
-        # ================= 上行: 名次 + 机器名 ......... Token 总量
+        # ================= 双栏之间的细竖线 (第59轮)
+        sep = QColor(BORDER)
+        sep.setAlpha(170 if dark else 200)
+        p.setPen(QPen(sep, 1.0))
+        p.drawLine(QPointF(lw + 0.5, 7.0), QPointF(lw + 0.5, h - 7.0))
+
+        # ================= 左栏 · 上行: 名次 + 机器名 ......... Token 总量
         top_y = 8.0
         top_h = self.ROW_TOP_H
         cy = top_y + top_h / 2.0
@@ -3786,7 +3828,7 @@ class StatRankRow(QWidget):
         # 机器名 (超长省略, 不侵入右侧总量)
         p.setFont(QFont("Microsoft YaHei UI", m["row_pt"], QFont.Bold if self.is_local else QFont.Normal))
         p.setPen(QColor(BLUE) if self.is_local else QColor(TEXT))
-        name_res = w - C["name_x"] - C["tot_w"] - 30
+        name_res = lw - C["name_x"] - C["tot_w"] - 30
         nm = p.fontMetrics().elidedText(self.machine, Qt.ElideRight, int(max(40, name_res)))
         p.drawText(QRectF(C["name_x"], top_y, name_res, top_h),
                    Qt.AlignLeft | Qt.AlignVCenter, nm)
@@ -3796,15 +3838,15 @@ class StatRankRow(QWidget):
             p.setBrush(QColor(BLUE))
             p.drawEllipse(QRectF(C["name_x"] + tw + 6, cy - 2.5, 5, 5))
 
-        # Token 总量 (右, 等宽加粗)
+        # 数值 (右, 等宽加粗) —— 今日模式下即"今日用量"
         p.setFont(QFont("Consolas", m["row_pt"] + 1.6, QFont.Bold))
         p.setPen(QColor(TEXT))
-        p.drawText(QRectF(w - C["tot_w"] - C["right_pad"], top_y, C["tot_w"], top_h),
+        p.drawText(QRectF(lw - C["tot_w"] - C["right_pad"], top_y, C["tot_w"], top_h),
                    Qt.AlignRight | Qt.AlignVCenter, fmt_full(self.total))
 
-        # ================= 中行: 用量占比条 (通栏)
+        # ================= 左栏 · 中行: 用量占比条 (相对最大机器)
         bar_x = C["name_x"]
-        bar_w = max(60.0, w - bar_x - C["right_pad"])
+        bar_w = max(60.0, lw - bar_x - C["right_pad"])
         bh = self.BAR_H
         by = self.BAR_Y
         tr = QColor(TRACK)
@@ -3825,14 +3867,52 @@ class StatRankRow(QWidget):
             p.setBrush(QBrush(grad))
             p.drawRoundedRect(QRectF(bar_x, by, fw, bh), bh / 2, bh / 2)
 
-        # ================= 底行: 请求 / 区间
+        # ================= 左栏 · 底行: 请求 / 区间
         foot_y = self.FOOT_Y
         foot_h = h - foot_y - 3.0
         p.setFont(QFont("Microsoft YaHei UI", m["sn_date_pt"] - 0.2))
         p.setPen(QColor(TEXT3))
-        p.drawText(QRectF(bar_x, foot_y, w - bar_x - C["right_pad"], foot_h),
+        p.drawText(QRectF(bar_x, foot_y, lw - bar_x - C["right_pad"], foot_h),
                    Qt.AlignLeft | Qt.AlignTop,
                    f"{self.requests:,} 请求   ·   {self.first_day} ~ {self.last_day}")
+
+        # ================= 右栏: 环形占比圈
+        self._paint_ring(p, lw, w, h, m)
+
+    def _paint_ring(self, p, lw, w, h, m):
+        """环形占比圈 (第59轮新增): 弧长 = 本机占**全部机器总量**的比例, 圆心写百分比。
+
+        用两段同心圆弧实现: 底环(TRACK) 铺满整圈 + 前景弧(本机蓝 / 别机紫)按占比画。
+        Qt 的 drawArc 角度以 3 点方向为 0°、**逆时针为正**, 所以起点取 90°(12 点方向),
+        跨度取负值(顺时针增长)才符合"从顶部顺时针填充"的直觉。
+        """
+        C = RANK_COL
+        cx = lw + C["ring_w"] / 2.0
+        cy = h / 2.0 - 1.0
+        th = 6.0                                    # 圈线粗细
+        ro = min(21.0, (C["ring_w"] - 18.0) / 2.0)  # 外半径
+        rr = ro - th / 2.0                          # 描边中心线半径
+        rect = QRectF(cx - rr, cy - rr, rr * 2.0, rr * 2.0)
+
+        p.setBrush(Qt.NoBrush)
+        tr = QColor(TRACK)
+        tr.setAlpha(235)
+        p.setPen(QPen(tr, th, Qt.SolidLine, Qt.FlatCap))
+        p.drawArc(rect, 0, 360 * 16)
+
+        accent = QColor(BLUE) if self.is_local else QColor(PURPLE)
+        if self.share > 0.001:
+            # 满圈(360°)会被 Qt 当成"不画", 故夹到 359.9° (=5759/16)
+            span = -int(360 * 16 * min(1.0, self.share))
+            span = max(span, -5759)
+            p.setPen(QPen(accent, th, Qt.SolidLine, Qt.FlatCap))
+            p.drawArc(rect, 90 * 16, span)
+
+        p.setFont(QFont("Consolas", m["sn_date_pt"] + 0.6, QFont.Bold))
+        p.setPen(accent)
+        pct = self.share * 100.0
+        txt = f"{pct:.0f}%" if pct >= 10.0 else f"{pct:.1f}%"
+        p.drawText(rect, Qt.AlignCenter, txt)
 
     def _paint_placeholder(self, ev):
         """骨架占位: 与真实行**同高同结构**, 只把内容换成暗淡色块。
@@ -3853,6 +3933,14 @@ class StatRankRow(QWidget):
             p.setBrush(base)
             p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 9, 9)
 
+        lw = max(120.0, w - C["ring_w"])
+
+        # 双栏之间的细竖线 (与真实行同位置, 保证骨架→数据不跳变)
+        sep = QColor(BORDER)
+        sep.setAlpha(170 if theme_state["dark"] else 200)
+        p.setPen(QPen(sep, 1.0))
+        p.drawLine(QPointF(lw + 0.5, 7.0), QPointF(lw + 0.5, h - 7.0))
+
         sk = QColor(TEXT3)
         sk.setAlpha(46 if theme_state["dark"] else 40)
         p.setPen(Qt.NoPen)
@@ -3863,17 +3951,26 @@ class StatRankRow(QWidget):
         p.drawEllipse(QRectF(C["rank_x"], cy - C["rank_d"] / 2.0, C["rank_d"], C["rank_d"]))
         p.drawRoundedRect(QRectF(C["name_x"], cy - 5.0, 84.0, 10.0), 5, 5)
         tw = 68.0
-        p.drawRoundedRect(QRectF(w - C["right_pad"] - tw, cy - 6.0, tw, 12.0), 6, 6)
+        p.drawRoundedRect(QRectF(lw - C["right_pad"] - tw, cy - 6.0, tw, 12.0), 6, 6)
 
         # 中行: 占比条占位 (细条, 只用 30% 宽度以示"未填满")
         by, bh = self.BAR_Y, self.BAR_H
         bar_x = C["name_x"]
-        avail = max(40.0, w - bar_x - C["right_pad"])
+        avail = max(40.0, lw - bar_x - C["right_pad"])
         p.drawRoundedRect(QRectF(bar_x, by, avail * 0.30, bh), bh / 2, bh / 2)
 
         # 底行: 请求/区间占位
         fy = self.FOOT_Y
         p.drawRoundedRect(QRectF(bar_x, fy + 2.0, 148.0, 8.0), 4, 4)
+
+        # 右栏: 环形圈占位 (同几何、暗色描边, 让首帧就有"这里是个圈"的骨架)
+        cx = lw + C["ring_w"] / 2.0
+        rcy = h / 2.0 - 1.0
+        ro = min(21.0, (C["ring_w"] - 18.0) / 2.0)
+        rr = ro - 3.0
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(sk, 6.0))
+        p.drawArc(QRectF(cx - rr, rcy - rr, rr * 2.0, rr * 2.0), 0, 360 * 16)
         p.end()
 
 
@@ -4226,12 +4323,15 @@ class StatHeaderRow(QWidget):
         w, h = self.width(), self.height()
         m = curr_metric()
         C = RANK_COL
+        lw = max(120.0, w - C["ring_w"])
         p.setFont(QFont("Microsoft YaHei UI", m["sn_date_pt"] - 0.2))
         p.setPen(QColor(TEXT3))
-        p.drawText(QRectF(C["name_x"], 0, w - C["name_x"] - C["tot_w"], h),
+        p.drawText(QRectF(C["name_x"], 0, lw - C["name_x"] - C["tot_w"], h),
                    Qt.AlignLeft | Qt.AlignVCenter, "机器 / 用量占比")
-        p.drawText(QRectF(w - C["tot_w"] - C["right_pad"], 0, C["tot_w"], h),
+        p.drawText(QRectF(lw - C["tot_w"] - C["right_pad"], 0, C["tot_w"], h),
                    Qt.AlignRight | Qt.AlignVCenter, "Token 总量")
+        # update 2026-09-20 (第59轮): 右栏表头 —— 环形圈是"占全部机器总量"的百分比
+        p.drawText(QRectF(lw, 0, C["ring_w"], h), Qt.AlignCenter, "占比")
 
         ln = QColor(BORDER)
         ln.setAlpha(150)
@@ -4253,10 +4353,48 @@ class MultiMachinePage(QWidget):
         self._peers = []
         self._summary = {}
         self._skeleton_n = 0      # 骨架行数: 记住上次真实台数, 让骨架与内容同高
+        self._pending = False     # 数据在途标记 (render 时记录, 供切换口径时复用)
+        # update 2026-09-20 (第59轮): 按机统计口径 —— "total"(总量) / "today"(今日)
+        self._stat_metric = "total"
         self._build_ui()
 
+    def _stat_seg_btn(self, text):
+        """按机统计口径的分段按钮 (样式复用商汤同步面板那套)。"""
+        b = QPushButton(text)
+        b.setCheckable(True)
+        b.setCursor(Qt.PointingHandCursor)
+        return b
+
+    def _apply_stat_seg_style(self):
+        """「今日 / 总量」分段样式 —— 选中实心蓝, 未选中 TRACK 底 + BORDER 细描边。"""
+        m = curr_metric()
+        checked = ("QPushButton{ background:#3b6fe0; color:white; border:none; border-radius:6px;"
+                   f" padding:3px 11px; font-size:{m['opt_btn_px']}px; font-weight:600; }}")
+        normal = (f"QPushButton{{ background:{qrgba(TRACK)}; color:{qname(TEXT2)};"
+                  f" border:1px solid {qrgba(BORDER)}; border-radius:6px;"
+                  f" padding:3px 11px; font-size:{m['opt_btn_px']}px; }}"
+                  f"QPushButton:hover{{ background:{qrgba(HOVER)}; color:{qname(TEXT)}; }}")
+        for b in (self.btn_stat_today, self.btn_stat_total):
+            b.setStyleSheet(checked if b.isChecked() else normal)
+
+    def _switch_stat_metric(self, which):
+        """切换 按机统计 口径 (今日 / 总量) —— 只重画统计列表, 不重跑整页。"""
+        if which == self._stat_metric:
+            return
+        self._stat_metric = which
+        for b, k in ((self.btn_stat_today, "today"), (self.btn_stat_total, "total")):
+            b.setChecked(k == which)
+        self._apply_stat_seg_style()
+        self._render_stat_rows()
+        self.apply_size()
+
     # ---------- 面板头工厂 (统一「小细条 + 标题 + 右侧说明」语言) ----------
-    def _panel_head(self, parent_layout, title, accent, right_text=""):
+    def _panel_head(self, parent_layout, title, accent, right_text="", extra=None):
+        """面板头工厂: [小细条] 标题 …(右侧对齐) [extra...] [说明胶囊]
+
+        update 2026-09-20 (第59轮): 新增 `extra` —— 需要在右侧说明**之前**插入控件
+        (按机统计的「今日 / 总量」分段切换) 时用它, 避免各页面各自拼 layout。
+        """
         h = QHBoxLayout()
         h.setSpacing(8)
         bar = BarIndicator(accent)
@@ -4264,6 +4402,8 @@ class MultiMachinePage(QWidget):
         lbl = QLabel(title)
         h.addWidget(lbl, 0, Qt.AlignVCenter)
         h.addStretch(1)
+        for w in (extra or []):
+            h.addWidget(w, 0, Qt.AlignVCenter)
         right = None
         if right_text is not None:
             right = QLabel(right_text)
@@ -4340,8 +4480,14 @@ class MultiMachinePage(QWidget):
         sv = QVBoxLayout(self.stat_card)
         sv.setContentsMargins(16, 12, 16, 12)
         sv.setSpacing(8)
+        # update 2026-09-20 (第59轮): 「今日 / 总量」分段切换 (浅猫: "按机统计也可以切换今日、总量")
+        self.btn_stat_today = self._stat_seg_btn("今日")
+        self.btn_stat_total = self._stat_seg_btn("总量")
+        self.btn_stat_total.setChecked(True)
+        self.btn_stat_today.clicked.connect(lambda: self._switch_stat_metric("today"))
+        self.btn_stat_total.clicked.connect(lambda: self._switch_stat_metric("total"))
         self.bar_stat, self.stat_title, self.stat_scope_lbl = self._panel_head(
-            sv, "按机统计", GREEN, "")
+            sv, "按机统计", GREEN, "", extra=[self.btn_stat_today, self.btn_stat_total])
 
         # 列头 (与 StatRankRow 的列宽严格对齐)
         self.stat_header = StatHeaderRow()
@@ -4398,6 +4544,11 @@ class MultiMachinePage(QWidget):
             b.setFixedHeight(bh)
             style_btn(b, None, pt=m["sn_sub_pt"] + 0.2, height=bh)
         self.stat_header.apply_size()
+        # update 2026-09-20 (第59轮): 口径分段按钮尺寸 + 样式随度量刷一遍
+        th = m["nav_btn_h"] - 10
+        for b in (self.btn_stat_today, self.btn_stat_total):
+            b.setFixedHeight(th)
+        self._apply_stat_seg_style()
         for row in self.findChildren(MachineRow):
             row.apply_size()
         self.update()
@@ -4423,6 +4574,7 @@ class MultiMachinePage(QWidget):
             s.setStyleSheet(f"color:{qname(TEXT3)}; font-size:{m['sn_date_pt']}pt;")
         style_btn(self.btn_export, "primary")
         style_btn(self.btn_import, "primary")
+        self._apply_stat_seg_style()
         self.machine_box.apply_theme()
         self.stat_header.apply_theme()
         for row in self.findChildren(MachineRow):
@@ -4463,6 +4615,7 @@ class MultiMachinePage(QWidget):
         """
         self._peers = list(peers or [])
         self._summary = dict(summary or {})
+        self._pending = bool(pending)      # 记下来, 切换统计口径时复用
         self.machine_box.set_name(machine_name or "—")
 
         # 别机列表
@@ -4482,29 +4635,52 @@ class MultiMachinePage(QWidget):
         self.peer_scope_lbl.setText(f"{len(self._peers)} 台别机")
         self.peer_scope_lbl.setVisible(bool(self._peers))
 
-        # 按机统计对比
+        # 按机统计对比 (口径由 self._stat_metric 决定: total / today)
+        self._render_stat_rows()
+        self.apply_theme()
+        self.apply_size()
+
+    def _render_stat_rows(self):
+        """按机统计列表 —— 支持「今日 / 总量」两种口径。
+
+        update 2026-09-20 (第59轮): 浅猫要求"按机统计也可以切换今日、总量"。
+        两条"占比"口径**刻意不同且互补**:
+          · 左栏排行条按**当期最大值**归一 → 看相对排行;
+          · 右栏环形圈按**当期合计**求占比 → 看真实份额。
+        今日模式下若各机器今天都没有用量, 给空态文案而不是画一排 0。
+        """
+        key = self._stat_metric
         self._clear_layout(self.stat_lay)
         rows = [(m, d) for m, d in self._summary.items() if d]
-        rows.sort(key=lambda kv: -kv[1].get("total", 0))
-        if pending and not rows:
+        rows.sort(key=lambda kv: -int(kv[1].get(key, 0) or 0))
+        vals = [int(d.get(key, 0) or 0) for _m, d in rows]
+        grand = sum(vals)
+
+        if self._pending and not rows:
             # 数据在途: 画骨架而非空态文案, 避免"从无到有"的突增观感
             for i in range(max(self._skeleton_n, 1)):
                 self.stat_lay.addWidget(StatRankRow(
                     i + 1, "", {"total": 0}, 1, False, placeholder=True))
         elif not rows:
-            self.stat_lay.addWidget(self._empty_hint("暂无统计数据", "导入/更新别机数据后这里会显示各机器的用量对比。"))
+            self.stat_lay.addWidget(self._empty_hint(
+                "暂无统计数据", "导入/更新别机数据后这里会显示各机器的用量对比。"))
+        elif key == "today" and grand <= 0:
+            self.stat_lay.addWidget(self._empty_hint(
+                "今日暂无用量", "今天各机器都还没有产生用量；可切回「总量」看累计对比。"))
         else:
-            mx = max(d.get("total", 0) for _m, d in rows) or 1
+            mx = max(vals) or 1
             for i, (m, d) in enumerate(rows, 1):
-                self.stat_lay.addWidget(StatRankRow(i, m, d, mx, bool(d.get("local"))))
+                self.stat_lay.addWidget(StatRankRow(
+                    i, m, d, mx, bool(d.get("local")),
+                    grand_total=grand, metric=key))
             self._skeleton_n = len(rows)
         self.stat_lay.addStretch(1)
-        total_tok = sum(d.get("total", 0) for _m, d in rows)
-        self.stat_scope_lbl.setText(
-            "正在汇总…" if (pending and not rows)
-            else f"合计 {fmt_full(total_tok)} · {len(rows)} 台机器")
-        self.apply_theme()
-        self.apply_size()
+
+        if self._pending and not rows:
+            self.stat_scope_lbl.setText("正在汇总…")
+        else:
+            label = "今日合计" if key == "today" else "合计"
+            self.stat_scope_lbl.setText(f"{label} {fmt_full(grand)} · {len(rows)} 台机器")
 
     def _empty_hint(self, title, sub):
         w = QWidget()
@@ -5787,7 +5963,9 @@ PET_MS = {"idle": 240, "sleep": 1500, "wake": 700, "drag": 140,
 # 2026-09-17 浅浅猫的想法: 桌宠"顶部 1/3"点= 摸摸头, 其余(底部 2/3)= 普通点击互动;
 # 任意位置双击 = 打开面板。判据用**实际绘制区域**的高度比例, 不是窗口高度(见 _pet_click_region)。
 PET_PAT_TOP_RATIO = 1.0 / 3.0
-APP_BUILD = "v9.1-pet-v4"        # update 2026-09-14 (第40轮): 新增 V4 主题 "deepseek娘V4Pro"
+APP_BUILD = "v9.2-multi"         # update 2026-09-20 (第59轮): 版本标识统一为 V9.2,
+                                 # 代号 multi = 多机同步 (Multi-Machine Sync) 为主线特性;
+                                 # 同文件头部 docstring 也同步为 V9.2 (原先停在 V8.7, 不一致)
 
 
 def _pet_idle_seq(n):

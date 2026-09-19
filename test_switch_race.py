@@ -1338,6 +1338,55 @@ check("MultiMachinePage 提供 _clear_layout",
       hasattr(_w6.multi_page, "_clear_layout"))
 check("render 使用 _clear_layout 清理两个列表",
       "_clear_layout(self.stat_lay)" in _src and "_clear_layout(self.peer_lay)" in _src)
+# 14.5 按机统计双栏 + 环形占比圈 + 今日/总量切换 (2026-09-20 第59轮)
+# ⚠️ 本轮踩过的坑: StatRankRow 曾把口径存成 `self.metric` —— QWidget 有虚函数
+#    QPaintDevice::metric(), PySide6 会拿它当 Python 覆写去调用, 赋成字符串后
+#    构造 QPainter 即抛 "Error calling Python override of QWidget::metric(): 'str'
+#    object is not callable" → **进程直接 abort**(不是普通异常, 极难查)。留守门断言防复发。
+_r59 = ca.StatRankRow(1, "T", {"total": 100, "today": 40}, 100, True, grand_total=400)
+check("StatRankRow.metric 仍是 Qt 虚函数 (未被实例属性覆盖)",
+      callable(_r59.metric), type(_r59.metric).__name__)
+check("StatRankRow 口径存于 stat_metric", _r59.stat_metric == "total", _r59.stat_metric)
+check("占比 share 对总量求 (100/400=0.25)", abs(_r59.share - 0.25) < 1e-9, str(_r59.share))
+_r59t = ca.StatRankRow(1, "T", {"total": 100, "today": 40}, 100, True,
+                       grand_total=80, metric="today")
+check("metric='today' 时取今日值并重算占比 (40/80)",
+      _r59t.total == 40 and abs(_r59t.share - 0.5) < 1e-9,
+      f"total={_r59t.total} share={_r59t.share}")
+check("RANK_COL 提供右栏环形圈宽度", ca.RANK_COL.get("ring_w", 0) > 0,
+      str(ca.RANK_COL.get("ring_w")))
+check("StatRankRow 具备 _paint_ring", hasattr(ca.StatRankRow, "_paint_ring"))
+check("按机统计提供 今日/总量 分段按钮 + 默认总量",
+      hasattr(_w6.multi_page, "btn_stat_today") and hasattr(_w6.multi_page, "btn_stat_total")
+      and _w6.multi_page._stat_metric == "total")
+
+# machine_summary 必须给出分机"今日"用量 —— 这是口径切换的数据前提
+# 注: total 走 models 聚合(daily 不反推), 故 fixture 里给一致的两份: 17 = 15 + 2
+_T59 = time.strftime("%Y-%m-%d")
+_ms59 = ps.machine_summary("m", {"wb": {"source": "wb", "sessionsTotal": 1,
+    "models": {"x": {"requests": 3, "input": 11, "output": 6, "cached": 0,
+                     "cacheWrite": 0, "total": 17}},
+    "daily": {
+        _T59: {"x": {"requests": 2, "input": 10, "output": 5, "cached": 0,
+                     "cacheWrite": 0, "total": 15}},
+        "2026-01-01": {"x": {"requests": 1, "input": 1, "output": 1, "cached": 0,
+                             "cacheWrite": 0, "total": 2}}}}})
+check("machine_summary 提供分机 today (只取当天)",
+      _ms59.get("today") == 15, str(_ms59.get("today")))
+check("machine_summary total 仍含历史累计 (不与 today 混淆)",
+      _ms59.get("total") == 17, str(_ms59.get("total")))
+
+# 切换行为: 今日全 0 时给空态, 切回总量恢复真实行
+_w6.multi_page._switch_stat_metric("today")
+check("切到今日: scope 文案变「今日合计」",
+      "今日合计" in _w6.multi_page.stat_scope_lbl.text(),
+      _w6.multi_page.stat_scope_lbl.text())
+check("今日全部为 0 → 给空态而非一排 0", _w6.multi_page.stat_lay.count() == 2,
+      f"count={_w6.multi_page.stat_lay.count()}")
+_w6.multi_page._switch_stat_metric("total")
+check("切回总量 → 恢复 2 条真实行", _w6.multi_page.stat_lay.count() == 3,
+      f"count={_w6.multi_page.stat_lay.count()}")
+
 _w6.close()
 check("CardWindow 提供 _apply_page", hasattr(_w5, "_apply_page"))
 

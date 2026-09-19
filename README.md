@@ -4,12 +4,34 @@
 
 | 项 | 值 |
 |---|---|
-| **当前构建** | `v9.1-pet-v4` |
+| **当前构建** | `v9.2-multi` |
 | **平台** | Windows（已验证；PySide6 本身跨平台，但启动脚本为 Windows 批处理） |
 | **运行时** | Python 3.13 · PySide6 6.11.1 |
 | **第三方依赖** | **仅 PySide6**（扫描 / HTTP / JSON / 打包辅助全部标准库） |
 | **数据来源** | 本机 `~/.workbuddy/projects/**/*.jsonl` + DSH 账本 + 商汤控制台接口 |
 | **代码仓库** | <https://github.com/Suqianqiana/token-stats>（默认分支 `main`） |
+
+---
+
+## What's New in v9.2
+
+**Multi-Machine Sync** — build `v9.2-multi`
+
+- **Export → Import → Merge.** Export one machine's complete WorkBuddy + DSH usage as a
+  single JSON package, copy it over, and import it on any other machine.
+- **Non-destructive by design.** Importing never touches local data or other machines'
+  snapshots — every machine is stored separately under `peers/<machine>.json`.
+- **One button, two semantics.** A machine name never seen before is added as a new
+  machine; a name that already exists is treated as a newer snapshot of the same
+  machine and **overwrites** its old data instead of double-counting.
+- **Merged everywhere.** Once peers exist, the WorkBuddy / DSH pages include remote
+  usage too (the subtitle marks how many peer machines were merged in).
+- **Per-machine stats, redesigned.** Every machine is drawn as a two-column card: the
+  familiar rank bar on the left, and a **share ring** on the right showing its true
+  percentage of the total. A **Today / All-time** toggle re-ranks the whole list.
+- **SenseNova quota cards are always present.** Before credentials or data are ready the
+  two pool cards still render, using the official public-beta full quota as a
+  placeholder, so the page never collapses into a block of text.
 
 ---
 
@@ -68,17 +90,21 @@
 
 ![商汤额度页](docs/assets/previews/03-sensenova.png)
 
-### 多机合并页
+### 多机合并页（按机统计：双栏 + 环形占比圈）
 
 ![多机合并页](docs/assets/previews/04-multi-machine.png)
+
+### 多机合并页 · 切到「今日」口径
+
+![多机合并页 · 今日](docs/assets/previews/06-multi-today.png)
 
 ### 深色主题（商汤页）
 
 ![深色主题](docs/assets/previews/05-dark-theme.png)
 
-### 桌宠形态
+### 桌宠形态（v3 素材）
 
-![桌宠形态](docs/assets/previews/pet_mode.png)
+![桌宠形态](docs/assets/previews/pet_v3.png)
 
 ---
 
@@ -105,7 +131,11 @@
 单列纵向三段：
 
 1. **数据源管理** —— 本机机器框（点名字即可就地改名）+ 「导出本机数据」「导入 / 更新别机数据」。
-2. **按机统计** —— 各机器（🖥 本机 / 💻 别机）Token 总量排行条、请求数、日期区间；顶部显示合计与机器数。
+2. **按机统计** —— 每台机器一行**双栏卡片**（中间以细竖线分隔）：
+   - **左栏**（沿用原有呈现）：名次徽标、机器名（本机带蓝点）、Token 总量、用量占比条（**相对最大机器**归一）、请求数与数据区间；
+   - **右栏**：**环形占比圈** —— 弧长表示该机占**全部机器总量**的真实百分比，圆心写百分比数字；
+   - **口径切换**：面板头右侧的 **今日 / 总量** 分段按钮可整列重新排名（今日 = 当天用量；某台机器当天没同步过即显示 0，整列全 0 时给空态文案）；
+   - 顶部显示当期合计与机器数。
 3. **已导入的机器** —— 别机快照列表（来源徽标、导入时间），每行可 **覆盖更新** 或 **删除**。
 
 **导入语义（一个按钮覆盖两种情形）：**
@@ -153,7 +183,7 @@
 | 商汤数据 | `card_app` 商汤段 + `sn_login.py` / `sn_autologin_fetch.py` | 本地估算 + 控制台接口同步；JWT 解析与提前续期；cURL 零指纹字段探测 |
 | 界面 | `card_app.py` | 全部 UI（卡片 / 悬浮球 / 桌宠 / 弹窗 / 图表）、主题系统、线程与缓存调度 |
 | 启动 | `launcher.py` | 轻量启动器（不含 PySide6，8~10MB exe）：定位项目目录与 `pythonw.exe`，`DETACHED + CREATE_NO_WINDOW` 拉起主程序后立即退出 |
-| 回归 | `test_switch_race.py` | offscreen 回归测试，**当前 289 项断言**，需全绿 |
+| 回归 | `test_switch_race.py` | offscreen 回归测试，**当前 301 项断言**，需全绿 |
 
 ### 4.2 数据流
 
@@ -364,7 +394,7 @@ QT_QPA_PLATFORM=offscreen \
 
 ### 10.2 回归测试覆盖
 
-切页 race 防护、同步数学、cURL 解析（bash / cmd）、指纹与零指纹探测、真实接口 fixture、单列渲染、窗口位置统一、代理 10061 直连重试、多机数据源（导出 / 导入 / 合并 / 覆盖 / 命名）、导入语义（新增 vs 覆盖）、视觉基座（按钮工厂 / 自绘弹窗 / 导航自绘 / 主题联动 / 排行条）、暗色输入框、内联改名、骨架占位行、商汤页池卡常驻与占位满额 —— **289 项断言，需全过**。
+切页 race 防护、同步数学、cURL 解析（bash / cmd）、指纹与零指纹探测、真实接口 fixture、单列渲染、窗口位置统一、代理 10061 直连重试、多机数据源（导出 / 导入 / 合并 / 覆盖 / 命名）、导入语义（新增 vs 覆盖）、视觉基座（按钮工厂 / 自绘弹窗 / 导航自绘 / 主题联动 / 排行条）、暗色输入框、内联改名、骨架占位行、商汤页池卡常驻与占位满额、按机统计双栏（环形占比口径 / 今日·总量切换 / `metric` 命名守门） —— **301 项断言，需全过**。
 
 > 测试开头备份、结尾还原用户真实配置；商汤 / settings / peers 全部隔离到临时目录，**不得写入真实数据目录**。
 
@@ -374,6 +404,15 @@ QT_QPA_PLATFORM=offscreen \
 2. `render()` 里旧控件走 `deleteLater()`，而 `processEvents()` **默认不处理 DeferredDelete** → 旧控件从布局摘除后仍是子控件、留在原位继续绘制，会画成「表头与首行重叠」的假象。截图前需 `QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)`。
 3. 图表（`StackedBarChart`）的 `view_start` / `view_count` 有「末日期未变则保留缩放平移」逻辑，截图前需显式复位到全览。
 4. `widget.grab()` 对透明窗口**保留 alpha**，可直接叠到自选背板上；若发现角落被合成成实色，先查 alpha 是否被覆盖。
+5. ⚠️ **不要用 Qt 虚函数名做实例属性名。** `QWidget` 继承自 `QPaintDevice`，而 `QPaintDevice::metric()` 是虚函数 ——
+   PySide6 会把它当"Python 覆写"去取 `self.metric` 调用。一旦写成 `self.metric = "total"`（字符串），
+   构造 `QPainter(self)` 时就会抛
+   `Error calling Python override of QWidget::metric(): 'str' object is not callable`，
+   并且**进程直接 abort（不是可捕获的普通异常）**。同类危险名字：`event` / `sizeHint` / `paintEvent` / `metric`。
+6. ⚠️ **Python 覆写里抛异常 = 硬崩溃。** 上一条的 abort 本质是"paintEvent 内抛了异常"。
+   排查手法：把被覆写的方法用 `try/except` 包一层并打印 traceback，异常就能现形；
+   另外 `faulthandler` 只会打出**当前 Python 栈**，若崩在纯 C++ 路径（如 `drawArc` 之类内部），
+   栈里不会出现我们的帧 —— 这时优先怀疑"某个被覆写方法抛了异常"。
 
 ### 10.4 语法检查与杀软误报
 
@@ -391,7 +430,7 @@ QT_QPA_PLATFORM=offscreen \
 
 - 提交信息格式：`第N轮：<一句话说明>`；**定点 `git add`**，不要 `add -A`。
 - 每轮先更新根目录 [`协作进度.md`](协作进度.md)（演进历程 + 协作者备注），提交紧随其后。
-- 版本标识：`card_app.py` 内 `APP_BUILD`（当前 `v9.1-pet-v4`）。
+- 版本标识：`card_app.py` 内 `APP_BUILD`（当前 `v9.2-multi`）。
 
 ### 11.2 按钮：四档统一工厂
 
@@ -463,13 +502,13 @@ git config user.name  "浅浅猫"
 
 ```
 token-stats/
-├── card_app.py             # 主程序：UI + 主题系统 + 商汤同步 + 桌宠（当前 v9.1-pet-v4）
+├── card_app.py             # 主程序：UI + 主题系统 + 商汤同步 + 桌宠（当前 v9.2-multi）
 ├── scanner.py              # WorkBuddy 增量扫描聚合（cache.json / stats.json）
 ├── peer_store.py           # 多机数据源：导出 / 导入 / 覆盖 / 合并（纯标准库）
 ├── launcher.py             # 轻量启动器源码（不含 PySide6）
 ├── sn_login.py             # 商汤登录
 ├── sn_autologin_fetch.py   # 商汤积分抓取
-├── test_switch_race.py     # offscreen 回归测试（289 项断言）
+├── test_switch_race.py     # offscreen 回归测试（301 项断言）
 ├── 协作进度.md              # ★ 主协作文档：架构 / 演进历程 / Git 规范 / 协作者备注
 ├── README.md               # 本文件
 ├── .gitignore              # 版本库排除规则
@@ -520,7 +559,9 @@ token-stats/
 2. **Windows 专用启动脚本**：`.bat` / `.vbs` 仅 Windows 可用。
 3. **仓库当前为公开（public）**：仓库内含桌宠素材与预览图。如需私有，在仓库 **Settings → Danger Zone → Change visibility** 调整。
 4. **`_archive/` 与运行期数据不随 git 走**：换机器时归档内容需单独拷贝；用量数据走程序内导出 / 导入。
-5. **变更记录**：商汤页两张积分池卡于 2026-09-20 改为**常驻渲染**（未就绪时用官方公测期默认满额占位，原提示文字下移至页面底部）；多机页机器框与内联改名输入框的描边同步改为「`TRACK` 填充 + `BORDER` 细描边」，与商汤页输入框同源。
+5. **变更记录**：
+   - **v9.2（2026-09-20 第59轮）**：版本标识统一为 `v9.2-multi`（`card_app.py` 头部 docstring 原先停在 `V8.7`，本次一并对齐，并在 docstring 内补了英文特性说明）；多机页「按机统计」改为**双栏卡片**（左栏原有排行呈现 + 细竖线 + 右栏环形占比圈），新增 **今日 / 总量** 口径切换；数据层 `machine_summary()` 补 `today` 字段。
+   - **2026-09-20 第58轮**：商汤页两张积分池卡改为**常驻渲染**（未就绪时用官方公测期默认满额占位，原提示文字下移至页面底部）；多机页机器框与内联改名输入框的描边改为「`TRACK` 填充 + `BORDER` 细描边」，与商汤页输入框同源。
 
 ---
 
