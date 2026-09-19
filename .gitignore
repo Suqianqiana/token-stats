@@ -36,3 +36,50 @@ __pycache__/
 /dist/
 *.spec
 !TokenStats.spec
+
+# ============================================================
+# 2026-09-19 第56轮：推送到 GitHub 前补齐的三类排除
+# ============================================================
+
+# --- ① 敏感文件：运行时凭据与本地数据（**绝不入库**）---
+# 这些文件本来只存在于本机数据目录
+# (~/.workbuddy/plugins/data/token-usage-stats/)，列在这里是"防误放"：
+# 万一有人把它们拷进项目目录，也不会被误提交上去。
+sn_token.json
+sn_login_state.json
+sn_account.json
+sn_autosync.json
+sn_autosync.invalid.json
+sn_points_sync.json
+machine.json
+settings.json
+stats.json
+peers/
+*_ledger*.json
+*.pem
+*.key
+*.p12
+.env
+.env.*
+
+# --- ② 依赖目录（本机用 .workbuddy 内的 venv；此处防误建）---
+/.venv/
+/venv/
+/env/
+/node_modules/
+*.egg-info/
+.eggs/
+
+# --- ③ 测试/检查缓存 ---
+/.pytest_cache/
+/.mypy_cache/
+/.ruff_cache/
+.coverage
+htmlcov/
+
+# --- ④ 编辑器与操作系统 ---
+/.idea/
+/.vscode/
+Thumbs.db
+desktop.ini
+.DS_Store
