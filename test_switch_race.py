@@ -1459,6 +1459,75 @@ ps.PEERS_DIR = _REAL_PEERS_DIR
 ps.PEERS_INDEX = _REAL_PEERS_INDEX
 check("测试未污染真实 peers 存档", os.path.isdir(_REAL_PEERS_DIR) is not None)
 
+# ========== 16. workdaddy 副本去重 (扫描侧过滤) ==========
+print("== 16. 副本去重 ==")
+# 背景: workdaddy(同账号多开)把同一会话复制成**新文件名**, 但内部 sessionId 不变;
+#       按文件路径扫描会重复统计 -> token 翻倍。判据: 同 sid 保留"最完整"那份
+#       (①文件更大 ②同大小则 文件名==sessionId 优先), 其余丢弃。
+_dd = tempfile.mkdtemp(prefix="tstats_dup_")
+_real_projects = ca.scanner.PROJECTS_DIR
+try:
+    ca.scanner.PROJECTS_DIR = _dd
+    SID = "aaaa1111-bbbb-2222-cccc-333344445555"
+
+    def _mk(fn, sid, msgs=1):
+        p = os.path.join(_dd, fn)
+        with open(p, "w", encoding="utf-8") as f:
+            for i in range(msgs):
+                f.write(json.dumps({
+                    "type": "message", "id": f"m{i}", "sessionId": sid,
+                    "timestamp": 1785000000000 + i * 1000, "role": "assistant",
+                    "providerData": {"usage": {"inputTokens": 100, "outputTokens": 10,
+                                               "totalTokens": 110, "inputTokensDetails": {}}},
+                }, ensure_ascii=False) + "\n")
+        return p
+
+    # ① 大小相同: 应保留"文件名==sid"的那份
+    f_ok = _mk(SID + ".jsonl", SID, 3)          # 原始(文件名==sid)
+    f_dup = _mk("99999999-8888-7777-6666-555544443333.jsonl", SID, 3)   # 副本(同内容同大小)
+    # ② 大小不同: 应保留"更大"的那份(复制后两边各自续写)
+    SID2 = "bbbb2222-cccc-3333-dddd-444455556666"
+    f_orig = _mk(SID2 + ".jsonl", SID2, 1)      # 文件名==sid 但更小
+    f_big = _mk("77777777-1111-2222-3333-444455556666.jsonl", SID2, 5)  # 副本但更大
+    # ③ 无 sessionId: 必须保留(宁多勿漏)
+    f_nosid = os.path.join(_dd, "11111111-2222-3333-4444-555566667777.jsonl")
+    with open(f_nosid, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"type": "message", "id": "x",
+                            "timestamp": 1785000000000}, ensure_ascii=False) + "\n")
+
+    _files = sorted(ca.scanner._iter_jsonl_files())
+    check("发现全部 5 个测试文件", len(_files) == 5, f"n={len(_files)}")
+
+    _keep, _drop, _sidmap = ca.scanner._dedupe_files(_files)
+    check("去重: 保留 3 份 / 丢弃 2 份", len(_keep) == 3 and len(_drop) == 2,
+          f"keep={len(_keep)} drop={len(_drop)}")
+    check("同大小副本: 保留 文件名==sid 者", f_ok in _keep and f_dup in _drop)
+    check("大小不同副本: 保留 更大者(内容更全)", f_big in _keep and f_orig in _drop,
+          f"keep_big={f_big in _keep}")
+    check("无 sessionId 文件: 保留(宁多勿漏)", f_nosid in _keep)
+    check("完整性: keep+drop == 全部文件",
+          sorted(_keep + _drop) == sorted(_files))
+
+    # 端到端: scan_full 只统计去重后的量
+    _stats = ca.scanner.scan_full(force=True)
+    check("scan_full: dupFilesDropped=2", _stats.get("dupFilesDropped") == 2,
+          f"dropped={_stats.get('dupFilesDropped')}")
+    # 去重后应只剩: f_ok(3条) + f_big(5条) + f_nosid(1条无usage) = 8 条 usage
+    check("scan_full: 条目数=8 (去重后)", _stats.get("entriesTotal") == 8,
+          f"entries={_stats.get('entriesTotal')}")
+    _tin = sum(a.get("input", 0) for a in _stats["models"].values())
+    check("scan_full: input=800 (3+5 条 x100)", _tin == 800, f"input={_tin}")
+
+    # 缓存复跑一致性 (sid_map 命中, 结果不变)
+    _k2, _d2, _ = ca.scanner._dedupe_files(_files, dict(_sidmap))
+    check("带 sid 缓存复跑结果一致",
+          sorted(_k2) == sorted(_keep) and sorted(_d2) == sorted(_drop))
+finally:
+    ca.scanner.PROJECTS_DIR = _real_projects
+    ca.scanner.scan_full(force=True)   # 还原真实聚合
+    import shutil
+    shutil.rmtree(_dd, ignore_errors=True)
+
 # ---- 还原真实数据目录路径 (临时目录随系统清理) ----
 ca._sn_events_all = orig_events
 ca.SN_AUTOSYNC_FILE = _REAL_AUTOSYNC_FILE

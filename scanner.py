@@ -33,6 +33,78 @@ def _iter_jsonl_files():
                 yield os.path.join(root, fn)
 
 
+# ---------------------------------------------------------------- 副本去重
+# workdaddy(同账号多开) 会把同一份会话**复制**成新文件(文件名换成新 UUID),
+# 但文件内部的 sessionId 仍是原值 -> 按文件路径扫描会把同一会话统计两次(token 翻倍)。
+# 判据: 同一 sessionId 出现多份时, 保留"最完整"的那份:
+#   ① 文件更大者优先(复制后两边可能各自续写, 大者内容更全)
+#   ② 大小相同则"文件名 == sessionId"者优先(规范性命名 = 原始文件)
+SID_HEAD_LINES = 40          # 读首部多少行找 sessionId
+SID_HEAD_BYTES = 512 * 1024  # 首部最多读多少字节
+
+
+def _read_session_id(path):
+    """读文件首部若干行, 返回第一个非空 sessionId (找不到返回 None)。"""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for i, line in enumerate(f):
+                if i >= SID_HEAD_LINES:
+                    break
+                # 轻量提取, 避免为取一个字段而完整 json.loads 超大行
+                if '"sessionId"' not in line:
+                    continue
+                m = re.search(r'"sessionId"\s*:\s*"([^"]+)"', line)
+                if m:
+                    return m.group(1)
+    except OSError:
+        pass
+    return None
+
+
+def _dedupe_files(files, sid_map=None):
+    """按内部 sessionId 去重, 返回 (keep_list, dropped_list, sid_map)。
+
+    sid_map: {path: sid} 缓存(可传入并在返回时合并), 避免每次重读首部。
+    无 sessionId 的文件一律保留(宁多勿漏)。
+    """
+    if sid_map is None:
+        sid_map = {}
+    groups = {}   # sid -> [paths]
+    passthrough = []   # 无 sid: 直接保留
+    for p in files:
+        sid = sid_map.get(p)
+        if sid is None:
+            sid = _read_session_id(p)
+            sid_map[p] = sid or ""
+        if sid:
+            groups.setdefault(sid, []).append(p)
+        else:
+            passthrough.append(p)
+
+    keep, dropped = list(passthrough), []
+    for sid, ps in groups.items():
+        if len(ps) == 1:
+            keep.append(ps[0])
+            continue
+
+        def _rank(path):
+            # 先比大小(大者优先), 同大小再比"文件名==sid"
+            stem = os.path.splitext(os.path.basename(path))[0]
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                size = 0
+            return (-size, 0 if stem == sid else 1)
+
+        ordered = sorted(ps, key=_rank)
+        keep.append(ordered[0])
+        dropped.extend(ordered[1:])
+    # 只保留仍存在的文件的 sid 缓存(剪掉已删除文件)
+    alive = set(files)
+    sid_map = {k: v for k, v in sid_map.items() if k in alive}
+    return keep, dropped, sid_map
+
+
 def _load_cache():
     try:
         with open(CACHE_FILE, "r", encoding="utf-8") as f:
@@ -151,6 +223,11 @@ def scan_full(force=False):
     t0 = time.time()
     cache = {} if force else _load_cache()
 
+    # ---- 副本去重(扫描侧): workdaddy 复制产生的同 sessionId 副本只统计一份 ----
+    all_files = list(_iter_jsonl_files())
+    _sid_cache = cache.get("__sids__") or {}
+    keep_files, dropped_files, _sid_cache = _dedupe_files(all_files, _sid_cache)
+
     models = {}   # model -> agg
     daily = {}    # date -> model -> agg
     sids = set()  # 全局会话 id 集合
@@ -172,7 +249,7 @@ def scan_full(force=False):
         bucket["reasoning"] = bucket.get("reasoning", 0) + r
 
     new_cache = {}
-    for path in _iter_jsonl_files():
+    for path in keep_files:
         try:
             st = os.stat(path)
             sig_key = f"{st.st_mtime_ns}:{st.st_size}"
@@ -217,6 +294,7 @@ def scan_full(force=False):
         except OSError:
             continue
 
+    new_cache["__sids__"] = _sid_cache
     _save_cache(new_cache)
 
     days = sorted(d for d in daily if d != "unknown")
@@ -242,6 +320,9 @@ def scan_full(force=False):
         "today": today_summary,
         "firstDay": days[0] if days else "",
         "lastDay": days[-1] if days else "",
+        # 副本去重观测(workdaddy 复制产生的重复会话)
+        "dupFilesDropped": len(dropped_files),
+        "dupFilesTotal": len(all_files),
     }
     _write_stats(result)
     return result

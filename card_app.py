@@ -2437,7 +2437,10 @@ def _sn_events_all():
     cache = _load_sn_events_cache()
     files = {}
     dirty = False
-    for path in scanner._iter_jsonl_files():
+    # 副本去重: workdaddy 复制产生的同 sessionId 副本不重复计数(与 scanner 同一判据)
+    _all = list(scanner._iter_jsonl_files())
+    _keep, _dropped, _ = scanner._dedupe_files(_all)
+    for path in _keep:
         try:
             st = os.stat(path)
             size, mtime = st.st_size, st.st_mtime_ns // 1_000_000   # 毫秒精度(秒级会漏检同秒两次写入)
