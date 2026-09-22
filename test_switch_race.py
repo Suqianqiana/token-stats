@@ -439,6 +439,84 @@ w2._switch_nav(w2.btn_nav_wb)
 check("切页后窗口尺寸恒定 (横版固定)", w2.width() == w2_layout_w and w2.height() == w2_layout_h,
       f"w={w2.width()}x{w2.height()}")
 
+# ========== 6.2 毛玻璃模式 Frost (2026-09-23 第60轮) ==========
+# 浅猫: "再增加一个毛玻璃的主题模式, 主要认真还原图片里毛玻璃效果的质感"
+#       要点是"淡化卡片存在感, 改成用细线分割"。
+# 本段用**像素级**断言守住三件事: 分区不铺底 / 浮层仍实体 / 开关能落盘。
+print("== 6.2 毛玻璃模式: 材质 / 细线分区 / 开关 ==")
+_saved_theme_60 = dict(ca.theme_state)
+_wf = ca.CardWindow()
+_wf.refresh = lambda *a, **k: None
+check("毛玻璃默认关闭", bool(ca.theme_state.get("frost")) is False)
+check("侧栏毛玻璃开关存在", hasattr(_wf, "btn_frost"))
+check("提供 set_frost", callable(getattr(_wf, "set_frost", None)))
+
+
+def _mat_img(frost, painter_fn, w=200, h=80):
+    """在透明 QImage 上直画材质, 用像素 alpha 判定"有没有铺底"。"""
+    ca.theme_state["frost"] = frost
+    ca.refresh_palette()
+    img = ca.QImage(w, h, ca.QImage.Format_ARGB32)
+    img.fill(ca.QColor(0, 0, 0, 0))
+    pt = ca.QPainter(img)
+    painter_fn(pt)
+    pt.end()
+    return img
+
+
+_img_rule = _mat_img(True, lambda pt: ca.paint_section_rule(pt, 200))
+check("毛玻璃: 分区画出了顶部细线",
+      max(_img_rule.pixelColor(100, 0).alpha(), _img_rule.pixelColor(100, 1).alpha()) > 0,
+      f"a0={_img_rule.pixelColor(100, 0).alpha()} a1={_img_rule.pixelColor(100, 1).alpha()}")
+check("毛玻璃: 细线以外不铺底 (分区是空的)",
+      _img_rule.pixelColor(100, 40).alpha() == 0, f"a={_img_rule.pixelColor(100, 40).alpha()}")
+_img_panel = _mat_img(True, lambda pt: ca.paint_frost_surface(
+    pt, ca.QRectF(0, 0, 200, 80), 16, True))
+check("毛玻璃: 主板/浮层材质是实体磨砂 (中心不透明)",
+      _img_panel.pixelColor(100, 40).alpha() > 200,
+      f"a={_img_panel.pixelColor(100, 40).alpha()}")
+
+
+def _pod_center_alpha(frost, rule=True):
+    ca.theme_state["frost"] = frost
+    ca.refresh_palette()
+    pod = ca.GlassPodFrame(radius=12, rule=rule)
+    pod.setAttribute(ca.Qt.WA_TranslucentBackground)
+    pod.resize(200, 80)
+    img = ca.QImage(200, 80, ca.QImage.Format_ARGB32)
+    img.fill(ca.QColor(0, 0, 0, 0))
+    pod.render(img)
+    return img.pixelColor(100, 40).alpha()
+
+
+check("毛玻璃: 卡片不再铺底 (中心透明)", _pod_center_alpha(True) == 0,
+      f"a={_pod_center_alpha(True)}")
+check("非毛玻璃: 卡片照旧铺底 (中心不透明)", _pod_center_alpha(False) > 200,
+      f"a={_pod_center_alpha(False)}")
+check("rule=False 的分组卡在毛玻璃下同样不铺底",
+      _pod_center_alpha(True, rule=False) == 0)
+_src60 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "card_app.py"),
+              encoding="utf-8").read()
+check("弹窗走 role=panel (毛玻璃下必须仍是实体, 否则会隐形)",
+      'paint_pod(self, self.radius, inset=0.5, role="panel")' in _src60)
+check("菜单里有毛玻璃入口", "毛玻璃模式" in _src60)
+
+_old_sf_60 = ca.SETTINGS_FILE
+ca.SETTINGS_FILE = os.path.join(tempfile.mkdtemp(), "settings.json")
+ca.theme_state["frost"] = False      # 上面的像素测试把它留在 True 了, 先归位
+_wf.set_frost(True)
+check("set_frost(True) 生效", ca.theme_state.get("frost") is True)
+check("侧栏按钮同步勾选", _wf.btn_frost.isChecked() is True)
+ca.save_settings()
+with open(ca.SETTINGS_FILE, encoding="utf-8") as _f60:
+    check("frost 能落盘 (save_settings 持久化)", json.load(_f60).get("frost") is True)
+_wf.set_frost(False)
+check("set_frost(False) 可关", ca.theme_state.get("frost") is False)
+ca.SETTINGS_FILE = _old_sf_60
+ca.theme_state.update(_saved_theme_60)      # 还原, 不污染后续用例
+ca.refresh_palette()
+_wf.close()
+
 # ========== 7. 系统代理 10061 → 自动绕过代理直连重试 ==========
 print("== 7. 系统代理拒绝连接 → 绕过代理直连重试 ==")
 import io

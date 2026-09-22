@@ -17,6 +17,7 @@ V9.2 highlights (Multi-Machine Sync):
   - 重构舒适大窗口 (1180×730) 字体层级体系，字重与行高开阔舒展，拒绝粗暴放大
   - 三档玻璃通透度无级调谐 + 右键多入口切换 + 每日柱状图鼠标锚点滚轮缩放与平移
   - 商汤额度页两张积分池卡**常驻**（未就绪用公测期满额占位）；按机统计双栏 + 环形占比圈
+  - 新增「毛玻璃模式」(Frost)：整块磨砂玻璃材质 + 卡片退化为 1px 细线分区（右键菜单/侧栏可切）
   - ⚠️ 属性名不要用 `metric`：QWidget 有虚函数 QPaintDevice::metric()，会与 PySide6 覆写冲突而崩
 """
 import base64
@@ -168,7 +169,10 @@ GLASS_ALPHA = {"light": dict(BG=125, CARD=238, SIDEBAR=140),
 
 theme_state = {
     "dark": False, "glass": False, "source": "wb", "pet": False,
-    "pet_theme": "v3", "window_size": "default", "glass_transparency": "balanced"
+    "pet_theme": "v3", "window_size": "default", "glass_transparency": "balanced",
+    # 2026-09-23 (第60轮): 毛玻璃模式。★ 必须放进 theme_state —— save_settings() 落盘的就是它,
+    # 放别处会一保存就丢(第58轮踩过的坑)。
+    "frost": False,
 }
 SETTINGS_FILE = os.path.join(scanner.PLUGIN_DATA_DIR, "settings.json")
 
@@ -314,6 +318,93 @@ def fmt_full(n):
 
 
 # ============================================================ 纯净 iOS 27 液态玻璃光学底板
+# ============================================================ 毛玻璃材质 (Frost, 2026-09-23 第60轮)
+# 浅猫: "再增加一个毛玻璃的主题模式, 主要认真还原图片里毛玻璃效果的质感"
+#        要点是"淡化卡片存在感, 改成用细线分割"。
+def frost_rule_color(dark):
+    """毛玻璃下「细线分割」用的线色 (深色白线低透明 / 浅色冷灰低透明)。"""
+    return QColor(255, 255, 255, 30) if dark else QColor(28, 38, 58, 34)
+
+
+def paint_frost_surface(p, rect, radius, dark):
+    """毛玻璃材质 —— 还原参考图那块磨砂玻璃的质感。
+
+    为什么不复用「液态玻璃」的绘制:
+      · 液态玻璃 = 多段对角渐变 + **菲涅尔切角边框** + 顶部**锐利镜面光弧** →
+        边缘硬、反光亮, 是"水晶/镜面"感;
+      · 毛玻璃要的是"糊" —— **竖向宽渐变**（光在面上散开）+ **低对比顶部内高光** +
+        **不描切角、不做锐高光** + 一层极淡冷蓝薄雾, 整块读起来像一片磨砂玻璃板。
+
+    ⚠️ Qt 对窗口背后的桌面做不了真模糊: 自绘圆角窗口上任何系统级模糊都会露出矩形边界
+       （本项目 V6~V10 已定论）, 所以质感只能靠"分层透明度 + 大面积柔和渐变"堆出来。
+    透明度取值偏实（224~244）: 参考图那块板也是"透光不透杂物", 否则文字会糊在壁纸上。
+    """
+    path = QPainterPath()
+    path.addRoundedRect(rect, radius, radius)
+
+    # 1. 基座: 竖向宽渐变 (深色是冷灰蓝, 浅色是暖白) —— 保证文字在玻璃上依然清晰
+    g = QLinearGradient(0.0, rect.top(), 0.0, rect.bottom())
+    if dark:
+        g.setColorAt(0.00, QColor(35, 41, 54, 224))
+        g.setColorAt(0.38, QColor(26, 31, 42, 233))
+        g.setColorAt(0.72, QColor(21, 25, 34, 239))
+        g.setColorAt(1.00, QColor(16, 19, 26, 245))
+    else:
+        g.setColorAt(0.00, QColor(255, 255, 255, 232))
+        g.setColorAt(0.45, QColor(249, 251, 255, 240))
+        g.setColorAt(1.00, QColor(239, 244, 252, 246))
+    p.setPen(Qt.NoPen)
+    p.setBrush(QBrush(g))
+    p.drawPath(path)
+
+    # 2. 冷调薄雾: 一层对角极淡的蓝, 让整块有"雾"而不是死灰
+    mist = QLinearGradient(rect.left(), rect.top(), rect.right(), rect.bottom())
+    if dark:
+        mist.setColorAt(0.0, QColor(96, 148, 255, 26))
+        mist.setColorAt(0.45, QColor(96, 148, 255, 0))
+        mist.setColorAt(1.0, QColor(58, 96, 190, 22))
+    else:
+        mist.setColorAt(0.0, QColor(120, 165, 255, 22))
+        mist.setColorAt(0.5, QColor(120, 165, 255, 0))
+        mist.setColorAt(1.0, QColor(150, 180, 240, 16))
+    p.setBrush(QBrush(mist))
+    p.drawPath(path)
+
+    # 3. 顶部内高光: 从顶边往下 ~22% 柔和衰减 (毛玻璃的"顶面受光", 不是一条亮线)
+    hl = QLinearGradient(0.0, rect.top(), 0.0, rect.top() + rect.height() * 0.22)
+    hl.setColorAt(0.0, QColor(255, 255, 255, 30 if dark else 118))
+    hl.setColorAt(1.0, QColor(255, 255, 255, 0))
+    p.setBrush(QBrush(hl))
+    p.drawPath(path)
+
+    # 4. 底部内阴影: 给板子一点厚度, 免得整块"飘"
+    sh = QLinearGradient(0.0, rect.bottom() - rect.height() * 0.16, 0.0, rect.bottom())
+    sh.setColorAt(0.0, QColor(0, 0, 0, 0))
+    sh.setColorAt(1.0, QColor(0, 0, 0, 26 if dark else 14))
+    p.setBrush(QBrush(sh))
+    p.drawPath(path)
+
+    # 5. 外缘: 1px 细描边, 上亮下稍暗 (毛玻璃的边是"柔和收口", 不做菲涅尔切角)
+    rim = QLinearGradient(0.0, rect.top(), 0.0, rect.bottom())
+    if dark:
+        rim.setColorAt(0.0, QColor(255, 255, 255, 46))
+        rim.setColorAt(0.5, QColor(255, 255, 255, 20))
+        rim.setColorAt(1.0, QColor(255, 255, 255, 30))
+    else:
+        rim.setColorAt(0.0, QColor(255, 255, 255, 235))
+        rim.setColorAt(0.5, QColor(176, 190, 214, 120))
+        rim.setColorAt(1.0, QColor(255, 255, 255, 170))
+    p.setBrush(Qt.NoBrush)
+    p.setPen(QPen(QBrush(rim), 1.0))
+    p.drawPath(path)
+
+
+def paint_section_rule(p, w):
+    """毛玻璃模式的「细线分割」: 在当前控件顶部画 1px 通栏细线。"""
+    p.setPen(QPen(frost_rule_color(theme_state["dark"]), 1.0))
+    p.drawLine(QPointF(0.0, 0.5), QPointF(float(w), 0.5))
+
+
 class LiquidGlassFrame(QFrame):
     """纯净物理级液态玻璃底板 (银白双层高光 + 菲涅尔镜面边缘，无任何彩色杂斑)"""
     def __init__(self, parent=None):
@@ -330,6 +421,14 @@ class LiquidGlassFrame(QFrame):
 
         dark = theme_state["dark"]
         glass = theme_state["glass"]
+
+        # 毛玻璃模式: 整块主底板换成磨砂玻璃材质 (与"液态玻璃"是两套材料, 互不干扰)
+        if theme_state.get("frost"):
+            paint_frost_surface(p, rect, 16, dark)
+            # 侧边栏分隔线改为细线 (与分区线同一套语言)
+            p.setPen(QPen(frost_rule_color(dark), 1.0))
+            p.drawLine(QPointF(self.sep_x, 1.0), QPointF(self.sep_x, h - 1.0))
+            return
 
         if glass:
             gp = curr_glass_preset()
@@ -394,21 +493,32 @@ class LiquidGlassFrame(QFrame):
 
 
 class GlassPodFrame(QFrame):
-    """iOS 27 纯净悬浮透镜子卡片 (Frosted Glass Pod)"""
-    def __init__(self, radius=10, parent=None):
+    """iOS 27 纯净悬浮透镜子卡片 (Frosted Glass Pod)
+
+    update 2026-09-23 (第60轮): 新增 `rule` 开关 —— 毛玻璃模式下"卡片"不再画底板,
+    只在顶部画 1px 细线做分区; 而**横向并排的一组**(四张指标卡 / 商汤两张积分池卡)
+    不该各画一条线, 这些位置传 `rule=False`。
+    """
+    def __init__(self, radius=10, parent=None, rule=True):
         super().__init__(parent)
         self.radius = radius
+        self.rule = rule
 
     def paintEvent(self, ev):
-        paint_pod(self, self.radius)
+        paint_pod(self, self.radius, role="section", rule=self.rule)
 
 
-def paint_pod(widget, radius, inset=0.5):
+def paint_pod(widget, radius, inset=0.5, role="section", rule=True):
     """把「菲涅尔切角玻璃底层」画在任意 widget 上。
 
     2026-09-19 第52轮抽成独立函数: 原来只有 GlassPodFrame 会画这层底,
     而 GlassDialog 需要继承 QDialog (拿真模态), 无法再继承 QFrame,
     因此把绘制逻辑抽出来供两者共用 —— 保证弹窗与子卡片视觉完全同源。
+
+    update 2026-09-23 (第60轮) 新增两个参数:
+      · `role="section"` 页面里的分区(卡片): 毛玻璃模式下**不画底**, 只在顶部画 1px 细线;
+      · `role="panel"`   浮层(自绘弹窗): 浮层必须保持实体, 毛玻璃下换成同一套磨砂玻璃材质,
+                         否则弹窗会"隐形"在玻璃上。
     """
     p = QPainter(widget)
     p.setRenderHint(QPainter.Antialiasing)
@@ -420,6 +530,15 @@ def paint_pod(widget, radius, inset=0.5):
 
     dark = theme_state["dark"]
     glass = theme_state["glass"]
+
+    # 毛玻璃模式 (第60轮): 分区不画底、只留细线; 浮层保持实体并换用磨砂材质。
+    if theme_state.get("frost"):
+        if role == "panel":
+            paint_frost_surface(p, rect, min(r + 4.0, 16.0), dark)
+        elif rule:
+            paint_section_rule(p, w)
+        p.end()
+        return
 
     if glass:
         gp = curr_glass_preset()
@@ -595,7 +714,7 @@ class GlassDialog(QDialog):
 
     # ---------- 玻璃底面 (与 GlassPodFrame 同源) ----------
     def paintEvent(self, ev):
-        paint_pod(self, self.radius, inset=0.5)
+        paint_pod(self, self.radius, inset=0.5, role="panel")
 
     # ---------- 构建 ----------
     def _build(self, title, message, ok_text, cancel_text, icon="info"):
@@ -1052,7 +1171,8 @@ class ModelRow(QWidget):
         self.cached_tok = cached_tok
         self._zebra = zebra
         self.setMouseTracking(True)
-        if zebra:
+        # 毛玻璃模式: 明细行不铺斑马纹 (第60轮) —— 否则细线分区上会再"长出"色块
+        if zebra and not theme_state.get("frost"):
             self.setStyleSheet(f"background:{qrgba(ZEBRA)};")
         self.apply_size()
 
@@ -1066,7 +1186,8 @@ class ModelRow(QWidget):
         self._show_tip(ev.globalPosition().toPoint())
 
     def leaveEvent(self, ev):
-        self.setStyleSheet(f"background:{qrgba(ZEBRA)};" if self._zebra else "")
+        self.setStyleSheet(f"background:{qrgba(ZEBRA)};"
+                           if (self._zebra and not theme_state.get("frost")) else "")
         ChartTip.instance().hide_tip()
 
     def mouseMoveEvent(self, ev):
@@ -3495,7 +3616,9 @@ class SNQuotaPage(QWidget):
                     by_id[p["id"]] = p
 
         for pid in ("general", "flash_lite"):
-            self.pools_layout.addWidget(SNPoolCard(by_id[pid]), 1)
+            _card = SNPoolCard(by_id[pid])
+            _card.rule = False      # 两张池卡并排 = 一组, 不各画分区线 (第60轮)
+            self.pools_layout.addWidget(_card, 1)
 
         promo = by_id.get("promo")
         if promo:
@@ -3618,6 +3741,15 @@ class MachineRow(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
         dark = theme_state["dark"]
+        # 毛玻璃模式 (第60轮): 列表行不再画成"卡片块", 只在 hover 时给一层极淡高亮
+        if theme_state.get("frost"):
+            if self._hover:
+                hv = QColor(HOVER)
+                hv.setAlpha(150 if dark else 190)
+                p.setPen(Qt.NoPen)
+                p.setBrush(hv)
+                p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 10, 10)
+            return
         base = QColor(HOVER) if self._hover else QColor(ZEBRA)
         base.setAlpha(235 if dark else 255)
         p.setPen(Qt.NoPen)
@@ -3798,13 +3930,15 @@ class StatRankRow(QWidget):
             p.setBrush(hv)
             p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 9, 9)
         else:
-            # 轻斑马纹底: 让每一行读起来像独立的「框」, 暗色下也保持层级可辨
-            zb = QColor(ZEBRA if self.rank % 2 == 0 else CARD)
-            zb.setAlpha(150 if dark else (255 if self.rank % 2 == 0 else 0))
-            if zb.alpha() > 0:
-                p.setPen(Qt.NoPen)
-                p.setBrush(zb)
-                p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 9, 9)
+            # 轻斑马纹底: 让每一行读起来像独立的「框」, 暗色下也保持层级可辨。
+            # 毛玻璃模式下不画 (第60轮): 否则又在"细线分区"上长出一张张小卡片。
+            if not theme_state.get("frost"):
+                zb = QColor(ZEBRA if self.rank % 2 == 0 else CARD)
+                zb.setAlpha(150 if dark else (255 if self.rank % 2 == 0 else 0))
+                if zb.alpha() > 0:
+                    p.setPen(Qt.NoPen)
+                    p.setBrush(zb)
+                    p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 9, 9)
 
         # ================= 双栏之间的细竖线 (第59轮)
         sep = QColor(BORDER)
@@ -3931,7 +4065,8 @@ class StatRankRow(QWidget):
 
         base = QColor(ZEBRA if self.rank % 2 == 0 else CARD)
         base.setAlpha(150 if theme_state["dark"] else (255 if self.rank % 2 == 0 else 0))
-        if base.alpha() > 0:
+        # 毛玻璃模式: 骨架行同样不画底 (第60轮)
+        if base.alpha() > 0 and not theme_state.get("frost"):
             p.setPen(Qt.NoPen)
             p.setBrush(base)
             p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 9, 9)
@@ -4251,16 +4386,25 @@ class MachineBox(QWidget):
         BORDER 细描边(不是靠粗/艳的描边)。此处改为同一配方, 两处输入框视觉同源。
         """
         w, h = self.width(), self.height()
+        rect = QRectF(0.5, 0.5, w - 1.0, h - 1.0)
+
+        # 毛玻璃模式 (第60轮): 不铺填充, 只留 1px 细描边 —— 像玻璃上画出的一个框
+        if theme_state.get("frost"):
+            p.setBrush(Qt.NoBrush)
+            col = QColor(255, 255, 255, 44) if theme_state["dark"] else QColor(28, 38, 58, 46)
+            p.setPen(QPen(col, 1.0))
+            p.drawRoundedRect(rect, 9, 9)
+            return
 
         # 填充: TRACK (与卡片底拉开明度差, 这是"看得见是输入框"的主因)
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(TRACK))
-        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 9, 9)
+        p.drawRoundedRect(rect, 9, 9)
 
         # 描边: BORDER 全不透明 1px 细线 (与商汤输入框同款)
         p.setBrush(Qt.NoBrush)
         p.setPen(QPen(QColor(BORDER), 1.0))
-        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 9, 9)
+        p.drawRoundedRect(rect, 9, 9)
 
         # 编辑态下: 右侧两个按钮 (保存 / 取消) 由自绘负责
         if not self._edit_mode:
@@ -4432,7 +4576,7 @@ class MultiMachinePage(QWidget):
         v.setSpacing(10)
 
         # ================= 1. 数据源管理: 左侧机器框 / 右侧导出导入
-        self.action_card = GlassPodFrame(radius=12)
+        self.action_card = GlassPodFrame(radius=12, rule=False)   # 首段: 毛玻璃下不画分区线
         self.action_card.setObjectName("multi_action_card")
         av = QVBoxLayout(self.action_card)
         av.setContentsMargins(16, 13, 16, 13)
@@ -4948,6 +5092,14 @@ class CardWindow(QWidget):
         bar_opts.addWidget(self.btn_glass_toggle)
         side_lay.addLayout(bar_opts)
 
+        # 2026-09-23 (第60轮): 毛玻璃模式开关 —— 与「液态玻璃」并列的第二种材质
+        self.btn_frost = QPushButton("🫧 毛玻璃")
+        self.btn_frost.setCheckable(True)
+        self.btn_frost.setChecked(bool(theme_state.get("frost")))
+        self.btn_frost.setCursor(Qt.PointingHandCursor)
+        self.btn_frost.clicked.connect(lambda: self.set_frost(self.btn_frost.isChecked()))
+        side_lay.addWidget(self.btn_frost)
+
         main_layout.addWidget(self.sidebar)
 
         # ---- 2. 右侧工作区
@@ -5007,6 +5159,8 @@ class CardWindow(QWidget):
         self.card_sess = StatCard("会话 / 请求", PURPLE)
         for c in (self.card_total, self.card_cache, self.card_io, self.card_sess):
             stat_grid.addWidget(c, 1)
+            # 毛玻璃下这四张是"一组", 不各画分区线 (第60轮)
+            c.rule = False
         dash_lay.addLayout(stat_grid)
 
         self.today_bar = QLabel("")
@@ -5197,16 +5351,23 @@ class CardWindow(QWidget):
         m = curr_metric()
 
         self.card.setStyleSheet("#main_card { background:transparent; border:none; }")
+        # 2026-09-23 (第60轮): 毛玻璃下侧栏也走透明, 分栏交给主板那条细线
+        frost = bool(theme_state.get("frost"))
+        side_transparent = glass or frost
         self.sidebar.setStyleSheet(
-            f"#sidebar {{ background:{'transparent' if glass else qrgba(SIDEBAR)};"
+            f"#sidebar {{ background:{'transparent' if side_transparent else qrgba(SIDEBAR)};"
             f" border-top-left-radius:14px; border-bottom-left-radius:14px;"
-            f" border-right:{'none' if glass else f'1px solid {qrgba(BORDER)}'}; }}")
+            f" border-right:{'none' if side_transparent else f'1px solid {qrgba(BORDER)}'}; }}")
 
         self.app_title.setStyleSheet(f"color:{qname(TEXT)};")
         self.subtitle.setStyleSheet(f"color:{qname(TEXT3)};")
         self.src_head.setStyleSheet(f"color:{qname(TEXT3)}; padding-left:4px;")
 
-        if glass:
+        if frost:
+            # 毛玻璃 (第60轮): 今日概况不铺底不描边, 否则又变回"一张卡片"
+            tb_bg = "transparent"
+            tb_border = "transparent"
+        elif glass:
             tb_bg = "rgba(255, 255, 255, 0.08)" if dark else "rgba(255, 255, 255, 0.45)"
             tb_border = "rgba(255, 255, 255, 0.18)" if dark else "rgba(255, 255, 255, 0.70)"
         else:
@@ -5240,6 +5401,10 @@ class CardWindow(QWidget):
         self.btn_theme_toggle.setText("🌙 暗色" if not dark else "☀️ 亮色")
         self.btn_glass_toggle.setStyleSheet(btn_opt_style)
         self.btn_glass_toggle.setChecked(theme_state["glass"])
+        # 2026-09-23 (第60轮): 毛玻璃开关 (同一套侧栏按钮语言)
+        self.btn_frost.setStyleSheet(btn_opt_style)
+        self.btn_frost.setChecked(frost)
+        self.btn_frost.setText("🫧 毛玻璃 · 开" if frost else "🫧 毛玻璃")
 
         for b in (self.btn_today, self.btn_7, self.btn_30, self.btn_all):
             b.setStyleSheet(
@@ -5274,6 +5439,36 @@ class CardWindow(QWidget):
         self.apply_styles()
         self._refresh_subpages_theme()
         self._update_all()
+        save_settings()
+
+    def set_frost(self, on):
+        """毛玻璃模式 (2026-09-23 第60轮)。
+
+        与 `set_glass` 刻意分开: `glass` 管"半透明程度", `frost` 管"材质是哪一种"
+        (液态玻璃 / 毛玻璃), 两者可自由组合 —— 例如"毛玻璃 + 高通透"。
+
+        切换后必须重刷三处 (少任一都会残留旧样):
+          · `apply_styles()`            —— 侧栏等走 QSS 的控件;
+          · `_refresh_subpages_theme()` —— 子页用 QLabel+QSS 上色, update() 不重算 QSS;
+          · `_update_all()`             —— 卡片底板/自绘控件在 paintEvent 里读 theme_state,
+                                           只有重绘才会换成新材质。
+        """
+        on = bool(on)
+        if on == bool(theme_state.get("frost")):
+            return
+        theme_state["frost"] = on
+        self.apply_styles()
+        self._refresh_subpages_theme()
+        # 明细行等"行级"控件用 QSS 铺斑马纹, update() 不会清掉它 → 重渲染一次当前页
+        try:
+            self.render()
+        except Exception:
+            pass
+        self._update_all()
+        try:
+            self.btn_frost.setChecked(on)
+        except Exception:
+            pass
         save_settings()
 
     def _refresh_subpages_theme(self):
@@ -5768,6 +5963,8 @@ class CardWindow(QWidget):
         act_hide = menu.addAction("⌫  隐藏窗口 (Esc)")
         act_dark = menu.addAction(("◉ " if theme_state["dark"] else "○ ") + "深色模式")
         act_blur = menu.addAction(("◉ " if theme_state["glass"] else "○ ") + "液态玻璃 (iOS 27)")
+        # 2026-09-23 (第60轮): 毛玻璃模式 (与液态玻璃并列的第二种材质)
+        act_frost = menu.addAction(("◉ " if theme_state.get("frost") else "○ ") + "🫧 毛玻璃模式")
 
         # 玻璃通透度调节菜单
         tr_menu = menu.addMenu("🔮  玻璃通透度")
@@ -5793,6 +5990,8 @@ class CardWindow(QWidget):
             self.set_dark(not theme_state["dark"])
         elif chosen == act_blur:
             self.set_glass(not theme_state["glass"])
+        elif chosen == act_frost:
+            self.set_frost(not theme_state.get("frost"))
         elif chosen == act_tr_c:
             self.set_glass_transparency("crystal")
         elif chosen == act_tr_b:
@@ -5913,6 +6112,8 @@ def load_settings():
             d = json.load(f)
         theme_state["dark"] = bool(d.get("dark"))
         theme_state["glass"] = bool(d.get("glass"))
+        # 2026-09-23 (第60轮): 毛玻璃模式 (与深/浅色、液态玻璃都不冲突)
+        theme_state["frost"] = bool(d.get("frost"))
         theme_state["source"] = d.get("source", "wb")
         theme_state["pet"] = bool(d.get("pet"))
         # ★ 一次性迁移到新素材库(v3): 旧版设置里的 pet_theme=v1/v2 会把新素材挡掉。
@@ -6348,6 +6549,10 @@ class BallWindow(QWidget):
         a_restart = menu.addAction("🔄  一键重启")
         menu.addSeparator()
 
+        # 2026-09-23 (第60轮): 毛玻璃模式 —— 悬浮球上也能直接切
+        a_frost = menu.addAction(("◉ " if theme_state.get("frost") else "○ ") + "🫧  毛玻璃模式")
+        menu.addSeparator()
+
         # 悬浮球右键调节通透度
         tr_menu = menu.addMenu("🔮  玻璃通透度")
         cur_tr = theme_state.get("glass_transparency", "balanced")
@@ -6390,6 +6595,9 @@ class BallWindow(QWidget):
             if self.card:
                 self.card.popup_from(self.frameGeometry())
                 self.card.refresh()
+        elif chosen == a_frost:
+            if self.card:
+                self.card.set_frost(not theme_state.get("frost"))
         elif chosen == act_tr_c:
             if self.card:
                 self.card.set_glass_transparency("crystal")
