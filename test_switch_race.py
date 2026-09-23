@@ -1729,10 +1729,116 @@ check("布局: 三按钮统一与刷新按钮同高(refresh_h)",
       and "self.btn_frost.setFixedHeight(_opt_h)" in _src62
       and "self.btn_theme_toggle.setFixedHeight(_opt_h)" in _src62)
 check("布局: 材质按钮有独立样式(选中实心/未选描边)",
-      "mat_style" in _src62 and "QPushButton:checked{ background:#3b6fe0" in _src62)
+      "mat_style" in _src62 and "material_btn_qss" in _src62)   # 第64轮: 样式改为按材质分档生成
 
 # 17.4 版本号
 check("版本号升级到 v9.3-frost", ca.APP_BUILD == "v9.3-frost", ca.APP_BUILD)
+
+# ========== 18. 底纹真高斯 + 按钮材质适配 + 每日分布不再记忆 (2026-09-25 第64轮) ==========
+print("== 18. 底纹模糊 / 按钮材质适配 / 每日分布记忆移除 ==")
+
+# 18.1 模糊管线: 真高斯(QGraphicsBlurEffect), 旧的"缩到 1/45 再放大"已移除
+check("底纹模糊: 提供 _gaussian_blur 且用真高斯实现",
+      "def _gaussian_blur" in _src62 and "QGraphicsBlurEffect" in _src62)
+check("底纹模糊: 旧的 1/45 级联降采样近似已删除", "target = 45" not in _src62)
+check("底纹模糊: 半径按工作分辨率比例给定(不再受放大倍数限制)",
+      "FROST_BLUR_RATIO" in _src62 and "FROST_WORK_SIDE" in _src62)
+
+# 18.2 边缘: 均匀图模糊后不得出现暗边(镜像 padding 生效)
+_uni = ca.QImage(300, 200, ca.QImage.Format_ARGB32)
+_uni.fill(ca.QColor(120, 130, 140))
+_ub = ca._gaussian_blur(_uni, 24)
+_uv = [_ub.pixelColor(x, y).red() for (x, y) in ((0, 0), (299, 0), (0, 199), (299, 199), (150, 100))]
+check("底纹模糊: 均匀图不产生暗边(镜像 padding)", max(_uv) - min(_uv) <= 3, str(_uv))
+
+# 18.3 形状: 真高斯的边缘衰减剖面是"陡而平滑"的曲线;
+#      旧的"缩到 1/45 再放大"给出的是**线性斜坡**(采样点之间是直线段), 这正是肉眼看到的色块。
+#      实测: 真高斯 10px 处衰减到 26% 且差分逐级递减; 旧近似 10px 处仍有 76%, 差分近乎恒定。
+_blk = ca.QImage(401, 401, ca.QImage.Format_ARGB32)
+_blk.fill(ca.QColor(0, 0, 0))
+_pb = ca.QPainter(_blk)
+_pb.fillRect(180, 180, 41, 41, ca.QColor(255, 255, 255))
+_pb.end()
+_bl = ca._gaussian_blur(_blk, 20)
+_prof = [_bl.pixelColor(x, 200).red() for x in range(220, 340)]
+_ratio = _prof[10] / max(1, _prof[0])
+_diffs = [d for d in (_prof[i] - _prof[i + 1] for i in range(len(_prof) - 1)) if d > 0]
+_mono = all(_diffs[i] + 1 >= _diffs[i + 1] for i in range(len(_diffs) - 1))
+check("底纹模糊: 边缘衰减是平滑高斯曲线(不是线性斜坡=色块)",
+      _ratio < 0.5 and _mono, f"10px衰减比={_ratio:.2f} 差分单调={_mono}")
+
+# 18.4 按钮按材质分档: 默认 / 液态玻璃 / 毛玻璃 三套样式各不相同
+_wf64 = ca.CardWindow()
+_wf64.refresh = lambda *a, **k: None
+_dark_before64 = ca.theme_state["dark"]
+
+
+def _btn_qss64():
+    return (ca.theme_state["dark"], _wf64.btn_min.styleSheet(), _wf64.btn_close.styleSheet(),
+            _wf64.btn_refresh.styleSheet(), _wf64.btn_glass_toggle.styleSheet(),
+            _wf64.btn_theme_toggle.styleSheet(), _wf64.btn_today.styleSheet())
+
+
+try:
+    ca.theme_state["dark"] = True
+    ca.refresh_palette()          # 调色板跟随, 断言才与真机一致
+    ca.theme_state["glass"] = False
+    ca.theme_state["frost"] = False
+    _wf64.apply_styles()
+    _q_def = _btn_qss64()
+    ca.theme_state["glass"] = True
+    ca.theme_state["frost"] = False
+    _wf64.apply_styles()
+    _q_gla = _btn_qss64()
+    ca.theme_state["glass"] = False
+    ca.theme_state["frost"] = True
+    _wf64.apply_styles()
+    _q_fro = _btn_qss64()
+
+    check("按钮适配: 三档材质下样式互不相同",
+          _q_def != _q_gla and _q_gla != _q_fro and _q_def != _q_fro)
+    check("按钮适配: 默认档保持原有实底芯片(观感不变)",
+          ca.qrgba(ca.TRACK) in _q_def[1] and ca.qrgba(ca.TRACK) in _q_def[6])
+    check("按钮适配: 液态玻璃档 = 半透明高光片 + 亮描边",
+          "rgba(255,255,255,0.10)" in _q_gla[1] and "rgba(255,255,255,0.20)" in _q_gla[1])
+    check("按钮适配: 毛玻璃档 = 近乎无底 + 极淡细线",
+          "rgba(255,255,255,0.055)" in _q_fro[1] and "rgba(255,255,255,0.13)" in _q_fro[1])
+    check("按钮适配: 材质按钮选中态在毛玻璃下仍是半透明蓝(唯一强元素)",
+          "rgba(59,111,224,0.92)" in _q_fro[4])
+    check("按钮适配: 刷新主按钮默认实心蓝 / 毛玻璃半透明蓝",
+          "#3b6fe0" in _q_def[3] and "rgba(59,111,224,0.92)" in _q_fro[3])
+    check("按钮适配: NavButton 毛玻璃下 hover 不铺实底(自绘源码断言)",
+          "120 if glass else 58" in _src62
+          and 'frost = bool(theme_state.get("frost"))' in _src62)
+finally:
+    ca.theme_state["dark"] = _dark_before64
+    ca.theme_state["glass"] = False
+    ca.theme_state["frost"] = False
+    ca.refresh_palette()
+    _wf64.apply_styles()
+    _wf64.close()
+
+# 18.5 每日用量分布: 不再记忆滚轮缩放/平移
+_ch64 = ca.StackedBarChart()
+_daily64 = {f"2026-09-{d:02d}": {"m": {"total": d * 100}} for d in range(1, 26)}
+_ch64.set_data(_daily64, [("m", 1)])
+_base_count64 = _ch64.view_count
+_base_start64 = _ch64.view_start
+_ch64.view_count = 5.0
+_ch64.view_start = 3.0
+_ch64._sync_slice()
+check("每日分布: 缩放先生效(视图确实被改动)", _ch64.view_count == 5.0 and _ch64.view_start == 3.0)
+_ch64.set_data(_daily64, [("m", 1)])       # 同一批数据重绘
+check("每日分布: 重绘回到默认视图(记忆功能已移除)",
+      abs(_ch64.view_count - _base_count64) < 0.01 and abs(_ch64.view_start - _base_start64) < 0.01,
+      f"count={_ch64.view_count} start={_ch64.view_start} 默认=({_base_count64},{_base_start64})")
+check("每日分布: 源码中不再有 keep_view 记忆分支", "keep_view" not in _src62)
+
+# 18.6 默认底纹: 内置壁纸已替换(不再依赖首次抓屏)
+_bg64 = ca.QImage(ca.FROST_TEX_DEFAULT)
+check("默认底纹: assets/frost_bg.png 存在且为整幅壁纸尺寸",
+      (not _bg64.isNull()) and _bg64.width() >= 800 and _bg64.height() >= 400,
+      f"{_bg64.width()}x{_bg64.height()}")
 
 # ---- 还原真实数据目录路径 (临时目录随系统清理) ----
 ca._sn_events_all = orig_events

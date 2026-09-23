@@ -3,12 +3,16 @@
 Token 统计卡片 V9.3 - 静态磨砂毛玻璃 + iOS 27 液态玻璃 + 精致双尺寸仪表盘
 
 V9.3 highlights (Baked Frosted Glass):
-  The frosted-glass mode uses a baked-in texture: on first launch the app captures the
-  desktop once, applies a strong multi-pass Gaussian blur (7-step progressive downscale,
-  final scale 1/45, smooth with no visible blocks), desaturates it, and stores it as an
-  asset. Zero capture cost afterwards - dragging is perfectly smooth. Users can pick their
-  own image (auto-processed the same way) via the right-click menu. Glass and Frost remain
-  mutually exclusive materials toggled from adjacent sidebar buttons of equal height.
+  The frosted-glass mode uses a baked-in texture (assets/frost_bg.png - a wallpaper shipped
+  with the repo, processed with a TRUE Gaussian via QGraphicsBlurEffect + mirrored padding,
+  then desaturated). Users can pick their own image via the right-click menu.
+  NOTE: never go back to "downscale-then-upscale" blur approximations. The bilinear upscale
+  leaves periodic creases at the sample boundaries, which the eye reads as colour blocks -
+  and it gets worse the higher the source resolution (adjacent samples differ more).
+  Measured crease autocorrelation: 0.785 at 45px for the old 1/45 approximation, 0.085 for
+  a true Gaussian. Glass and Frost stay mutually exclusive (adjacent sidebar buttons), and
+  sidebar / title-bar controls re-skin themselves per material (solid chip / translucent
+  highlight / hairline) so they never look like blocks pasted onto the glass.
   NOTE: Windows DWM System Backdrop (Acrylic/Mica) was thoroughly tested and REJECTED:
   on Qt self-drawn translucent windows it paints an opaque gray layer instead of blurring
   the desktop behind (works only on plain Win32 windows). Do not revisit without evidence.
@@ -28,10 +32,12 @@ V9.2 highlights (Multi-Machine Sync):
   - 重构舒适大窗口 (1180×730) 字体层级体系，字重与行高开阔舒展，拒绝粗暴放大
   - 三档玻璃通透度无级调谐 + 右键多入口切换 + 每日柱状图鼠标锚点滚轮缩放与平移
   - 商汤额度页两张积分池卡**常驻**（未就绪用公测期满额占位）；按机统计双栏 + 环形占比圈
-  - 「毛玻璃模式」(Frost)：静态内置磨砂纹理（首次启动抓屏一次→七级渐进高斯→去饱和），
-    之后零开销；支持自定义图片（自动做同样处理）；与液态玻璃互斥
+  - 「毛玻璃模式」(Frost)：静态内置磨砂底纹（assets/frost_bg.png = 内置壁纸经**真高斯**+去饱和），
+    运行时零抓屏零延迟；支持自定义图片（自动做同样处理）；与液态玻璃互斥
+    · ⚠️ 模糊必须用**真高斯**(_gaussian_blur)：旧的"缩到 1/45 再放大"会留下周期性折痕 = 色块
     · 纹理必须由窗口底板整块铺一次，卡片不画任何底色（否则每卡一张缩略图/出现底框）
     · 侧栏「液态玻璃 | 毛玻璃」并列等高按钮，三态切换（再点已选中的回默认）；明暗切换在最下方
+    · 控件随材质换语言(material_btn_qss)：默认实底芯片 / 液态玻璃半透明高光 / 毛玻璃细线无底
   - ⚠️ 属性名不要用 `metric`：QWidget 有虚函数 QPaintDevice::metric()，会与 PySide6 覆写冲突而崩
 """
 import base64
@@ -86,7 +92,8 @@ from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QVBoxLayout,
                                QHBoxLayout, QGridLayout, QFrame, QPushButton,
                                QScrollArea, QMenu, QSizePolicy, QPlainTextEdit,
                                QStackedWidget, QLineEdit, QSystemTrayIcon,
-                               QFileDialog, QMessageBox, QInputDialog, QDialog)
+                               QFileDialog, QMessageBox, QInputDialog, QDialog,
+                               QGraphicsScene, QGraphicsPixmapItem, QGraphicsBlurEffect)
 
 
 def app_icon():
@@ -368,6 +375,79 @@ FROST_TEX_LIGHT_OP = 0.30    # 浅色: 纹理叠加不透明度 (越小白越干
 FROST_BASE_LIGHT = (252, 253, 255)   # 浅色底
 CARD_TINT_ALPHA = 0.85       # 卡片相对底板的"更实"系数 (文字多, 需要更干净的底)
 
+# 2026-09-25 (第64轮): 模糊改为**真高斯**(QGraphicsBlurEffect), 见 _gaussian_blur。
+#   浅猫实测反馈: "用高分辨率做底图, 色块感就会比较强" —— 根因是旧的"缩到 1/45 再放大 45 倍"
+#   近似: 双线性放大会在采样边界留下**周期性折痕**(实测自相关在 45px 处 0.80, 而真高斯无长周期峰),
+#   源图分辨率越高、各采样点颜色差越大, 折痕越明显 → 看上去就是一块一块的色块。
+FROST_WORK_SIDE = 1400       # 纹理工作分辨率(长边): 与窗口显示尺寸同量级即可
+FROST_BLUR_RATIO = 0.021     # 高斯半径 = 工作长边 × 该比例 (1400 → ≈29px)
+
+
+def _gaussian_blur(src, radius):
+    """真高斯模糊 (QGraphicsBlurEffect), 返回同尺寸 QImage。
+
+    ⭐ 2026-09-25 (第64轮) 为什么换掉旧的"级联降采样→放大"近似:
+      旧做法把图缩到 **1/45**(1400px → 31px) 再放大 45 倍。缩小时的确是面积平均(模糊),
+      但**放大是双线性插值**: 每个采样点变成一块 ~45px 的线性平面, 采样边界上是折痕
+      (一阶导连续、二阶导跳变) —— 实测 |g''| 自相关在 **45px 处 0.80**, 肉眼看就是
+      "一块一块"的色块。源图分辨率越高、相邻采样点色差越大, 折痕越显眼 → 浅猫说的
+      "高分辨率底图色块感更强"正是这个。
+      真高斯在同一尺度上做卷积, 没有任何重采样折痕(自相关无长周期峰), 且半径可直接按
+      工作分辨率给定 —— 想糊多狠就糊多狠, 不再受"放大倍数"限制。
+
+    边缘: 先在四周用**镜像**铺出 2r+10 的 padding 再模糊, 最后裁回中心 —— 否则模糊会
+    把画面边缘"吃"进去, 表现为一圈暗边。
+    """
+    r = float(radius)
+    if r <= 0:
+        return src
+    w, h = src.width(), src.height()
+    if w <= 1 or h <= 1:
+        return src
+    # padding 取 3r: Qt 的模糊核支撑比标称半径更宽(实测 2r 时最外圈仍偏暗 ~3%),
+    # 裁回中心后必须完全落在"被镜像铺满"的区域里。
+    pad = int(r * 3 + 12)
+    canvas = QImage(w + 2 * pad, h + 2 * pad, QImage.Format_ARGB32)
+    canvas.fill(QColor(0, 0, 0, 0))     # 防御: QImage 不清零, 先铺透明再画
+    p = QPainter(canvas)
+    p.setRenderHint(QPainter.SmoothPixmapTransform)
+
+    def _mirror(x, y, fx, fy):
+        """把原图(可按需镜像)画到 (x,y) 起、尺寸仍为 w×h 的矩形里。"""
+        p.save()
+        p.translate(x + (w if fx else 0), y + (h if fy else 0))
+        p.scale(-1 if fx else 1, -1 if fy else 1)
+        p.drawImage(0, 0, src)
+        p.restore()
+
+    # ⚠️ 8 张镜像图必须**逐张给出偏移**: 边条只翻一个轴, 角块翻两个轴。
+    #    (第64轮实测踩坑: 用 "pad-w/pad+w 与 pad-h/pad+h" 配对循环时, 左右边条的 y
+    #     被错写成 pad±h → 画到了画面外, 四角与上下边留下透明洞, 模糊后就是一圈暗边。)
+    _l, _m, _r = pad - w, pad, pad + w
+    _t, _c, _b = pad - h, pad, pad + h
+    for (x, y, fx, fy) in ((_l, _c, True, False), (_r, _c, True, False),
+                           (_m, _t, False, True), (_m, _b, False, True),
+                           (_l, _t, True, True), (_r, _t, True, True),
+                           (_l, _b, True, True), (_r, _b, True, True)):
+        _mirror(x, y, fx, fy)
+    p.drawImage(pad, pad, src)          # 中心原图最后画, 保证不被镜像覆盖
+    p.end()
+
+    scene = QGraphicsScene()
+    item = QGraphicsPixmapItem(QPixmap.fromImage(canvas))
+    eff = QGraphicsBlurEffect()
+    eff.setBlurRadius(r)
+    eff.setBlurHints(QGraphicsBlurEffect.QualityHint)
+    item.setGraphicsEffect(eff)
+    scene.addItem(item)
+
+    out = QImage(w, h, QImage.Format_ARGB32)
+    out.fill(QColor(0, 0, 0))
+    pp = QPainter(out)
+    scene.render(pp, QRectF(0, 0, w, h), QRectF(pad, pad, w, h))
+    pp.end()
+    return out
+
 
 class FrostTexture:
     """毛玻璃底纹 —— 单例, 负责加载/生成/缓存那张模糊背景图。
@@ -420,9 +500,9 @@ class FrostTexture:
             return None
 
     def set_custom(self, src_path):
-        """把用户选的图片处理成纹理(强模糊 + 压暗)并保存; 成功返回 True。
+        """把用户选的图片处理成纹理(真高斯模糊 + 去饱和)并保存; 成功返回 True。
 
-        处理链: 读入 → 等比缩放(长边 1400) → 级联降采样模糊 → 按当前明暗压暗 → 存 PNG
+        处理链: 读入 → 等比缩放到工作分辨率(长边 FROST_WORK_SIDE) → 真高斯模糊 → 去饱和 → 存 PNG
         """
         try:
             img = QImage(src_path)
@@ -454,7 +534,7 @@ class FrostTexture:
     # ---------------------------------------------------------- 图像处理
     @staticmethod
     def _process(img):
-        """等比缩放 + 强高斯模糊(级联降采样) + 去饱和 → 返回**中性**纹理。
+        """等比缩放 + 真高斯模糊 + 去饱和 → 返回**中性**纹理。
 
         ⚠️ 这里**不做明暗处理**: 压暗/提亮由绘制时的罩层完成(见 paint_frost_*),
            这样同一张纹理在深色/浅色下都合适, 也省掉逐像素循环(全走 Qt 的 C++ 路径)。
@@ -469,27 +549,10 @@ class FrostTexture:
             img = img.scaled(max(1, int(w * k)), max(1, int(h * k)),
                              Qt.KeepAspectRatio, Qt.SmoothTransformation)
         w, h = img.width(), img.height()
-        # 2) 级联降采样 = 快速高斯近似。
-        #    ⚠️ 两个实测教训(浅猫先后指出):
-        #       · 级差太大(1/10 直接跳 1/28) → "色块感";
-        #       · 目标尺度不够小(1/18) → 文字还留着"条状痕迹"。
-        #    现为**七级渐进**每级缩约 1.7 倍, 最终缩到 **1/45**(等效半径 ~22px 的高斯),
-        #    文字/图表的形状痕迹彻底糊散, 过渡平滑无块。
-        cur = img
-        target = 45            # 最终缩到 1/45
-        k = 1.0
-        while True:
-            k_next = k / 1.7
-            if k_next <= 1.0 / target or int(w * k_next) < 6 or int(h * k_next) < 6:
-                break
-            cur = cur.scaled(max(1, int(w * k_next)), max(1, int(h * k_next)),
-                             Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-            k = k_next
-        if k > 1.0 / target:               # 补最后一刀到目标
-            cur = cur.scaled(max(1, int(w * (1.0 / target))),
-                             max(1, int(h * (1.0 / target))),
-                             Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-        out = cur.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        # 2) 真高斯模糊 (第64轮替换旧的"降采样→放大"近似, 详见 _gaussian_blur)
+        radius = max(10.0, max(w, h) * FROST_BLUR_RATIO)
+        out = _gaussian_blur(img, radius)
+        w, h = out.width(), out.height()
         # 3) 去饱和 35% (叠一层灰度自画像) —— 用 QPainter 做, 比逐像素快两个数量级
         try:
             if out.format() != QImage.Format_ARGB32:
@@ -530,9 +593,10 @@ class FrostTexture:
 
 
 def ensure_frost_texture():
-    """首次运行时生成内置纹理: 抓一次当前屏幕 → 模糊压暗 → 存 assets/frost_bg.png。
+    """首次运行时生成内置纹理: 抓一次当前屏幕 → 真高斯模糊 → 存 assets/frost_bg.png。
 
     仅在没有纹理文件时执行一次; 之后永远复用(这就是"不实时抓屏"的关键)。
+    ⚠️ 自第64轮起仓库内置了一张无风险壁纸底纹, 本函数只在底纹文件缺失时才走(兜底)。
     """
     if os.path.exists(FROST_TEX_DEFAULT):
         return True
@@ -870,6 +934,84 @@ def style_btn(b, kind=None, pt=None, height=None):
                f"QPushButton:disabled{{ color:{qname(TEXT3)}; }}")
     b.setStyleSheet(qss)
     return b
+
+
+# ============================================================ 材质自适应控件样式 (2026-09-25 第64轮)
+# 浅猫反馈: 侧栏几个设置按钮 + 右上角按钮在**毛玻璃 / 液态玻璃**下"很突兀"。
+# 根因: 它们一直用的是"默认模式"的实底芯片(不透明 TRACK 填充、无描边), 而两种材质下
+#   主板与侧栏都变成透明 —— 毛玻璃更是只剩细线分区 —— 实底芯片就成了"贴上去的色块"。
+# 现按材质分三套语言(选中态永远是唯一强元素, 保证一眼看出当前状态):
+#   · 默认     : 实底 TRACK 芯片(保持原观感, 不动)
+#   · 液态玻璃 : 半透明高光片 + 亮描边(与主板的菲涅尔高光同源)
+#   · 毛玻璃   : 近乎无底 + 极淡细线(与"细线分区"同源), 悬停只给一层薄雾
+def material_btn_qss(role, dark, glass, frost, px=12):
+    """按当前材质生成按钮 QSS。
+
+    role: primary(主操作·刷新) / opt(选项·时间区间·明暗) / mat(材质按钮) / icon(标题栏 – ✕)
+    """
+    if frost:
+        chip_bg = "rgba(255,255,255,0.055)" if dark else "rgba(255,255,255,0.34)"
+        chip_bd = "rgba(255,255,255,0.13)" if dark else "rgba(28,38,58,0.13)"
+        chip_hov = "rgba(255,255,255,0.11)" if dark else "rgba(255,255,255,0.62)"
+        acc = "rgba(59,111,224,0.92)"
+        acc_hov = "rgba(47,94,196,0.96)"
+        acc_bd = "rgba(255,255,255,0.20)" if dark else "rgba(255,255,255,0.62)"
+        acc_soft = "rgba(59,111,224,0.26)"
+    elif glass:
+        chip_bg = "rgba(255,255,255,0.10)" if dark else "rgba(255,255,255,0.55)"
+        chip_bd = "rgba(255,255,255,0.20)" if dark else "rgba(255,255,255,0.85)"
+        chip_hov = "rgba(255,255,255,0.19)" if dark else "rgba(255,255,255,0.80)"
+        acc = "rgba(59,111,224,0.92)"
+        acc_hov = "rgba(47,94,196,0.96)"
+        acc_bd = "rgba(255,255,255,0.34)" if dark else "rgba(255,255,255,0.95)"
+        acc_soft = "rgba(59,111,224,0.26)"
+    else:
+        chip_bg = qrgba(TRACK)
+        chip_bd = "transparent"
+        chip_hov = qrgba(HOVER)
+        acc = "#3b6fe0"
+        acc_hov = "#2f5ec4"
+        acc_bd = "transparent"
+        acc_soft = qrgba(TRACK)
+
+    fg = qname(TEXT2)
+    fg_hov = qname(TEXT)
+    size = f" font-size:{px}px;" if px else ""
+
+    if role == "primary":          # 刷新数据: 实心/半透明蓝 + 细描边
+        return (f"QPushButton{{ background:{acc}; color:#ffffff; border:1px solid {acc_bd};"
+                f" border-radius:8px; font-weight:600; }}"
+                f"QPushButton:hover{{ background:{acc_hov}; }}"
+                f"QPushButton:disabled{{ background:{chip_bg}; color:{qname(TEXT3)};"
+                f" border-color:{chip_bd}; }}")
+
+    if role == "icon":             # 标题栏 – : 只有悬停薄雾
+        return (f"QPushButton{{ background:{chip_bg}; color:{fg};"
+                f" border:1px solid {chip_bd}; border-radius:6px;{size} font-weight:700; }}"
+                f"QPushButton:hover{{ background:{chip_hov}; color:{fg_hov}; }}")
+
+    if role == "icon_close":       # 标题栏 ✕ : 悬停转红
+        close_hov = "rgba(224,82,82,0.22)" if (glass or frost) else "#e05252"
+        close_fg = "#ffffff" if not (glass or frost) else "#e05252"
+        return (f"QPushButton{{ background:{chip_bg}; color:{fg};"
+                f" border:1px solid {chip_bd}; border-radius:6px;{size} font-weight:700; }}"
+                f"QPushButton:hover{{ background:{close_hov}; color:{close_fg}; }}")
+
+    if role == "mat":              # 材质按钮: 选中=实心蓝(唯一强元素), 未选中=按材质分档
+        return (f"QPushButton{{ background:{chip_bg}; color:{fg};"
+                f" border:1px solid {chip_bd}; border-radius:8px;{size} }}"
+                f"QPushButton:hover{{ background:{chip_hov}; color:{fg_hov}; }}"
+                f"QPushButton:checked{{ background:{acc}; color:white; border-color:{acc_bd};"
+                f" font-weight:600; }}"
+                f"QPushButton:checked:hover{{ background:{acc_hov}; color:white; }}")
+
+    # role == "opt": 时间区间 / 明暗切换
+    return (f"QPushButton{{ background:{chip_bg}; color:{fg};"
+            f" border:1px solid {chip_bd}; border-radius:6px;{size} }}"
+            f"QPushButton:hover{{ background:{chip_hov}; color:{fg_hov}; }}"
+            f"QPushButton:checked{{ background:{acc}; color:white; font-weight:600;"
+            f" border-color:{acc_bd}; }}"
+            f"QPushButton:checked:hover{{ background:{acc_hov}; color:white; }}")
 
 
 # ============================================================ 自绘弹窗 (2026-09-19 第51轮)
@@ -1517,10 +1659,10 @@ class StackedBarChart(QWidget):
         self.colors = {m: MODEL_COLORS[i % len(MODEL_COLORS)] for i, m in enumerate(top)}
         days = sorted(d for d in daily if d != "unknown")
 
-        # 数据末日期未延展 → 保留用户滚轮缩放/平移 (切窗口尺寸/刷新不再丢视图)
-        old_last = self.all_data[-1]["date"] if self.all_data else None
-        keep_view = bool(days) and days[-1] == old_last
-
+        # 2026-09-25 (第64轮): **移除"记住缩放/平移"** —— 浅猫要求撤掉这个记忆功能。
+        #   原行为(第46轮加的): 数据末日期未延展时保留用户上次的滚轮缩放/平移视图。
+        #   现改为每次 set_data 都回到默认视图(最近 35 天 / 全量)。缩放与平移操作本身
+        #   仍然可用, 只是活到下一次数据重绘为止(不再跨刷新/跨切页"记着")。
         self.all_data = []
         for d in days:
             parts = []
@@ -1530,11 +1672,10 @@ class StackedBarChart(QWidget):
                     parts.append((m, self.colors[m], v))
             self.all_data.append({"date": d, "parts": parts})
 
-        if not keep_view:
-            total = len(self.all_data)
-            default_len = min(35.0, float(total)) if total > 0 else 35.0
-            self.view_count = default_len
-            self.view_start = float(max(0, total - int(default_len)))
+        total = len(self.all_data)
+        default_len = min(35.0, float(total)) if total > 0 else 35.0
+        self.view_count = default_len
+        self.view_start = float(max(0, total - int(default_len)))
         self._sync_slice()   # 内部已有 clamp, 不会越界
 
     def _sync_slice(self):
@@ -5123,6 +5264,7 @@ class NavButton(QPushButton):
         checked = self.isChecked()
         dark = theme_state["dark"]
         glass = theme_state["glass"]
+        frost = bool(theme_state.get("frost"))     # 第64轮: 毛玻璃也要参与适配
         r = 9.0
 
         # 1. 背景 (选中 > hover > 常态)
@@ -5132,16 +5274,22 @@ class NavButton(QPushButton):
             p.setPen(Qt.NoPen)
             p.setBrush(bg)
             p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), r, r)
-            # 玻璃态下叠一层极淡描边, 让选中块在透光背景上仍有边界感
-            if glass:
+            # 材质态下叠一层极淡描边, 让选中块在透光背景上仍有边界感
+            # 第64轮: 毛玻璃一并适配 —— 它的描边比液态玻璃更"细气"(与细线分区同源)
+            if glass or frost:
                 rim = QColor(BLUE)
-                rim.setAlpha(80 if dark else 62)
+                if glass:
+                    rim.setAlpha(80 if dark else 62)
+                else:
+                    rim.setAlpha(52 if dark else 44)
                 p.setBrush(Qt.NoBrush)
                 p.setPen(QPen(rim, 1.0))
                 p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), r, r)
         elif self._hover:
             hv = QColor(HOVER)
-            hv.setAlpha(210)
+            # 第64轮: 材质态下 hover 不能是一块实底(会像"贴上去的色块") ——
+            #   液态玻璃给半透明高光, 毛玻璃只给一层薄雾
+            hv.setAlpha(210 if not (glass or frost) else (120 if glass else 58))
             p.setPen(Qt.NoPen)
             p.setBrush(hv)
             p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), r, r)
@@ -5637,49 +5785,30 @@ class CardWindow(QWidget):
         for w in (self.table_card, self.chart_card, self.heat_card):
             w.setStyleSheet("background:transparent; border:none;")
 
-        self.btn_refresh.setStyleSheet(
-            "QPushButton{ background:#3b6fe0; color:white; border:none; border-radius:8px; font-weight:600; }"
-            "QPushButton:hover{ background:#2f5ec4; }"
-            "QPushButton:disabled{ background:#aebfd8; }")
+        # ===== 2026-09-25 (第64轮): 侧栏与标题栏按钮**按材质分档** =====
+        # 浅猫反馈: 这几个按钮在毛玻璃/液态玻璃下"很突兀"。根因见 material_btn_qss 的注释:
+        # 它们一直是默认模式的实底芯片, 而两种材质下主板/侧栏都是透明的。
+        # 现在四种角色(主操作/选项/材质/标题栏)都走材质感知样式; **默认模式观感与以前完全一致**。
+        self.btn_refresh.setStyleSheet(material_btn_qss("primary", dark, glass, frost))
+        self.btn_min.setStyleSheet(material_btn_qss("icon", dark, glass, frost))
+        self.btn_close.setStyleSheet(material_btn_qss("icon_close", dark, glass, frost))
 
-        ctrl = (f"QPushButton{{ background:{qrgba(TRACK)}; color:{qname(TEXT2)}; border:none;"
-                f" border-radius:6px; font-size:12px; font-weight:700; }}")
-        self.btn_min.setStyleSheet(ctrl + f"QPushButton:hover{{ background:{qrgba(HOVER)}; }}")
-        self.btn_close.setStyleSheet(ctrl + "QPushButton:hover{ background:#e05252; color:white; }")
-
-        btn_opt_style = (
-            f"QPushButton{{ background:{qrgba(TRACK)}; color:{qname(TEXT2)}; border:none; border-radius:6px;"
-            f" font-size:{m['opt_btn_px']}px; }}"
-            f"QPushButton:hover{{ background:{qrgba(HOVER)}; color:{qname(TEXT)}; }}"
-            "QPushButton:checked{ background:#3b6fe0; color:white; }")
+        # 时间区间 + 明暗切换: 同一套"选项"语言
+        opt_qss = material_btn_qss("opt", dark, glass, frost, px=m["opt_btn_px"])
+        for b in (self.btn_today, self.btn_7, self.btn_30, self.btn_all):
+            b.setStyleSheet(opt_qss)
         # 明暗切换: 独立按钮(非互斥组), 放最下面
-        self.btn_theme_toggle.setStyleSheet(btn_opt_style)
+        self.btn_theme_toggle.setStyleSheet(opt_qss)
         self.btn_theme_toggle.setText("🌙 暗色" if not dark else "☀️ 亮色")
 
-        # 2026-09-23 (第62轮): 材质二选一按钮组 —— 互斥点亮
-        #   选中态 = 实心蓝(亮), 未选中态 = 描边浅灰(暗), 一眼看出当前材质
-        mat_style = (
-            f"QPushButton{{ background:{qrgba(TRACK)}; color:{qname(TEXT3)};"
-            f" border:1px solid {qrgba(BORDER)}; border-radius:8px;"
-            f" font-size:{m['opt_btn_px']}px; }}"
-            f"QPushButton:hover{{ background:{qrgba(HOVER)}; color:{qname(TEXT)}; }}"
-            "QPushButton:checked{ background:#3b6fe0; color:white; border-color:#3b6fe0;"
-            " font-weight:600; }"
-            "QPushButton:checked:hover{ background:#2f5ec4; color:white; }")
+        # 材质二选一按钮组 —— 互斥点亮; 选中态是这一组里唯一的强元素
+        mat_style = material_btn_qss("mat", dark, glass, frost, px=m["opt_btn_px"])
         _gl = bool(theme_state.get("glass"))
         _fr = bool(theme_state.get("frost"))
         self.btn_glass_toggle.setStyleSheet(mat_style)
         self.btn_glass_toggle.setChecked(_gl)
         self.btn_frost.setStyleSheet(mat_style)
         self.btn_frost.setChecked(_fr)
-
-        for b in (self.btn_today, self.btn_7, self.btn_30, self.btn_all):
-            b.setStyleSheet(
-                f"QPushButton{{ background:{qrgba(TRACK)}; color:{qname(TEXT2)}; border:none;"
-                f" border-radius:6px; padding:4px 9px; font-size:{m['opt_btn_px']}px; }}"
-                f"QPushButton:checked{{ background:#3b6fe0; color:white; font-weight:600; }}"
-                f"QPushButton:hover{{ color:{qname(TEXT)}; }}"
-                "QPushButton:checked:hover{ color:white; }")
 
         # NavButton 为纯自绘 (见类内 paintEvent), 不再套 QSS, 避免与自绘叠加产生双重背景
         for b in (self.btn_nav_wb, self.btn_nav_dsh, self.btn_nav_sn, self.btn_nav_multi):
@@ -7220,18 +7349,19 @@ def main():
     else:
         app.setQuitOnLastWindowClosed(True)
     # 2026-09-25 (第63轮): 首次运行时生成毛玻璃内置纹理(抓一次屏 → 模糊 → 存 PNG)。
-    # 必须放后台线程: 生成过程含逐像素处理(约 0.5~1s), 同步做会让启动明显卡顿。
+    # 第64轮: 模糊改用 QGraphicsBlurEffect(QGraphicsScene 系), 不再是纯 QImage 运算 ——
+    #   Qt 图形场景类只保证在 GUI 线程可用, 故**不再放后台线程**, 改为事件循环里延后一拍执行
+    #   (窗口已画出来才跑, 实测模糊 ~30ms + 存 PNG ~0.2s, 只在底纹文件缺失时发生一次)。
     def _gen_frost_tex():
         try:
             if ensure_frost_texture():
                 FrostTexture.instance().load(force=True)
-                QTimer.singleShot(0, card._update_all)
+                card._update_all()
         except Exception:
             pass
 
     if not os.path.exists(FROST_TEX_DEFAULT):
-        import threading
-        threading.Thread(target=_gen_frost_tex, daemon=True).start()
+        QTimer.singleShot(0, _gen_frost_tex)
 
     QTimer.singleShot(0, card.load_initial)
     sys.exit(app.exec())
