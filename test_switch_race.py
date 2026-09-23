@@ -470,9 +470,12 @@ check("毛玻璃: 分区画出了顶部细线",
       f"a0={_img_rule.pixelColor(100, 0).alpha()} a1={_img_rule.pixelColor(100, 1).alpha()}")
 check("毛玻璃: 细线以外不铺底 (分区是空的)",
       _img_rule.pixelColor(100, 40).alpha() == 0, f"a={_img_rule.pixelColor(100, 40).alpha()}")
-_img_panel = _mat_img(True, lambda pt: ca.paint_frost_surface(
-    pt, ca.QRectF(0, 0, 200, 80), 16, True))
-check("毛玻璃: 主板/浮层材质是实体磨砂 (中心不透明)",
+# 第62轮: 材质换成真模糊(需 widget 才能抓背后桌面), 这里用一个临时 QWidget 承载绘制。
+_panel_host = ca.QWidget()
+_panel_host.resize(200, 80)
+_img_panel = _mat_img(True, lambda pt: ca.paint_frost_blur(
+    pt, _panel_host, ca.QRectF(0, 0, 200, 80), 16, True))
+check("毛玻璃: 主板/浮层材质够实 (中心不透明, 保文字可读)",
       _img_panel.pixelColor(100, 40).alpha() > 200,
       f"a={_img_panel.pixelColor(100, 40).alpha()}")
 
@@ -489,12 +492,20 @@ def _pod_center_alpha(frost, rule=True):
     return img.pixelColor(100, 40).alpha()
 
 
-check("毛玻璃: 卡片不再铺底 (中心透明)", _pod_center_alpha(True) == 0,
-      f"a={_pod_center_alpha(True)}")
-check("非毛玻璃: 卡片照旧铺底 (中心不透明)", _pod_center_alpha(False) > 200,
-      f"a={_pod_center_alpha(False)}")
-check("rule=False 的分组卡在毛玻璃下同样不铺底",
-      _pod_center_alpha(True, rule=False) == 0)
+# 第62轮重做: 毛玻璃改为"真·实时高斯模糊"。卡片不再退化为纯细线, 而是**模糊底 + 雾层**:
+#   · 抓取成功时画模糊图 + 雾;  抓取不可用(offscreen)时走兜底纯色 —— 两者都遵循 alpha。
+# 卡片雾层要比主底板更实(内容区是文字/表格, 必须读得清), 但**不能完全不透明**
+# (留出"背后桌面透出来"的毛玻璃本质)。下面统一缓存一次取样结果, 避免重复调用互相干扰。
+_a_card_frost = _pod_center_alpha(True)
+_a_card_frost_norule = _pod_center_alpha(True, rule=False)
+_a_card_plain = _pod_center_alpha(False)
+check("毛玻璃: 卡片有模糊底(非纯细线)", _a_card_frost > 0, f"a={_a_card_frost}")
+check("毛玻璃: 卡片雾层够厚(文字可读)", _a_card_frost >= 150, f"a={_a_card_frost}")
+check("毛玻璃: 卡片仍半透(保毛玻璃本质, 非全实心)", _a_card_frost < 255,
+      f"a={_a_card_frost}")
+check("非毛玻璃: 卡片照旧铺底 (中心不透明)", _a_card_plain > 200, f"a={_a_card_plain}")
+check("rule=False 的分组卡在毛玻璃下同样有模糊底",
+      _a_card_frost_norule > 0, f"a={_a_card_frost_norule}")
 _src60 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "card_app.py"),
               encoding="utf-8").read()
 check("弹窗走 role=panel (毛玻璃下必须仍是实体, 否则会隐形)",
@@ -1605,6 +1616,76 @@ finally:
     ca.scanner.scan_full(force=True)   # 还原真实聚合
     import shutil
     shutil.rmtree(_dd, ignore_errors=True)
+
+# ========== 17. 毛玻璃真模糊 + 材质互斥 + 侧栏按钮布局 (2026-09-24 第62轮) ==========
+print("== 17. 毛玻璃真模糊 / 材质互斥 / 按钮布局 ==")
+_src62 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "card_app.py"),
+              encoding="utf-8").read()
+
+# 17.1 真模糊实现: 抓背后桌面 + 临时隐身(防自抓) + 级联降采样
+check("真模糊: 有 BlurBackdrop 抓取器", "class BlurBackdrop" in _src62)
+check("真模糊: 用 WDA_EXCLUDEFROMCAPTURE 防自我反馈",
+      "WDA_EXCLUDEFROMCAPTURE" in _src62 and "SetWindowDisplayAffinity" in _src62)
+check("真模糊: 抓完立即恢复 WDA_NONE (不影响用户截图)",
+      "_user32.SetWindowDisplayAffinity(hwnd, WDA_NONE)" in _src62)
+check("真模糊: 无渐变(drawRoundedRect+QLinearGradient 不在毛玻璃路径里)",
+      "paint_frost_blur" in _src62)
+check("真模糊: 有无效图检测(offscreen 全黑图不被当有效)",
+      "_is_blank" in _src62)
+check("真模糊: 节流缓存(THROTTLE_MS)", "THROTTLE_MS" in _src62)
+check("旧版渐变材质 paint_frost_surface 已不再被 paint 路径调用",
+      _src62.count("paint_frost_surface(p, rect") == 0)
+
+# 17.2 材质互斥: 开液态玻璃 → 关毛玻璃, 反之亦然
+_old62 = ca.SETTINGS_FILE
+ca.SETTINGS_FILE = os.path.join(tempfile.mkdtemp(), "settings62.json")
+try:
+    ca.theme_state["glass"] = False
+    ca.theme_state["frost"] = False
+    _wf.set_glass(True)
+    check("互斥: 开液态玻璃 → 毛玻璃自动关闭",
+          ca.theme_state["glass"] is True and ca.theme_state.get("frost") is False,
+          f"glass={ca.theme_state['glass']} frost={ca.theme_state.get('frost')}")
+    _wf.set_frost(True)
+    check("互斥: 开毛玻璃 → 液态玻璃自动关闭",
+          ca.theme_state.get("frost") is True and ca.theme_state["glass"] is False,
+          f"frost={ca.theme_state.get('frost')} glass={ca.theme_state['glass']}")
+    # 按钮勾选态跟着状态走(apply_styles 同步)
+    _wf.apply_styles()
+    check("互斥: 毛玻璃按钮亮 / 液态玻璃按钮灭",
+          _wf.btn_frost.isChecked() is True and _wf.btn_glass_toggle.isChecked() is False,
+          f"frost_btn={_wf.btn_frost.isChecked()} glass_btn={_wf.btn_glass_toggle.isChecked()}")
+    _wf.set_glass(True)
+    _wf.apply_styles()
+    check("互斥: 切回液态玻璃后按钮态反转",
+          _wf.btn_glass_toggle.isChecked() is True and _wf.btn_frost.isChecked() is False,
+          f"glass_btn={_wf.btn_glass_toggle.isChecked()} frost_btn={_wf.btn_frost.isChecked()}")
+    ca.theme_state["glass"] = False
+    ca.theme_state["frost"] = False
+except Exception as _e62:
+    check("第62轮互斥测试执行", False, str(_e62)[:60])
+finally:
+    ca.SETTINGS_FILE = _old62
+    ca.theme_state["glass"] = False
+    ca.theme_state["frost"] = False
+    ca.save_settings()
+
+# 17.3 侧栏按钮布局: 液态玻璃|毛玻璃 并列同行, 明暗独立在最下, 三者等高
+check("布局: 液态玻璃与毛玻璃在同一行(同一 layout)",
+      "mat_row.addWidget(self.btn_glass_toggle" in _src62
+      and "mat_row.addWidget(self.btn_frost" in _src62)
+check("布局: 明暗切换在材质按钮之后(最下面)",
+      _src62.index("self.btn_theme_toggle = QPushButton") >
+      _src62.index("self.btn_glass_toggle = QPushButton"))
+check("布局: 三按钮统一与刷新按钮同高(refresh_h)",
+      '_opt_h = m["refresh_h"]' in _src62
+      and "self.btn_frost.setFixedHeight(_opt_h)" in _src62
+      and "self.btn_theme_toggle.setFixedHeight(_opt_h)" in _src62)
+check("布局: 材质按钮有独立样式(选中实心/未选描边)",
+      "mat_style" in _src62 and "QPushButton:checked{ background:#3b6fe0" in _src62)
+
+# 17.4 版本号
+check("版本号升级到 v9.3-frost", ca.APP_BUILD == "v9.3-frost", ca.APP_BUILD)
 
 # ---- 还原真实数据目录路径 (临时目录随系统清理) ----
 ca._sn_events_all = orig_events

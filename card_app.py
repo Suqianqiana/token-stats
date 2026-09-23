@@ -1,6 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-Token 统计卡片 V9.2 — iOS 27 液态玻璃 (Pure Crystal Glass) + 精致双尺寸仪表盘
+Token 统计卡片 V9.3 — 真·实时高斯模糊毛玻璃 + iOS 27 液态玻璃 + 精致双尺寸仪表盘
+
+V9.3 highlights (Real-time Frosted Glass):
+  The frosted-glass mode is now a true real-time Gaussian blur instead of a translucent
+  gradient: the panel samples the desktop behind the window (temporarily excluding itself
+  from screen capture via WDA_EXCLUDEFROMCAPTURE, restored immediately after the grab) and
+  paints the blurred result with a light fog layer for text legibility. Glass and Frost are
+  mutually exclusive materials toggled from two adjacent sidebar buttons of equal height.
 
 V9.2 highlights (Multi-Machine Sync):
   Export this machine's full WorkBuddy + DSH usage snapshot to a JSON package, import
@@ -17,7 +24,9 @@ V9.2 highlights (Multi-Machine Sync):
   - 重构舒适大窗口 (1180×730) 字体层级体系，字重与行高开阔舒展，拒绝粗暴放大
   - 三档玻璃通透度无级调谐 + 右键多入口切换 + 每日柱状图鼠标锚点滚轮缩放与平移
   - 商汤额度页两张积分池卡**常驻**（未就绪用公测期满额占位）；按机统计双栏 + 环形占比圈
-  - 新增「毛玻璃模式」(Frost)：整块磨砂玻璃材质 + 卡片退化为 1px 细线分区（右键菜单/侧栏可切）
+  - 「毛玻璃模式」(Frost)：**真·实时高斯模糊**（抓背后桌面→级联降采样模糊），与液态玻璃互斥
+    · 抓屏时临时对本窗口设 WDA_EXCLUDEFROMCAPTURE 再立即恢复，既避免自我反馈又不影响用户截图
+    · 侧栏「液态玻璃 | 毛玻璃」并列等高按钮，互斥点亮；明暗切换独立置于最下方
   - ⚠️ 属性名不要用 `metric`：QWidget 有虚函数 QPaintDevice::metric()，会与 PySide6 覆写冲突而崩
 """
 import base64
@@ -326,77 +335,167 @@ def frost_rule_color(dark):
     return QColor(255, 255, 255, 30) if dark else QColor(28, 38, 58, 34)
 
 
-def paint_frost_surface(p, rect, radius, dark):
-    """毛玻璃材质 —— 还原参考图那块磨砂玻璃的质感。
+# ============================================================ 真·高斯模糊背景 (Frost Backdrop, 2026-09-23 第62轮)
+# 浅猫: 毛玻璃应该是漂亮的实时高斯模糊, 也不需要渐变
+# 做法: 抓取窗口背后的屏幕区域 -> 级联降采样(快速高斯近似) -> 作为磨砂底绘制。
+# 关键: 抓取瞬间必须让本窗口对截屏[临时隐身](WDA_EXCLUDEFROMCAPTURE),
+#       否则抓到的是自己 -> 自我反馈成一片灰(POC 实测)。抓完立刻恢复 WDA_NONE,
+#       这样用户自己截图/录屏时窗口仍然正常可见。
+WDA_NONE = 0x00000000
+WDA_EXCLUDEFROMCAPTURE = 0x00000011
 
-    为什么不复用「液态玻璃」的绘制:
-      · 液态玻璃 = 多段对角渐变 + **菲涅尔切角边框** + 顶部**锐利镜面光弧** →
-        边缘硬、反光亮, 是"水晶/镜面"感;
-      · 毛玻璃要的是"糊" —— **竖向宽渐变**（光在面上散开）+ **低对比顶部内高光** +
-        **不描切角、不做锐高光** + 一层极淡冷蓝薄雾, 整块读起来像一片磨砂玻璃板。
 
-    ⚠️ Qt 对窗口背后的桌面做不了真模糊: 自绘圆角窗口上任何系统级模糊都会露出矩形边界
-       （本项目 V6~V10 已定论）, 所以质感只能靠"分层透明度 + 大面积柔和渐变"堆出来。
-    透明度取值偏实（224~244）: 参考图那块板也是"透光不透杂物", 否则文字会糊在壁纸上。
+class BlurBackdrop:
+    """窗口背后的实时模糊底 —— 单例, 供主底板与卡片共用同一份抓取结果。
+
+    性能: 抓屏本身有开销, 故按 THROTTLE_MS 节流(默认 380ms);
+         模糊用"降采样->平滑升采样"两次级联近似高斯, 比逐像素卷积快两个数量级。
+    """
+    _inst = None
+    THROTTLE_MS = 380
+
+    @classmethod
+    def instance(cls):
+        if cls._inst is None:
+            cls._inst = BlurBackdrop()
+        return cls._inst
+
+    def __init__(self):
+        self._img = None          # 缓存的原尺寸模糊图 (按窗口几何)
+        self._key = None          # 抓取时的几何+主题指纹
+        self._ts = 0.0
+        self._user32 = None
+        self._dwmapi = None
+        try:
+            import ctypes
+            self._user32 = ctypes.windll.user32
+            self._dwmapi = ctypes.windll.dwmapi
+        except Exception:
+            pass
+
+    def invalidate(self):
+        """几何变化/主题切换后调用, 强制下次重抓。"""
+        self._key = None
+
+    @staticmethod
+    def _is_blank(im):
+        """判断抓到的图是否无效(offscreen 下 grabWindow 回全黑不透明)。
+
+        采样 9 点: 若全为 (0,0,0,255) 或全透明, 视为无效 —— 此时宁可走纯色兜底,
+        也不能把一张黑图铺满卡片。
+        """
+        try:
+            w, h = im.width(), im.height()
+            if w <= 0 or h <= 0:
+                return True
+            pts = [(w // 4, h // 4), (w // 2, h // 4), (3 * w // 4, h // 4),
+                   (w // 4, h // 2), (w // 2, h // 2), (3 * w // 4, h // 2),
+                   (w // 4, 3 * h // 4), (w // 2, 3 * h // 4), (3 * w // 4, 3 * h // 4)]
+            cols = [im.pixelColor(x, y) for x, y in pts]
+            blacks = sum(1 for c in cols if c.red() == 0 and c.green() == 0
+                         and c.blue() == 0 and c.alpha() == 255)
+            clears = sum(1 for c in cols if c.alpha() == 0)
+            return blacks == len(cols) or clears == len(cols)
+        except Exception:
+            return True
+
+    def image(self, widget, force=False):
+        """返回 widget 背后区域的模糊图 (QImage); 失败返回 None。"""
+        if self._user32 is None:
+            return None
+        now = time.time()
+        g = widget.frameGeometry()
+        try:
+            scr = QGuiApplication.screenAt(g.center()) or QGuiApplication.primaryScreen()
+        except Exception:
+            return None
+        dpr = scr.devicePixelRatio()
+        key = (g.x(), g.y(), g.width(), g.height(), theme_state["dark"])
+        fresh = (now - self._ts) * 1000.0 < self.THROTTLE_MS
+        if not force and fresh and self._img is not None and self._key == key:
+            return self._img
+
+        hwnd = 0
+        try:
+            hwnd = int(widget.winId())
+        except Exception:
+            pass
+        hidden = False
+        if hwnd:
+            try:
+                hidden = bool(self._user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE))
+                if self._dwmapi is not None:
+                    self._dwmapi.DwmFlush()
+            except Exception:
+                hidden = False
+        try:
+            sg = scr.geometry()
+            x = int((g.x() - sg.x()) * dpr)
+            y = int((g.y() - sg.y()) * dpr)
+            w = max(1, int(g.width() * dpr))
+            h = max(1, int(g.height() * dpr))
+            pm = scr.grabWindow(0, x, y, w, h)
+            if pm.isNull():
+                return None
+            im = pm.toImage()
+            # ⚠️ offscreen 平台下 grabWindow 会返回**全黑且不透明**的假图(实测) ——
+            #    必须识别为无效, 否则卡片会被一层黑糊住。用 9 点采样判"是否全黑"。
+            if self._is_blank(im):
+                return None
+            # 级联降采样 = 快速高斯近似 (8x -> 20x 两次)
+            a = im.scaled(max(1, w // 8), max(1, h // 8),
+                          Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            b = a.scaled(max(1, w // 20), max(1, h // 20),
+                         Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            self._img = b.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            self._key = key
+            self._ts = now
+        except Exception:
+            return self._img
+        finally:
+            if hidden and hwnd:
+                try:
+                    self._user32.SetWindowDisplayAffinity(hwnd, WDA_NONE)
+                    if self._dwmapi is not None:
+                        self._dwmapi.DwmFlush()
+                except Exception:
+                    pass
+        return self._img
+
+
+FROST_FOG_DARK = 118      # 深色下压暗强度 (主底板)
+FROST_FOG_LIGHT = 96      # 浅色下提亮强度
+CARD_FOG_ALPHA = 0.80     # 内容卡片的雾层强度系数 (卡片里是文字/表格, 必须够厚才读得清)
+
+
+def paint_frost_blur(p, widget, rect, radius, dark, alpha=1.0):
+    """毛玻璃材质 = 背后实时高斯模糊 + 极轻雾化 + 细腻描边。**无任何渐变**。
+
+    alpha: 材质强度 (1.0=主底板/浮层实体; <1.0=卡片这类轻量分区, 让背景更多透出)。
     """
     path = QPainterPath()
     path.addRoundedRect(rect, radius, radius)
-
-    # 1. 基座: 竖向宽渐变 (深色是冷灰蓝, 浅色是暖白) —— 保证文字在玻璃上依然清晰
-    g = QLinearGradient(0.0, rect.top(), 0.0, rect.bottom())
-    if dark:
-        g.setColorAt(0.00, QColor(35, 41, 54, 224))
-        g.setColorAt(0.38, QColor(26, 31, 42, 233))
-        g.setColorAt(0.72, QColor(21, 25, 34, 239))
-        g.setColorAt(1.00, QColor(16, 19, 26, 245))
+    img = BlurBackdrop.instance().image(widget, force=False)
+    p.save()
+    p.setClipPath(path)
+    fog = int((FROST_FOG_DARK if dark else FROST_FOG_LIGHT) * alpha)
+    if img is not None:
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        p.drawImage(rect, img)
+        if fog > 0:
+            p.fillRect(rect, QColor(12, 14, 20, fog) if dark else QColor(255, 255, 255, fog))
     else:
-        g.setColorAt(0.00, QColor(255, 255, 255, 232))
-        g.setColorAt(0.45, QColor(249, 251, 255, 240))
-        g.setColorAt(1.00, QColor(239, 244, 252, 246))
-    p.setPen(Qt.NoPen)
-    p.setBrush(QBrush(g))
-    p.drawPath(path)
-
-    # 2. 冷调薄雾: 一层对角极淡的蓝, 让整块有"雾"而不是死灰
-    mist = QLinearGradient(rect.left(), rect.top(), rect.right(), rect.bottom())
-    if dark:
-        mist.setColorAt(0.0, QColor(96, 148, 255, 26))
-        mist.setColorAt(0.45, QColor(96, 148, 255, 0))
-        mist.setColorAt(1.0, QColor(58, 96, 190, 22))
-    else:
-        mist.setColorAt(0.0, QColor(120, 165, 255, 22))
-        mist.setColorAt(0.5, QColor(120, 165, 255, 0))
-        mist.setColorAt(1.0, QColor(150, 180, 240, 16))
-    p.setBrush(QBrush(mist))
-    p.drawPath(path)
-
-    # 3. 顶部内高光: 从顶边往下 ~22% 柔和衰减 (毛玻璃的"顶面受光", 不是一条亮线)
-    hl = QLinearGradient(0.0, rect.top(), 0.0, rect.top() + rect.height() * 0.22)
-    hl.setColorAt(0.0, QColor(255, 255, 255, 30 if dark else 118))
-    hl.setColorAt(1.0, QColor(255, 255, 255, 0))
-    p.setBrush(QBrush(hl))
-    p.drawPath(path)
-
-    # 4. 底部内阴影: 给板子一点厚度, 免得整块"飘"
-    sh = QLinearGradient(0.0, rect.bottom() - rect.height() * 0.16, 0.0, rect.bottom())
-    sh.setColorAt(0.0, QColor(0, 0, 0, 0))
-    sh.setColorAt(1.0, QColor(0, 0, 0, 26 if dark else 14))
-    p.setBrush(QBrush(sh))
-    p.drawPath(path)
-
-    # 5. 外缘: 1px 细描边, 上亮下稍暗 (毛玻璃的边是"柔和收口", 不做菲涅尔切角)
-    rim = QLinearGradient(0.0, rect.top(), 0.0, rect.bottom())
-    if dark:
-        rim.setColorAt(0.0, QColor(255, 255, 255, 46))
-        rim.setColorAt(0.5, QColor(255, 255, 255, 20))
-        rim.setColorAt(1.0, QColor(255, 255, 255, 30))
-    else:
-        rim.setColorAt(0.0, QColor(255, 255, 255, 235))
-        rim.setColorAt(0.5, QColor(176, 190, 214, 120))
-        rim.setColorAt(1.0, QColor(255, 255, 255, 170))
-    p.setBrush(Qt.NoBrush)
-    p.setPen(QPen(QBrush(rim), 1.0))
-    p.drawPath(path)
+        # 抓取不可用时的兜底: 纯色(绝不渐变), 且**同样遵循 alpha** ——
+        # 否则 offscreen/抓取失败时卡片会变成比主底板更实的色块, 层次关系反了。
+        base = 236 if dark else 240
+        p.fillRect(rect, QColor(32, 36, 46, int(base * alpha)) if dark
+                   else QColor(244, 247, 252, int(base * alpha)))
+    p.restore()
+    edge = int((46 if dark else 150) * alpha)
+    if edge > 0:
+        p.setPen(QPen(QColor(255, 255, 255, edge), 1.0))
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(path)
 
 
 def paint_section_rule(p, w):
@@ -422,9 +521,9 @@ class LiquidGlassFrame(QFrame):
         dark = theme_state["dark"]
         glass = theme_state["glass"]
 
-        # 毛玻璃模式: 整块主底板换成磨砂玻璃材质 (与"液态玻璃"是两套材料, 互不干扰)
+        # 毛玻璃模式: 整块主底板换成**背后实时高斯模糊** (第62轮重做: 去掉渐变, 真模糊)
         if theme_state.get("frost"):
-            paint_frost_surface(p, rect, 16, dark)
+            paint_frost_blur(p, self, rect, 14, dark)
             # 侧边栏分隔线改为细线 (与分区线同一套语言)
             p.setPen(QPen(frost_rule_color(dark), 1.0))
             p.drawLine(QPointF(self.sep_x, 1.0), QPointF(self.sep_x, h - 1.0))
@@ -531,12 +630,17 @@ def paint_pod(widget, radius, inset=0.5, role="section", rule=True):
     dark = theme_state["dark"]
     glass = theme_state["glass"]
 
-    # 毛玻璃模式 (第60轮): 分区不画底、只留细线; 浮层保持实体并换用磨砂材质。
+    # 毛玻璃模式 (第62轮重做): 分区卡片也给一层**轻量模糊底**(比主底板更透),
+    # 保留卡片层次与"磨砂"质感; 浮层(弹窗)用更实的模糊材质保证可读。
     if theme_state.get("frost"):
         if role == "panel":
-            paint_frost_surface(p, rect, min(r + 4.0, 16.0), dark)
-        elif rule:
-            paint_section_rule(p, w)
+            paint_frost_blur(p, widget, rect, min(r + 4.0, 16.0), dark)
+        else:
+            # 卡片: 模糊底 + 较实的雾层 —— 表格/图表里全是文字数字, 雾必须够厚才读得清
+            # (alpha=0.34 实测会把内容糊住)。rule=True 再叠一条 1px 分区线。
+            paint_frost_blur(p, widget, rect, r, dark, alpha=CARD_FOG_ALPHA)
+            if rule:
+                paint_section_rule(p, w)
         p.end()
         return
 
@@ -5078,27 +5182,31 @@ class CardWindow(QWidget):
         self.btn_refresh.clicked.connect(lambda: self.refresh(force=True))
         side_lay.addWidget(self.btn_refresh)
 
-        bar_opts = QHBoxLayout()
-        self.btn_theme_toggle = QPushButton("🌙 暗色" if not theme_state["dark"] else "☀️ 亮色")
-        self.btn_theme_toggle.setCursor(Qt.PointingHandCursor)
-        self.btn_theme_toggle.clicked.connect(lambda: self.set_dark(not theme_state["dark"]))
-        bar_opts.addWidget(self.btn_theme_toggle)
+        # 2026-09-23 (第62轮): 材质二选一按钮组 —— 「液态玻璃 | 毛玻璃」**并列同一行**,
+        # 两者等高(与"刷新数据"同高), 互斥点亮: 点谁亮谁, 另一方自动熄灭。
+        mat_row = QHBoxLayout()
+        mat_row.setSpacing(6)
 
         self.btn_glass_toggle = QPushButton("液态玻璃")
         self.btn_glass_toggle.setCheckable(True)
-        self.btn_glass_toggle.setChecked(theme_state["glass"])
+        self.btn_glass_toggle.setChecked(bool(theme_state["glass"]))
         self.btn_glass_toggle.setCursor(Qt.PointingHandCursor)
-        self.btn_glass_toggle.clicked.connect(lambda: self.set_glass(not theme_state["glass"]))
-        bar_opts.addWidget(self.btn_glass_toggle)
-        side_lay.addLayout(bar_opts)
+        self.btn_glass_toggle.clicked.connect(lambda: self.set_glass(True))
+        mat_row.addWidget(self.btn_glass_toggle, 1)
 
-        # 2026-09-23 (第60轮): 毛玻璃模式开关 —— 与「液态玻璃」并列的第二种材质
-        self.btn_frost = QPushButton("🫧 毛玻璃")
+        self.btn_frost = QPushButton("毛玻璃")
         self.btn_frost.setCheckable(True)
         self.btn_frost.setChecked(bool(theme_state.get("frost")))
         self.btn_frost.setCursor(Qt.PointingHandCursor)
-        self.btn_frost.clicked.connect(lambda: self.set_frost(self.btn_frost.isChecked()))
-        side_lay.addWidget(self.btn_frost)
+        self.btn_frost.clicked.connect(lambda: self.set_frost(True))
+        mat_row.addWidget(self.btn_frost, 1)
+        side_lay.addLayout(mat_row)
+
+        # 明暗切换放最下面 (第62轮按浅猫要求下移)
+        self.btn_theme_toggle = QPushButton("🌙 暗色" if not theme_state["dark"] else "☀️ 亮色")
+        self.btn_theme_toggle.setCursor(Qt.PointingHandCursor)
+        self.btn_theme_toggle.clicked.connect(lambda: self.set_dark(not theme_state["dark"]))
+        side_lay.addWidget(self.btn_theme_toggle)
 
         main_layout.addWidget(self.sidebar)
 
@@ -5247,6 +5355,20 @@ class CardWindow(QWidget):
         self.raise_()
         self.activateWindow()
 
+    # ---------------- 几何变化 → 模糊底失效 (第62轮) ----------------
+    def moveEvent(self, ev):
+        """窗口移动后背景区域变了, 模糊底必须重抓(否则显示的是旧位置的桌面)。"""
+        super().moveEvent(ev)
+        BlurBackdrop.instance().invalidate()
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        BlurBackdrop.instance().invalidate()
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        BlurBackdrop.instance().invalidate()
+
     # ---------------- 动态尺寸适配器 ----------------
     def apply_size_mode(self, mode_name, save=True):
         if mode_name not in SIZE_METRICS:
@@ -5254,6 +5376,7 @@ class CardWindow(QWidget):
         theme_state["window_size"] = mode_name
         if save:
             save_settings()
+        BlurBackdrop.instance().invalidate()
 
         m = SIZE_METRICS[mode_name]
         self.setFixedSize(m["win_w"], m["win_h"])
@@ -5272,8 +5395,14 @@ class CardWindow(QWidget):
         self.btn_refresh.setFixedHeight(m["refresh_h"])
         self.btn_refresh.setFont(QFont("Microsoft YaHei UI", m["nav_btn_pt"], QFont.Bold))
 
-        self.btn_theme_toggle.setFixedHeight(m["opt_btn_h"])
-        self.btn_glass_toggle.setFixedHeight(m["opt_btn_h"])
+        # 第62轮: 三个按钮统一与「刷新数据」同高(原 opt_btn_h=28/30 偏扁, 视觉不协调)
+        _opt_h = m["refresh_h"]
+        self.btn_theme_toggle.setFixedHeight(_opt_h)
+        self.btn_glass_toggle.setFixedHeight(_opt_h)
+        self.btn_frost.setFixedHeight(_opt_h)
+        self.btn_theme_toggle.setFont(QFont("Microsoft YaHei UI", m["nav_btn_pt"]))
+        self.btn_glass_toggle.setFont(QFont("Microsoft YaHei UI", m["nav_btn_pt"]))
+        self.btn_frost.setFont(QFont("Microsoft YaHei UI", m["nav_btn_pt"]))
 
         for c in (self.card_total, self.card_cache, self.card_io, self.card_sess):
             c.apply_size()
@@ -5397,14 +5526,26 @@ class CardWindow(QWidget):
             f" font-size:{m['opt_btn_px']}px; }}"
             f"QPushButton:hover{{ background:{qrgba(HOVER)}; color:{qname(TEXT)}; }}"
             "QPushButton:checked{ background:#3b6fe0; color:white; }")
+        # 明暗切换: 独立按钮(非互斥组), 放最下面
         self.btn_theme_toggle.setStyleSheet(btn_opt_style)
         self.btn_theme_toggle.setText("🌙 暗色" if not dark else "☀️ 亮色")
-        self.btn_glass_toggle.setStyleSheet(btn_opt_style)
-        self.btn_glass_toggle.setChecked(theme_state["glass"])
-        # 2026-09-23 (第60轮): 毛玻璃开关 (同一套侧栏按钮语言)
-        self.btn_frost.setStyleSheet(btn_opt_style)
-        self.btn_frost.setChecked(frost)
-        self.btn_frost.setText("🫧 毛玻璃 · 开" if frost else "🫧 毛玻璃")
+
+        # 2026-09-23 (第62轮): 材质二选一按钮组 —— 互斥点亮
+        #   选中态 = 实心蓝(亮), 未选中态 = 描边浅灰(暗), 一眼看出当前材质
+        mat_style = (
+            f"QPushButton{{ background:{qrgba(TRACK)}; color:{qname(TEXT3)};"
+            f" border:1px solid {qrgba(BORDER)}; border-radius:8px;"
+            f" font-size:{m['opt_btn_px']}px; }}"
+            f"QPushButton:hover{{ background:{qrgba(HOVER)}; color:{qname(TEXT)}; }}"
+            "QPushButton:checked{ background:#3b6fe0; color:white; border-color:#3b6fe0;"
+            " font-weight:600; }"
+            "QPushButton:checked:hover{ background:#2f5ec4; color:white; }")
+        _gl = bool(theme_state.get("glass"))
+        _fr = bool(theme_state.get("frost"))
+        self.btn_glass_toggle.setStyleSheet(mat_style)
+        self.btn_glass_toggle.setChecked(_gl)
+        self.btn_frost.setStyleSheet(mat_style)
+        self.btn_frost.setChecked(_fr)
 
         for b in (self.btn_today, self.btn_7, self.btn_30, self.btn_all):
             b.setStyleSheet(
@@ -5434,10 +5575,22 @@ class CardWindow(QWidget):
         save_settings()
 
     def set_glass(self, enabled):
+        """液态玻璃开关 (第62轮: 与毛玻璃**互斥**)。
+
+        开液态玻璃 → 自动关毛玻璃(两种材质只能二选一, 否则叠加会互相破坏)。
+        """
+        enabled = bool(enabled)
         theme_state["glass"] = enabled
+        if enabled and theme_state.get("frost"):
+            theme_state["frost"] = False           # 互斥: 让位给液态玻璃
         refresh_palette()
+        BlurBackdrop.instance().invalidate()
         self.apply_styles()
         self._refresh_subpages_theme()
+        try:
+            self.render()
+        except Exception:
+            pass
         self._update_all()
         save_settings()
 
@@ -5457,6 +5610,9 @@ class CardWindow(QWidget):
         if on == bool(theme_state.get("frost")):
             return
         theme_state["frost"] = on
+        if on:
+            theme_state["glass"] = False           # 互斥: 让位给毛玻璃
+        BlurBackdrop.instance().invalidate()
         self.apply_styles()
         self._refresh_subpages_theme()
         # 明细行等"行级"控件用 QSS 铺斑马纹, update() 不会清掉它 → 重渲染一次当前页
@@ -5989,9 +6145,16 @@ class CardWindow(QWidget):
         elif chosen == act_dark:
             self.set_dark(not theme_state["dark"])
         elif chosen == act_blur:
-            self.set_glass(not theme_state["glass"])
+            # 第62轮: 两种材质互斥 —— 点当前项则关掉(回到无玻璃), 否则切到它并自动关另一方
+            if theme_state["glass"]:
+                self.set_glass(False)
+            else:
+                self.set_glass(True)
         elif chosen == act_frost:
-            self.set_frost(not theme_state.get("frost"))
+            if theme_state.get("frost"):
+                self.set_frost(False)
+            else:
+                self.set_frost(True)
         elif chosen == act_tr_c:
             self.set_glass_transparency("crystal")
         elif chosen == act_tr_b:
@@ -6167,9 +6330,9 @@ PET_MS = {"idle": 240, "sleep": 1500, "wake": 700, "drag": 140,
 # 2026-09-17 浅浅猫的想法: 桌宠"顶部 1/3"点= 摸摸头, 其余(底部 2/3)= 普通点击互动;
 # 任意位置双击 = 打开面板。判据用**实际绘制区域**的高度比例, 不是窗口高度(见 _pet_click_region)。
 PET_PAT_TOP_RATIO = 1.0 / 3.0
-APP_BUILD = "v9.2-multi"         # update 2026-09-20 (第59轮): 版本标识统一为 V9.2,
-                                 # 代号 multi = 多机同步 (Multi-Machine Sync) 为主线特性;
-                                 # 同文件头部 docstring 也同步为 V9.2 (原先停在 V8.7, 不一致)
+APP_BUILD = "v9.3-frost"         # update 2026-09-24 (第62轮): 版本号升级 v9.3,
+                                 # 代号 frost = 真·实时高斯模糊毛玻璃材质为主线特性;
+                                 # 历史: v9.2-multi(第59轮) 多机同步 / v8.8-auto-sync 商汤真自动
 
 
 def _pet_idle_seq(n):
