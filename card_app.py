@@ -38,6 +38,9 @@ V9.2 highlights (Multi-Machine Sync):
     · 纹理必须由窗口底板整块铺一次，卡片不画任何底色（否则每卡一张缩略图/出现底框）
     · 侧栏「液态玻璃 | 毛玻璃」并列等高按钮，三态切换（再点已选中的回默认）；明暗切换在最下方
     · 控件随材质换语言(material_btn_qss)：默认实底芯片 / 液态玻璃半透明高光 / 毛玻璃细线无底
+    · 选中态在毛玻璃下**从底图取色**(FrostTexture.accent)：只取底图平均色的色相, 半透明填充+同色描边
+    · 日期区间按钮用 range 角色(padding:3px 8px + 1px 描边), 与旧版 4px 9px 无描边的盒子逐像素等价
+    · ⚠️ 回写按钮勾选态(apply_styles 同步材质按钮)必须 blockSignals, 否则会被当成"用户取消"
   - ⚠️ 属性名不要用 `metric`：QWidget 有虚函数 QPaintDevice::metric()，会与 PySide6 覆写冲突而崩
 """
 import base64
@@ -468,6 +471,7 @@ class FrostTexture:
         self._path = None         # 当前纹理文件路径
         self._is_tall = False     # 是否竖图(决定填充策略)
         self._failed = False
+        self._accent = {}         # {(路径, 明暗): QColor} 选中态取色缓存 (第65轮)
 
     # ---------------------------------------------------------- 加载
     def current_path(self):
@@ -493,6 +497,7 @@ class FrostTexture:
             self._img = img
             self._path = path
             self._scaled.clear()
+            self._accent.clear()      # 换图 → 选中态取色也要跟着重算
             self._failed = False
             return img
         except Exception:
@@ -530,6 +535,39 @@ class FrostTexture:
         except Exception:
             pass
         self.load(force=True)
+
+    # ---------------------------------------------------------- 选中态取色 (第65轮)
+    def accent(self, dark):
+        """从**当前底图**取一个"选中态"用色 —— 色相取自底图, 饱和度/明度归一化到可读区间。
+
+        浅猫的诉求: 毛玻璃下按钮的选中态不要永远是那个品牌蓝, 而是**跟着底图的颜色走**,
+        再稍微通透一点。这里取底图 8×8 缩略图的平均色, 只保留它的**色相**,
+        饱和度和明度拉到一个"看得清但不刺眼"的区间(灰度底图退回品牌蓝色相)。
+        换内置底图或自选图后自动跟着变(缓存按路径失效)。
+        """
+        key = (self.current_path(), bool(dark))
+        hit = self._accent.get(key)
+        if hit is not None:
+            return hit
+        col = QColor(59, 111, 224)          # 兜底: 品牌蓝
+        try:
+            img = self.load()
+            if img is not None:
+                sm = img.scaled(8, 8, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+                r = g = b = 0
+                for y in range(sm.height()):
+                    for x in range(sm.width()):
+                        px = sm.pixelColor(x, y)
+                        r += px.red(); g += px.green(); b += px.blue()
+                n = max(1, sm.width() * sm.height())
+                h, s, _v, _a = QColor(r // n, g // n, b // n).getHsv()
+                if h < 0:                   # 纯灰底图没有色相 → 用品牌蓝
+                    h = 210
+                col = QColor.fromHsv(h, max(s, 110), 215 if dark else 158)
+        except Exception:
+            col = QColor(59, 111, 224)
+        self._accent[key] = col
+        return col
 
     # ---------------------------------------------------------- 图像处理
     @staticmethod
@@ -947,24 +985,32 @@ def style_btn(b, kind=None, pt=None, height=None):
 def material_btn_qss(role, dark, glass, frost, px=12):
     """按当前材质生成按钮 QSS。
 
-    role: primary(主操作·刷新) / opt(选项·时间区间·明暗) / mat(材质按钮) / icon(标题栏 – ✕)
+    role: primary(主操作·刷新) / opt(选项·明暗) / range(时间区间) / mat(材质按钮) / icon(标题栏 – ✕)
+
+    第65轮(浅猫): 选中态在**毛玻璃下改为"从底图取色 + 稍微通透"** —— 不再是那个恒定的品牌蓝,
+    而是取底图平均色的**色相**(见 FrostTexture.accent), 以半透明填充 + 同色描边呈现,
+    观感上像左栏「来源」按钮的选中态, 但更实一点(左栏是 alpha 72/30, 这里 120/155)。
+    液态玻璃同理: 仍用品牌蓝, 但透明度从 0.92 降到 0.62/0.72。
     """
     if frost:
         chip_bg = "rgba(255,255,255,0.055)" if dark else "rgba(255,255,255,0.34)"
         chip_bd = "rgba(255,255,255,0.13)" if dark else "rgba(28,38,58,0.13)"
         chip_hov = "rgba(255,255,255,0.11)" if dark else "rgba(255,255,255,0.62)"
-        acc = "rgba(59,111,224,0.92)"
-        acc_hov = "rgba(47,94,196,0.96)"
-        acc_bd = "rgba(255,255,255,0.20)" if dark else "rgba(255,255,255,0.62)"
-        acc_soft = "rgba(59,111,224,0.26)"
+        _fa = FrostTexture.instance().accent(dark)      # ← 底图取色
+        acc = qrgba(_fa, 120 if dark else 155)          # 选中态: 通透(比左栏来源的 72/30 实一点)
+        acc_hov = qrgba(_fa, 155 if dark else 185)
+        acc_bd = qrgba(_fa, 175 if dark else 200)       # 描边同色, 比填充更实
+        acc_strong = qrgba(_fa, 205 if dark else 220)   # 主操作(刷新): 同色相但保持分量
+        acc_strong_hov = qrgba(_fa, 235 if dark else 240)
     elif glass:
         chip_bg = "rgba(255,255,255,0.10)" if dark else "rgba(255,255,255,0.55)"
         chip_bd = "rgba(255,255,255,0.20)" if dark else "rgba(255,255,255,0.85)"
         chip_hov = "rgba(255,255,255,0.19)" if dark else "rgba(255,255,255,0.80)"
-        acc = "rgba(59,111,224,0.92)"
-        acc_hov = "rgba(47,94,196,0.96)"
+        acc = "rgba(59,111,224,0.62)" if dark else "rgba(59,111,224,0.72)"
+        acc_hov = "rgba(47,94,196,0.74)" if dark else "rgba(47,94,196,0.84)"
         acc_bd = "rgba(255,255,255,0.34)" if dark else "rgba(255,255,255,0.95)"
-        acc_soft = "rgba(59,111,224,0.26)"
+        acc_strong = "rgba(59,111,224,0.84)" if dark else "rgba(59,111,224,0.88)"
+        acc_strong_hov = "rgba(47,94,196,0.92)" if dark else "rgba(47,94,196,0.94)"
     else:
         chip_bg = qrgba(TRACK)
         chip_bd = "transparent"
@@ -972,16 +1018,17 @@ def material_btn_qss(role, dark, glass, frost, px=12):
         acc = "#3b6fe0"
         acc_hov = "#2f5ec4"
         acc_bd = "transparent"
-        acc_soft = qrgba(TRACK)
+        acc_strong = "#3b6fe0"
+        acc_strong_hov = "#2f5ec4"
 
     fg = qname(TEXT2)
     fg_hov = qname(TEXT)
     size = f" font-size:{px}px;" if px else ""
 
-    if role == "primary":          # 刷新数据: 实心/半透明蓝 + 细描边
-        return (f"QPushButton{{ background:{acc}; color:#ffffff; border:1px solid {acc_bd};"
+    if role == "primary":          # 刷新数据: 主操作保持分量(毛玻璃下同色相但更实的一档)
+        return (f"QPushButton{{ background:{acc_strong}; color:#ffffff; border:1px solid {acc_bd};"
                 f" border-radius:8px; font-weight:600; }}"
-                f"QPushButton:hover{{ background:{acc_hov}; }}"
+                f"QPushButton:hover{{ background:{acc_strong_hov}; }}"
                 f"QPushButton:disabled{{ background:{chip_bg}; color:{qname(TEXT3)};"
                 f" border-color:{chip_bd}; }}")
 
@@ -1005,7 +1052,17 @@ def material_btn_qss(role, dark, glass, frost, px=12):
                 f" font-weight:600; }}"
                 f"QPushButton:checked:hover{{ background:{acc_hov}; color:white; }}")
 
-    # role == "opt": 时间区间 / 明暗切换
+    if role == "range":            # 时间区间按钮: **尺寸必须与旧版一致**
+        # 旧版是 padding:4px 9px + 无描边; 这里用 padding:3px 8px + 1px 描边 ——
+        # 盒子尺寸完全相同(宽 文本+18 / 高 文本+8), 默认档描边透明 → 观感也一致。
+        return (f"QPushButton{{ background:{chip_bg}; color:{fg};"
+                f" border:1px solid {chip_bd}; border-radius:6px; padding:3px 8px;{size} }}"
+                f"QPushButton:hover{{ background:{chip_hov}; color:{fg_hov}; }}"
+                f"QPushButton:checked{{ background:{acc}; color:white; font-weight:600;"
+                f" border-color:{acc_bd}; }}"
+                f"QPushButton:checked:hover{{ background:{acc_hov}; color:white; }}")
+
+    # role == "opt": 明暗切换(占满侧栏宽度, 不加内边距)
     return (f"QPushButton{{ background:{chip_bg}; color:{fg};"
             f" border:1px solid {chip_bd}; border-radius:6px;{size} }}"
             f"QPushButton:hover{{ background:{chip_hov}; color:{fg_hov}; }}"
@@ -5795,8 +5852,9 @@ class CardWindow(QWidget):
 
         # 时间区间 + 明暗切换: 同一套"选项"语言
         opt_qss = material_btn_qss("opt", dark, glass, frost, px=m["opt_btn_px"])
+        range_qss = material_btn_qss("range", dark, glass, frost, px=m["opt_btn_px"])
         for b in (self.btn_today, self.btn_7, self.btn_30, self.btn_all):
-            b.setStyleSheet(opt_qss)
+            b.setStyleSheet(range_qss)
         # 明暗切换: 独立按钮(非互斥组), 放最下面
         self.btn_theme_toggle.setStyleSheet(opt_qss)
         self.btn_theme_toggle.setText("🌙 暗色" if not dark else "☀️ 亮色")
@@ -5805,10 +5863,16 @@ class CardWindow(QWidget):
         mat_style = material_btn_qss("mat", dark, glass, frost, px=m["opt_btn_px"])
         _gl = bool(theme_state.get("glass"))
         _fr = bool(theme_state.get("frost"))
+        # ⚠️ 第65轮修 bug: 这里的 setChecked 是"把按钮同步到当前状态", **不是用户意图**,
+        #    必须屏蔽信号。否则互斥切换时另一方被 setChecked(False) 会触发 toggled(False)
+        #    → _on_*_btn(False) → _set_material(None), 把用户刚做的切换又撤销掉。
+        #    实测症状: 毛玻璃模式下点「液态玻璃」→ 两个材质全灭, 掉回默认模式(要点两次才行)。
         self.btn_glass_toggle.setStyleSheet(mat_style)
-        self.btn_glass_toggle.setChecked(_gl)
         self.btn_frost.setStyleSheet(mat_style)
-        self.btn_frost.setChecked(_fr)
+        for _b, _on in ((self.btn_glass_toggle, _gl), (self.btn_frost, _fr)):
+            _b.blockSignals(True)
+            _b.setChecked(_on)
+            _b.blockSignals(False)
 
         # NavButton 为纯自绘 (见类内 paintEvent), 不再套 QSS, 避免与自绘叠加产生双重背景
         for b in (self.btn_nav_wb, self.btn_nav_dsh, self.btn_nav_sn, self.btn_nav_multi):
@@ -5899,6 +5963,8 @@ class CardWindow(QWidget):
                 self._set_material("frost")
             else:
                 self._apply_window_backdrop()
+                # 第65轮: 选中态颜色是"从底图取色"的 → 换图后必须重刷样式, 否则还是旧图取到的色
+                self.apply_styles()
                 self._update_all()
             save_settings()
         except Exception:
@@ -5909,6 +5975,7 @@ class CardWindow(QWidget):
         try:
             FrostTexture.instance().clear_custom()
             self._apply_window_backdrop()
+            self.apply_styles()      # 第65轮: 底图变了 → 选中态取色跟着重算
             self._update_all()
             save_settings()
         except Exception:

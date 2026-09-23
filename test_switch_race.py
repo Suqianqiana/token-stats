@@ -1803,10 +1803,11 @@ try:
           "rgba(255,255,255,0.10)" in _q_gla[1] and "rgba(255,255,255,0.20)" in _q_gla[1])
     check("按钮适配: 毛玻璃档 = 近乎无底 + 极淡细线",
           "rgba(255,255,255,0.055)" in _q_fro[1] and "rgba(255,255,255,0.13)" in _q_fro[1])
-    check("按钮适配: 材质按钮选中态在毛玻璃下仍是半透明蓝(唯一强元素)",
-          "rgba(59,111,224,0.92)" in _q_fro[4])
-    check("按钮适配: 刷新主按钮默认实心蓝 / 毛玻璃半透明蓝",
-          "#3b6fe0" in _q_def[3] and "rgba(59,111,224,0.92)" in _q_fro[3])
+    check("按钮适配: 材质按钮选中态在毛玻璃下是唯一强元素(底图取色, 第65轮细化)",
+          ca.qrgba(ca.FrostTexture.instance().accent(True), 120) in _q_fro[4])
+    check("按钮适配: 刷新主按钮默认实心蓝 / 毛玻璃底图色但保持分量",
+          "#3b6fe0" in _q_def[3]
+          and ca.qrgba(ca.FrostTexture.instance().accent(True), 205) in _q_fro[3])
     check("按钮适配: NavButton 毛玻璃下 hover 不铺实底(自绘源码断言)",
           "120 if glass else 58" in _src62
           and 'frost = bool(theme_state.get("frost"))' in _src62)
@@ -1839,6 +1840,105 @@ _bg64 = ca.QImage(ca.FROST_TEX_DEFAULT)
 check("默认底纹: assets/frost_bg.png 存在且为整幅壁纸尺寸",
       (not _bg64.isNull()) and _bg64.width() >= 800 and _bg64.height() >= 400,
       f"{_bg64.width()}x{_bg64.height()}")
+
+# ========== 19. 日期按钮尺寸还原 + 选中态从底图取色 (2026-09-25 第65轮) ==========
+print("== 19. 日期按钮尺寸 / 选中态取色 ==")
+
+# 19.1 尺寸: 新样式(三档)必须与旧版 "padding:4px 9px + 无描边" 的盒子完全一致
+_old_btn65 = ca.QPushButton("今日")
+_old_btn65.setCheckable(True)
+_old_btn65.setStyleSheet(
+    f"QPushButton{{ background:{ca.qrgba(ca.TRACK)}; color:{ca.qname(ca.TEXT2)}; border:none;"
+    f" border-radius:6px; padding:4px 9px; font-size:{ca.curr_metric()['opt_btn_px']}px; }}")
+_old_sz65 = _old_btn65.sizeHint()
+_wf65 = ca.CardWindow()
+_wf65.refresh = lambda *a, **k: None
+_dark65 = ca.theme_state["dark"]
+_fc65 = ca.theme_state.get("frost_custom")
+try:
+    ca.theme_state["dark"] = True
+    ca.theme_state["frost_custom"] = False          # 断言固定用内置底图, 不受本机自选图影响
+    ca.FrostTexture.instance().load(force=True)
+    ca.refresh_palette()
+
+    _szs65 = []
+    for _g, _f in ((False, False), (True, False), (False, True)):
+        ca.theme_state["glass"], ca.theme_state["frost"] = _g, _f
+        ca.refresh_palette()
+        _wf65.apply_styles()
+        _szs65.append(_wf65.btn_today.sizeHint())
+    check("日期按钮: 三档材质下尺寸都与旧版一致(改回来了)",
+          all(abs(s.width() - _old_sz65.width()) <= 1 and abs(s.height() - _old_sz65.height()) <= 1
+              for s in _szs65),
+          f"旧={_old_sz65.width()}x{_old_sz65.height()} 新={[f'{s.width()}x{s.height()}' for s in _szs65]}")
+    check("日期按钮: 尺寸靠 padding:3px 8px + 1px 描边等效旧 4px 9px 无描边",
+          "padding:3px 8px" in _src62)
+
+    # 19.2 毛玻璃: 选中态颜色取自底图 + 半透明
+    ca.theme_state["glass"], ca.theme_state["frost"] = False, True
+    ca.refresh_palette()
+    _wf65.apply_styles()
+    _acc65 = ca.FrostTexture.instance().accent(True)
+    _want65 = ca.qrgba(_acc65, 120)
+    _q_range65 = _wf65.btn_today.styleSheet()
+    check("选中态取色: 毛玻璃下日期按钮选中色 = 底图取色(半透明)", _want65 in _q_range65, _want65)
+    check("选中态取色: 不再是恒定的实心品牌蓝",
+          "rgba(59,111,224,0.92)" not in _q_range65)
+    check("选中态取色: 材质按钮选中态走同一套底图色", _want65 in _wf65.btn_frost.styleSheet())
+    check("选中态取色: 描边同色(比填充更实一点)", ca.qrgba(_acc65, 175) in _q_range65)
+
+    # 独立复算: 取色的色相必须与底图平均色一致
+    _img65 = ca.FrostTexture.instance().load()
+    _sm65 = _img65.scaled(8, 8, ca.Qt.IgnoreAspectRatio, ca.Qt.SmoothTransformation)
+    _rr = _gg = _bb = 0
+    for _yy in range(_sm65.height()):
+        for _xx in range(_sm65.width()):
+            _pp = _sm65.pixelColor(_xx, _yy)
+            _rr += _pp.red(); _gg += _pp.green(); _bb += _pp.blue()
+    _n65 = max(1, _sm65.width() * _sm65.height())
+    _h_src65 = ca.QColor(_rr // _n65, _gg // _n65, _bb // _n65).getHsv()[0]
+    _h_acc65 = _acc65.getHsv()[0]
+    check("选中态取色: 色相与底图平均色一致", _h_src65 < 0 or abs(_h_acc65 - _h_src65) <= 2,
+          f"底图={_h_src65} 取色={_h_acc65}")
+    check("选中态取色: 饱和度/明度归一到可读区间",
+          _acc65.getHsv()[1] >= 110 and _acc65.getHsv()[2] >= 180,
+          f"s={_acc65.getHsv()[1]} v={_acc65.getHsv()[2]}")
+    check("选中态取色: 浅色档也走底图取色(明度更低)",
+          ca.FrostTexture.instance().accent(False).getHsv()[2] < _acc65.getHsv()[2])
+
+    # 19.3 液态玻璃: 选中态同样更通透(0.92 → 0.62)
+    ca.theme_state["glass"], ca.theme_state["frost"] = True, False
+    ca.refresh_palette()
+    _wf65.apply_styles()
+    check("液态玻璃: 日期按钮选中态更通透", "rgba(59,111,224,0.62)" in _wf65.btn_today.styleSheet())
+    check("液态玻璃: 材质按钮选中态同步通透", "rgba(59,111,224,0.62)" in _wf65.btn_frost.styleSheet())
+
+    # 19.4 顺带修掉一个真 bug: 两个材质**直切**时不得掉回默认
+    ca.theme_state["glass"], ca.theme_state["frost"] = False, False
+    ca.refresh_palette()
+    _wf65.apply_styles()
+    _wf65.btn_frost.setChecked(True)                 # 用户点「毛玻璃」
+    _wf65.btn_glass_toggle.setChecked(True)          # 再点「液态玻璃」→ 应当直切, 不掉回默认
+    check("材质直切: 毛玻璃 → 点液态玻璃 = 切到玻璃(不掉回默认)",
+          (ca.theme_state["glass"], ca.theme_state.get("frost"),
+           _wf65.btn_glass_toggle.isChecked(), _wf65.btn_frost.isChecked()) == (True, False, True, False),
+          f"{ca.theme_state['glass']}/{ca.theme_state.get('frost')}")
+    _wf65.btn_frost.setChecked(True)                 # 再点「毛玻璃」→ 直切回毛玻璃
+    check("材质直切: 液态玻璃 → 点毛玻璃 = 切到毛玻璃(不掉回默认)",
+          (ca.theme_state["glass"], ca.theme_state.get("frost"),
+           _wf65.btn_glass_toggle.isChecked(), _wf65.btn_frost.isChecked()) == (False, True, False, True),
+          f"{ca.theme_state['glass']}/{ca.theme_state.get('frost')}")
+    check("材质直切: 同步勾选态时屏蔽了信号(源码守门)",
+          "blockSignals(True)" in _src62 and "_b.setChecked(_on)" in _src62)
+finally:
+    ca.theme_state["dark"] = _dark65
+    ca.theme_state["glass"] = False
+    ca.theme_state["frost"] = False
+    ca.theme_state["frost_custom"] = _fc65
+    ca.FrostTexture.instance().load(force=True)
+    ca.refresh_palette()
+    _wf65.apply_styles()
+    _wf65.close()
 
 # ---- 还原真实数据目录路径 (临时目录随系统清理) ----
 ca._sn_events_all = orig_events
