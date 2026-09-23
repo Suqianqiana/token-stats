@@ -1,13 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-Token 统计卡片 V9.3 — 真·实时高斯模糊毛玻璃 + iOS 27 液态玻璃 + 精致双尺寸仪表盘
+Token 统计卡片 V9.3 - 静态磨砂毛玻璃 + iOS 27 液态玻璃 + 精致双尺寸仪表盘
 
-V9.3 highlights (Real-time Frosted Glass):
-  The frosted-glass mode is now a true real-time Gaussian blur instead of a translucent
-  gradient: the panel samples the desktop behind the window (temporarily excluding itself
-  from screen capture via WDA_EXCLUDEFROMCAPTURE, restored immediately after the grab) and
-  paints the blurred result with a light fog layer for text legibility. Glass and Frost are
-  mutually exclusive materials toggled from two adjacent sidebar buttons of equal height.
+V9.3 highlights (Baked Frosted Glass):
+  The frosted-glass mode uses a baked-in texture: on first launch the app captures the
+  desktop once, applies a strong multi-pass Gaussian blur (7-step progressive downscale,
+  final scale 1/45, smooth with no visible blocks), desaturates it, and stores it as an
+  asset. Zero capture cost afterwards - dragging is perfectly smooth. Users can pick their
+  own image (auto-processed the same way) via the right-click menu. Glass and Frost remain
+  mutually exclusive materials toggled from adjacent sidebar buttons of equal height.
+  NOTE: Windows DWM System Backdrop (Acrylic/Mica) was thoroughly tested and REJECTED:
+  on Qt self-drawn translucent windows it paints an opaque gray layer instead of blurring
+  the desktop behind (works only on plain Win32 windows). Do not revisit without evidence.
 
 V9.2 highlights (Multi-Machine Sync):
   Export this machine's full WorkBuddy + DSH usage snapshot to a JSON package, import
@@ -24,9 +28,10 @@ V9.2 highlights (Multi-Machine Sync):
   - 重构舒适大窗口 (1180×730) 字体层级体系，字重与行高开阔舒展，拒绝粗暴放大
   - 三档玻璃通透度无级调谐 + 右键多入口切换 + 每日柱状图鼠标锚点滚轮缩放与平移
   - 商汤额度页两张积分池卡**常驻**（未就绪用公测期满额占位）；按机统计双栏 + 环形占比圈
-  - 「毛玻璃模式」(Frost)：**真·实时高斯模糊**（抓背后桌面→级联降采样模糊），与液态玻璃互斥
-    · 抓屏时临时对本窗口设 WDA_EXCLUDEFROMCAPTURE 再立即恢复，既避免自我反馈又不影响用户截图
-    · 侧栏「液态玻璃 | 毛玻璃」并列等高按钮，互斥点亮；明暗切换独立置于最下方
+  - 「毛玻璃模式」(Frost)：静态内置磨砂纹理（首次启动抓屏一次→七级渐进高斯→去饱和），
+    之后零开销；支持自定义图片（自动做同样处理）；与液态玻璃互斥
+    · 纹理必须由窗口底板整块铺一次，卡片不画任何底色（否则每卡一张缩略图/出现底框）
+    · 侧栏「液态玻璃 | 毛玻璃」并列等高按钮，三态切换（再点已选中的回默认）；明暗切换在最下方
   - ⚠️ 属性名不要用 `metric`：QWidget 有虚函数 QPaintDevice::metric()，会与 PySide6 覆写冲突而崩
 """
 import base64
@@ -75,8 +80,8 @@ def res(*parts):
 from PySide6.QtCore import (Qt, QRectF, QObject, Signal, QTimer, QPoint, QRect,
                             QPointF, QEvent, QSize)
 from PySide6.QtGui import (QColor, QFont, QPainter, QPen, QBrush, QPainterPath,
-                           QLinearGradient, QImage, QGuiApplication, QIcon, QAction,
-                           QFontMetrics)
+                           QLinearGradient, QImage, QPixmap, QGuiApplication, QIcon,
+                           QAction, QFontMetrics)
 from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QVBoxLayout,
                                QHBoxLayout, QGridLayout, QFrame, QPushButton,
                                QScrollArea, QMenu, QSizePolicy, QPlainTextEdit,
@@ -182,6 +187,9 @@ theme_state = {
     # 2026-09-23 (第60轮): 毛玻璃模式。★ 必须放进 theme_state —— save_settings() 落盘的就是它,
     # 放别处会一保存就丢(第58轮踩过的坑)。
     "frost": False,
+    # 2026-09-25 (第63轮): 毛玻璃底纹是否用**用户自定义图**(True) 还是内置默认图(False)。
+    # 同样必须进 theme_state 才能落盘。
+    "frost_custom": False,
 }
 SETTINGS_FILE = os.path.join(scanner.PLUGIN_DATA_DIR, "settings.json")
 
@@ -331,171 +339,282 @@ def fmt_full(n):
 # 浅猫: "再增加一个毛玻璃的主题模式, 主要认真还原图片里毛玻璃效果的质感"
 #        要点是"淡化卡片存在感, 改成用细线分割"。
 def frost_rule_color(dark):
-    """毛玻璃下「细线分割」用的线色 (深色白线低透明 / 浅色冷灰低透明)。"""
-    return QColor(255, 255, 255, 30) if dark else QColor(28, 38, 58, 34)
+    """毛玻璃下「细线分割」用的线色 —— 极淡, 只是若有若无的分区暗示(不是卡片描边)。"""
+    return QColor(255, 255, 255, 16) if dark else QColor(28, 38, 58, 20)
 
 
-# ============================================================ 真·高斯模糊背景 (Frost Backdrop, 2026-09-23 第62轮)
-# 浅猫: 毛玻璃应该是漂亮的实时高斯模糊, 也不需要渐变
-# 做法: 抓取窗口背后的屏幕区域 -> 级联降采样(快速高斯近似) -> 作为磨砂底绘制。
-# 关键: 抓取瞬间必须让本窗口对截屏[临时隐身](WDA_EXCLUDEFROMCAPTURE),
-#       否则抓到的是自己 -> 自我反馈成一片灰(POC 实测)。抓完立刻恢复 WDA_NONE,
-#       这样用户自己截图/录屏时窗口仍然正常可见。
-WDA_NONE = 0x00000000
-WDA_EXCLUDEFROMCAPTURE = 0x00000011
+
+# ============================================================ 毛玻璃材质 (Frost, 2026-09-25 第63轮重做)
+# 浅猫: "不要实时抓屏了, 直接在当前对话页面抓一张内置进去, 效果挺好; 再支持自定义图片"
+#
+# 方案: **静态内置纹理**(首次启动时抓一次当前屏幕 → 强高斯模糊 → 压暗 → 存 PNG)。
+#   · 彻底摆脱抓屏: 零延迟、拖拽完全跟手、不吃 CPU;
+#   · 观感仍是"真模糊"—— 因为纹理本身就是真高斯模糊出来的;
+#   · 用户可自选任意图片作底(自动做同样的模糊+压暗, 保证文字可读)。
+#
+# ⚠️ 为什么不走系统级 DWM Acrylic: 实测在 Qt 自绘透明窗口上, DWMWA_SYSTEMBACKDROP_TYPE
+#    (Acrylic/Mica/MicaAlt) 只会画一层**不透明灰**把背景盖死(红蓝对照实验红蓝差 +196 → +6),
+#    纯 Win32 窗口则正常 —— 属 Qt 窗口合成路径与 DWM 材质不兼容, 无参数可解。详见 协作进度.md 第63轮。
+FROST_TEX_DIR = os.path.join(APP_DIR, "assets")
+FROST_TEX_DEFAULT = os.path.join(FROST_TEX_DIR, "frost_bg.png")
+FROST_TEX_USER = os.path.join(FROST_TEX_DIR, "frost_bg_user.png")
+
+# 合成参数 (2026-09-25 定稿): 纹理存的是**中性模糊图**, 明暗合成在绘制时完成。
+#   · 深色 = 纹理 + 压暗罩(alpha 越大越暗);
+#   · 浅色 = **白底 + 纹理低透明度叠加** —— 直接在白底上盖白罩会把纹理透成"灰斑"显脏(实测), 
+#            改用降低纹理不透明度才是干净的奶白磨砂。
+FROST_TINT_DARK = 168        # 深色: 压暗罩 alpha
+FROST_TEX_LIGHT_OP = 0.30    # 浅色: 纹理叠加不透明度 (越小白越干净)
+FROST_BASE_LIGHT = (252, 253, 255)   # 浅色底
+CARD_TINT_ALPHA = 0.85       # 卡片相对底板的"更实"系数 (文字多, 需要更干净的底)
 
 
-class BlurBackdrop:
-    """窗口背后的实时模糊底 —— 单例, 供主底板与卡片共用同一份抓取结果。
+class FrostTexture:
+    """毛玻璃底纹 —— 单例, 负责加载/生成/缓存那张模糊背景图。
 
-    性能: 抓屏本身有开销, 故按 THROTTLE_MS 节流(默认 380ms);
-         模糊用"降采样->平滑升采样"两次级联近似高斯, 比逐像素卷积快两个数量级。
+    线程安全: 只在 UI 线程用(生成是一次性动作, 首次启动约 0.5~1s, 已用后台线程规避卡顿)。
     """
     _inst = None
-    THROTTLE_MS = 380
 
     @classmethod
     def instance(cls):
         if cls._inst is None:
-            cls._inst = BlurBackdrop()
+            cls._inst = FrostTexture()
         return cls._inst
 
     def __init__(self):
-        self._img = None          # 缓存的原尺寸模糊图 (按窗口几何)
-        self._key = None          # 抓取时的几何+主题指纹
-        self._ts = 0.0
-        self._user32 = None
-        self._dwmapi = None
+        self._img = None          # QImage (原尺寸纹理)
+        self._scaled = {}         # {(w,h): QPixmap} 缩放缓存
+        self._path = None         # 当前纹理文件路径
+        self._is_tall = False     # 是否竖图(决定填充策略)
+        self._failed = False
+
+    # ---------------------------------------------------------- 加载
+    def current_path(self):
+        """用户自定义图优先, 否则内置默认图。"""
         try:
-            import ctypes
-            self._user32 = ctypes.windll.user32
-            self._dwmapi = ctypes.windll.dwmapi
+            if theme_state.get("frost_custom") and os.path.exists(FROST_TEX_USER):
+                return FROST_TEX_USER
         except Exception:
             pass
+        return FROST_TEX_DEFAULT
 
-    def invalidate(self):
-        """几何变化/主题切换后调用, 强制下次重抓。"""
-        self._key = None
+    def load(self, force=False):
+        """加载当前纹理(带缓存)。返回 QImage 或 None。"""
+        path = self.current_path()
+        if (not force) and self._img is not None and self._path == path:
+            return self._img
+        try:
+            img = QImage(path)
+            if img.isNull():
+                self._img = None
+                self._path = path
+                return None
+            self._img = img
+            self._path = path
+            self._scaled.clear()
+            self._failed = False
+            return img
+        except Exception:
+            self._failed = True
+            return None
 
-    @staticmethod
-    def _is_blank(im):
-        """判断抓到的图是否无效(offscreen 下 grabWindow 回全黑不透明)。
+    def set_custom(self, src_path):
+        """把用户选的图片处理成纹理(强模糊 + 压暗)并保存; 成功返回 True。
 
-        采样 9 点: 若全为 (0,0,0,255) 或全透明, 视为无效 —— 此时宁可走纯色兜底,
-        也不能把一张黑图铺满卡片。
+        处理链: 读入 → 等比缩放(长边 1400) → 级联降采样模糊 → 按当前明暗压暗 → 存 PNG
         """
         try:
-            w, h = im.width(), im.height()
-            if w <= 0 or h <= 0:
-                return True
-            pts = [(w // 4, h // 4), (w // 2, h // 4), (3 * w // 4, h // 4),
-                   (w // 4, h // 2), (w // 2, h // 2), (3 * w // 4, h // 2),
-                   (w // 4, 3 * h // 4), (w // 2, 3 * h // 4), (3 * w // 4, 3 * h // 4)]
-            cols = [im.pixelColor(x, y) for x, y in pts]
-            blacks = sum(1 for c in cols if c.red() == 0 and c.green() == 0
-                         and c.blue() == 0 and c.alpha() == 255)
-            clears = sum(1 for c in cols if c.alpha() == 0)
-            return blacks == len(cols) or clears == len(cols)
+            img = QImage(src_path)
         except Exception:
+            return False
+        if img.isNull():
+            return False
+        try:
+            processed = self._process(img)
+            os.makedirs(FROST_TEX_DIR, exist_ok=True)
+            if not processed.save(FROST_TEX_USER, "PNG"):
+                return False
+            theme_state["frost_custom"] = True
+            self.load(force=True)
             return True
-
-    def image(self, widget, force=False):
-        """返回 widget 背后区域的模糊图 (QImage); 失败返回 None。"""
-        if self._user32 is None:
-            return None
-        now = time.time()
-        g = widget.frameGeometry()
-        try:
-            scr = QGuiApplication.screenAt(g.center()) or QGuiApplication.primaryScreen()
         except Exception:
-            return None
-        dpr = scr.devicePixelRatio()
-        key = (g.x(), g.y(), g.width(), g.height(), theme_state["dark"])
-        fresh = (now - self._ts) * 1000.0 < self.THROTTLE_MS
-        if not force and fresh and self._img is not None and self._key == key:
-            return self._img
+            return False
 
-        hwnd = 0
+    def clear_custom(self):
+        """恢复内置默认纹理。"""
+        theme_state["frost_custom"] = False
         try:
-            hwnd = int(widget.winId())
+            if os.path.exists(FROST_TEX_USER):
+                os.remove(FROST_TEX_USER)
         except Exception:
             pass
-        hidden = False
-        if hwnd:
-            try:
-                hidden = bool(self._user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE))
-                if self._dwmapi is not None:
-                    self._dwmapi.DwmFlush()
-            except Exception:
-                hidden = False
+        self.load(force=True)
+
+    # ---------------------------------------------------------- 图像处理
+    @staticmethod
+    def _process(img):
+        """等比缩放 + 强高斯模糊(级联降采样) + 去饱和 → 返回**中性**纹理。
+
+        ⚠️ 这里**不做明暗处理**: 压暗/提亮由绘制时的罩层完成(见 paint_frost_*),
+           这样同一张纹理在深色/浅色下都合适, 也省掉逐像素循环(全走 Qt 的 C++ 路径)。
+        """
+        w, h = img.width(), img.height()
+        if w <= 0 or h <= 0:
+            return img
+        # 1) 等比缩到长边 1400 (模糊图不需要原分辨率)
+        long_side = max(w, h)
+        if long_side > 1400:
+            k = 1400.0 / long_side
+            img = img.scaled(max(1, int(w * k)), max(1, int(h * k)),
+                             Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        w, h = img.width(), img.height()
+        # 2) 级联降采样 = 快速高斯近似。
+        #    ⚠️ 两个实测教训(浅猫先后指出):
+        #       · 级差太大(1/10 直接跳 1/28) → "色块感";
+        #       · 目标尺度不够小(1/18) → 文字还留着"条状痕迹"。
+        #    现为**七级渐进**每级缩约 1.7 倍, 最终缩到 **1/45**(等效半径 ~22px 的高斯),
+        #    文字/图表的形状痕迹彻底糊散, 过渡平滑无块。
+        cur = img
+        target = 45            # 最终缩到 1/45
+        k = 1.0
+        while True:
+            k_next = k / 1.7
+            if k_next <= 1.0 / target or int(w * k_next) < 6 or int(h * k_next) < 6:
+                break
+            cur = cur.scaled(max(1, int(w * k_next)), max(1, int(h * k_next)),
+                             Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            k = k_next
+        if k > 1.0 / target:               # 补最后一刀到目标
+            cur = cur.scaled(max(1, int(w * (1.0 / target))),
+                             max(1, int(h * (1.0 / target))),
+                             Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        out = cur.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        # 3) 去饱和 35% (叠一层灰度自画像) —— 用 QPainter 做, 比逐像素快两个数量级
         try:
-            sg = scr.geometry()
-            x = int((g.x() - sg.x()) * dpr)
-            y = int((g.y() - sg.y()) * dpr)
-            w = max(1, int(g.width() * dpr))
-            h = max(1, int(g.height() * dpr))
-            pm = scr.grabWindow(0, x, y, w, h)
-            if pm.isNull():
-                return None
-            im = pm.toImage()
-            # ⚠️ offscreen 平台下 grabWindow 会返回**全黑且不透明**的假图(实测) ——
-            #    必须识别为无效, 否则卡片会被一层黑糊住。用 9 点采样判"是否全黑"。
-            if self._is_blank(im):
-                return None
-            # 级联降采样 = 快速高斯近似 (8x -> 20x 两次)
-            a = im.scaled(max(1, w // 8), max(1, h // 8),
-                          Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-            b = a.scaled(max(1, w // 20), max(1, h // 20),
-                         Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-            self._img = b.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-            self._key = key
-            self._ts = now
+            if out.format() != QImage.Format_ARGB32:
+                out = out.convertToFormat(QImage.Format_ARGB32)
+            gray = out.convertToFormat(QImage.Format_Grayscale8) \
+                      .convertToFormat(QImage.Format_ARGB32)
+            p = QPainter(out)
+            p.setOpacity(0.35)
+            p.drawImage(0, 0, gray)
+            p.end()
         except Exception:
-            return self._img
-        finally:
-            if hidden and hwnd:
-                try:
-                    self._user32.SetWindowDisplayAffinity(hwnd, WDA_NONE)
-                    if self._dwmapi is not None:
-                        self._dwmapi.DwmFlush()
-                except Exception:
-                    pass
-        return self._img
+            pass
+        return out
+
+    # ---------------------------------------------------------- 取用
+    def pixmap_for(self, w, h, dpr=1.0):
+        """返回铺满 (w,h) 的纹理 QPixmap —— 等比裁剪填充(cover), 不变形。"""
+        img = self.load()
+        if img is None or w <= 0 or h <= 0:
+            return None
+        pw, ph = max(1, int(w * dpr)), max(1, int(h * dpr))
+        key = (pw, ph)
+        pm = self._scaled.get(key)
+        if pm is not None:
+            return pm
+        # cover: 按较大比例缩放, 居中裁剪
+        iw, ih = img.width(), img.height()
+        k = max(pw / float(iw), ph / float(ih))
+        sw, sh = max(1, int(iw * k)), max(1, int(ih * k))
+        scaled = img.scaled(sw, sh, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        x = max(0, (sw - pw) // 2)
+        y = max(0, (sh - ph) // 2)
+        pm = QPixmap.fromImage(scaled.copy(x, y, pw, ph))
+        if len(self._scaled) > 6:       # 缓存上限(尺寸切换时会有多档)
+            self._scaled.clear()
+        self._scaled[key] = pm
+        return pm
 
 
-FROST_FOG_DARK = 118      # 深色下压暗强度 (主底板)
-FROST_FOG_LIGHT = 96      # 浅色下提亮强度
-CARD_FOG_ALPHA = 0.80     # 内容卡片的雾层强度系数 (卡片里是文字/表格, 必须够厚才读得清)
+def ensure_frost_texture():
+    """首次运行时生成内置纹理: 抓一次当前屏幕 → 模糊压暗 → 存 assets/frost_bg.png。
+
+    仅在没有纹理文件时执行一次; 之后永远复用(这就是"不实时抓屏"的关键)。
+    """
+    if os.path.exists(FROST_TEX_DEFAULT):
+        return True
+    try:
+        scr = QGuiApplication.primaryScreen()
+        if scr is None:
+            return False
+        pm = scr.grabWindow(0)
+        if pm.isNull():
+            return False
+        img = pm.toImage()
+        if img.isNull() or img.width() < 100:
+            return False
+        processed = FrostTexture._process(img)
+        os.makedirs(FROST_TEX_DIR, exist_ok=True)
+        return bool(processed.save(FROST_TEX_DEFAULT, "PNG"))
+    except Exception:
+        return False
+
+
+def _frost_fill(p, widget, rect, dark, alpha):
+    """把毛玻璃底铺进 rect (调用方负责 setClipPath)。
+
+    alpha 语义: ≥1 更实(文字多的地方), <1 更透。两种明暗各自合成:
+      · 深色 = 画纹理 → 压暗罩;
+      · 浅色 = 铺白底 → 纹理以低不透明度叠上(避免深纹理透成灰斑)。
+    """
+    alpha = max(0.0, min(1.6, float(alpha)))
+    pm = None
+    if widget is not None:
+        try:
+            pm = FrostTexture.instance().pixmap_for(
+                int(rect.width()), int(rect.height()),
+                widget.devicePixelRatioF() if hasattr(widget, "devicePixelRatioF") else 1.0)
+        except Exception:
+            pm = None
+    p.setRenderHint(QPainter.SmoothPixmapTransform)
+    tr = rect.toRect()
+    if pm is None:
+        # 兜底: 纹理不可用(生成失败/文件损坏) → 纯色, 绝不渐变
+        p.fillRect(rect, QColor(22, 25, 32) if dark else QColor(*FROST_BASE_LIGHT))
+        return
+    if dark:
+        p.drawPixmap(tr, pm)
+        tint = int(FROST_TINT_DARK * alpha)
+        if tint > 0:
+            p.fillRect(rect, QColor(12, 15, 20, min(255, tint)))
+    else:
+        p.fillRect(rect, QColor(*FROST_BASE_LIGHT))
+        op = FROST_TEX_LIGHT_OP / max(0.35, alpha)   # alpha 越大 → 纹理越淡(越干净)
+        p.save()
+        p.setOpacity(max(0.05, min(1.0, op)))
+        p.drawPixmap(tr, pm)
+        p.restore()
 
 
 def paint_frost_blur(p, widget, rect, radius, dark, alpha=1.0):
-    """毛玻璃材质 = 背后实时高斯模糊 + 极轻雾化 + 细腻描边。**无任何渐变**。
+    """毛玻璃主材质 = 内置/自定义模糊纹理 + 细腻描边。无渐变。
 
-    alpha: 材质强度 (1.0=主底板/浮层实体; <1.0=卡片这类轻量分区, 让背景更多透出)。
+    alpha: 1.0 = 主底板; 卡片传 <1 会更透一些。
     """
     path = QPainterPath()
     path.addRoundedRect(rect, radius, radius)
-    img = BlurBackdrop.instance().image(widget, force=False)
     p.save()
     p.setClipPath(path)
-    fog = int((FROST_FOG_DARK if dark else FROST_FOG_LIGHT) * alpha)
-    if img is not None:
-        p.setRenderHint(QPainter.SmoothPixmapTransform)
-        p.drawImage(rect, img)
-        if fog > 0:
-            p.fillRect(rect, QColor(12, 14, 20, fog) if dark else QColor(255, 255, 255, fog))
-    else:
-        # 抓取不可用时的兜底: 纯色(绝不渐变), 且**同样遵循 alpha** ——
-        # 否则 offscreen/抓取失败时卡片会变成比主底板更实的色块, 层次关系反了。
-        base = 236 if dark else 240
-        p.fillRect(rect, QColor(32, 36, 46, int(base * alpha)) if dark
-                   else QColor(244, 247, 252, int(base * alpha)))
+    _frost_fill(p, widget, rect, dark, alpha)
     p.restore()
-    edge = int((46 if dark else 150) * alpha)
+    edge = int((40 if dark else 130) * alpha)
     if edge > 0:
         p.setPen(QPen(QColor(255, 255, 255, edge), 1.0))
         p.setBrush(Qt.NoBrush)
         p.drawPath(path)
+
+
+def paint_frost_flat(p, rect, dark, alpha=1.0, radius=0.0, widget=None):
+    """毛玻璃下的分区: **完全不画**(浅猫定稿: 连底框都不要)。
+
+    纹理由窗口底板整块铺一次(连续、细腻); 卡片区不再叠任何色 —— 分区感只由
+    极淡的 1px 细线和内容本身的排布承担, 才是参考图那种"整块玻璃"的纯平观感。
+    保留函数本体是为了不破坏 paint_pod 的调用结构(以后如需恢复层次色也有挂载点)。
+    """
+    return
 
 
 def paint_section_rule(p, w):
@@ -521,10 +640,10 @@ class LiquidGlassFrame(QFrame):
         dark = theme_state["dark"]
         glass = theme_state["glass"]
 
-        # 毛玻璃模式: 整块主底板换成**背后实时高斯模糊** (第62轮重做: 去掉渐变, 真模糊)
+        # 毛玻璃模式 (第63轮重做): 主底板铺**内置/自定义模糊纹理** —— 不再抓屏、不再依赖 DWM。
         if theme_state.get("frost"):
             paint_frost_blur(p, self, rect, 14, dark)
-            # 侧边栏分隔线改为细线 (与分区线同一套语言)
+            # 侧边栏分隔线: 细线 (与分区线同一套语言)
             p.setPen(QPen(frost_rule_color(dark), 1.0))
             p.drawLine(QPointF(self.sep_x, 1.0), QPointF(self.sep_x, h - 1.0))
             return
@@ -630,17 +749,20 @@ def paint_pod(widget, radius, inset=0.5, role="section", rule=True):
     dark = theme_state["dark"]
     glass = theme_state["glass"]
 
-    # 毛玻璃模式 (第62轮重做): 分区卡片也给一层**轻量模糊底**(比主底板更透),
-    # 保留卡片层次与"磨砂"质感; 浮层(弹窗)用更实的模糊材质保证可读。
+    # 毛玻璃模式 (第63轮: 对齐参考图 —— **纯平**、无边框、无描边、无圆角卡片感)
+    #   参考图特征: 深色半透明 + 系统实时模糊透出 + 区块之间只用 1px 细线分隔。
+    #   所以卡片这里只铺一层**极淡的平色**(让文字有底), 不画任何边框/圆角描边。
     if theme_state.get("frost"):
         if role == "panel":
+            # 浮层(弹窗)必须更实, 否则会"隐形"在玻璃上
             paint_frost_blur(p, widget, rect, min(r + 4.0, 16.0), dark)
+        elif rule:
+            # 分区卡片: 纹理 + 稍厚罩层(保证文字清晰) + 一条细线
+            paint_frost_flat(p, rect, dark, alpha=CARD_TINT_ALPHA, widget=widget)
+            paint_section_rule(p, w)
         else:
-            # 卡片: 模糊底 + 较实的雾层 —— 表格/图表里全是文字数字, 雾必须够厚才读得清
-            # (alpha=0.34 实测会把内容糊住)。rule=True 再叠一条 1px 分区线。
-            paint_frost_blur(p, widget, rect, r, dark, alpha=CARD_FOG_ALPHA)
-            if rule:
-                paint_section_rule(p, w)
+            # 横向并排/首段: 同样铺纹理, 只是更透、不画细线
+            paint_frost_flat(p, rect, dark, alpha=CARD_TINT_ALPHA * 0.7, widget=widget)
         p.end()
         return
 
@@ -5064,7 +5186,9 @@ class CardWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window | Qt.WindowStaysOnTopHint)
+        # 自绘圆角窗口: 整个窗口透明, 由自绘底板提供视觉(三种材质通用, 不可按模式切换)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self._translucent = True
 
         self._drag = None
         self._scanning = False
@@ -5128,6 +5252,7 @@ class CardWindow(QWidget):
     def _build_ui(self):
         outer = QHBoxLayout(self)
         outer.setContentsMargins(10, 10, 10, 10)
+        self.outer_lay = outer      # 保留引用(供潜在的布局微调用)
 
         # 核心主底板: iOS 27 液态玻璃
         self.card = LiquidGlassFrame()
@@ -5182,8 +5307,11 @@ class CardWindow(QWidget):
         self.btn_refresh.clicked.connect(lambda: self.refresh(force=True))
         side_lay.addWidget(self.btn_refresh)
 
-        # 2026-09-23 (第62轮): 材质二选一按钮组 —— 「液态玻璃 | 毛玻璃」**并列同一行**,
-        # 两者等高(与"刷新数据"同高), 互斥点亮: 点谁亮谁, 另一方自动熄灭。
+        # 2026-09-25 (第63轮): 材质按钮组 —— 「液态玻璃 | 毛玻璃」并列同一行, 三态语义:
+        #   · 点未选中的 → 切到该材质(另一方自动熄灭);
+        #   · **点已选中的 → 取消, 回到默认(无玻璃)**  ← 浅猫指出此前漏做;
+        # 用 toggled 而非 clicked: 可 checkable 按钮在点击后 Qt 已翻转勾选态,
+        # toggled(False) 即"用户想取消", toggled(True) 即"用户想启用"。
         mat_row = QHBoxLayout()
         mat_row.setSpacing(6)
 
@@ -5191,14 +5319,14 @@ class CardWindow(QWidget):
         self.btn_glass_toggle.setCheckable(True)
         self.btn_glass_toggle.setChecked(bool(theme_state["glass"]))
         self.btn_glass_toggle.setCursor(Qt.PointingHandCursor)
-        self.btn_glass_toggle.clicked.connect(lambda: self.set_glass(True))
+        self.btn_glass_toggle.toggled.connect(self._on_glass_btn)
         mat_row.addWidget(self.btn_glass_toggle, 1)
 
         self.btn_frost = QPushButton("毛玻璃")
         self.btn_frost.setCheckable(True)
         self.btn_frost.setChecked(bool(theme_state.get("frost")))
         self.btn_frost.setCursor(Qt.PointingHandCursor)
-        self.btn_frost.clicked.connect(lambda: self.set_frost(True))
+        self.btn_frost.toggled.connect(self._on_frost_btn)
         mat_row.addWidget(self.btn_frost, 1)
         side_lay.addLayout(mat_row)
 
@@ -5359,15 +5487,14 @@ class CardWindow(QWidget):
     def moveEvent(self, ev):
         """窗口移动后背景区域变了, 模糊底必须重抓(否则显示的是旧位置的桌面)。"""
         super().moveEvent(ev)
-        BlurBackdrop.instance().invalidate()
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
-        BlurBackdrop.instance().invalidate()
 
     def showEvent(self, ev):
         super().showEvent(ev)
-        BlurBackdrop.instance().invalidate()
+        # 窗口句柄就绪后再应用系统模糊(必须 show 之后 winId 才有效)
+        self._apply_window_backdrop()
 
     # ---------------- 动态尺寸适配器 ----------------
     def apply_size_mode(self, mode_name, save=True):
@@ -5376,7 +5503,6 @@ class CardWindow(QWidget):
         theme_state["window_size"] = mode_name
         if save:
             save_settings()
-        BlurBackdrop.instance().invalidate()
 
         m = SIZE_METRICS[mode_name]
         self.setFixedSize(m["win_w"], m["win_h"])
@@ -5568,64 +5694,107 @@ class CardWindow(QWidget):
     def set_dark(self, dark):
         theme_state["dark"] = dark
         refresh_palette()
+        self._apply_window_backdrop()     # 第63轮: 暗色影响 DWM 材质观感, 需重应用
         self.apply_styles()
         apply_app_qss()
         self._refresh_subpages_theme()
         self._update_all()
         save_settings()
 
-    def set_glass(self, enabled):
-        """液态玻璃开关 (第62轮: 与毛玻璃**互斥**)。
+    def _on_glass_btn(self, checked):
+        """液态玻璃按钮 (三维语义见 _set_material)。"""
+        self._set_material("glass" if checked else None)
 
-        开液态玻璃 → 自动关毛玻璃(两种材质只能二选一, 否则叠加会互相破坏)。
+    def _on_frost_btn(self, checked):
+        """毛玻璃按钮 (三维语义见 _set_material)。"""
+        self._set_material("frost" if checked else None)
+
+    def _set_material(self, kind):
+        """统一材质切换入口。kind: 'glass' | 'frost' | None(默认无玻璃)。
+
+        互斥 + 可取消: 两个按钮永远只有一个亮, 且都能再点一次取消回默认。
+        只做**一次**样式刷新(合并原先 set_glass/set_frost 各自的 4~5 次重绘) → 切换更跟手。
         """
-        enabled = bool(enabled)
-        theme_state["glass"] = enabled
-        if enabled and theme_state.get("frost"):
-            theme_state["frost"] = False           # 互斥: 让位给液态玻璃
+        kind = kind if kind in ("glass", "frost") else None
+        new_glass = (kind == "glass")
+        new_frost = (kind == "frost")
+        if new_glass == bool(theme_state.get("glass")) and \
+           new_frost == bool(theme_state.get("frost")):
+            return                                    # 状态未变: 不重复刷新
+        was_frost = bool(theme_state.get("frost"))    # 判"是否进出毛玻璃模式"用
+        theme_state["glass"] = new_glass
+        theme_state["frost"] = new_frost
         refresh_palette()
-        BlurBackdrop.instance().invalidate()
-        self.apply_styles()
+        self._apply_window_backdrop()                 # 刷新静态模糊纹理缓存
+        self.apply_styles()                           # 内部会同步两个按钮的勾选态
         self._refresh_subpages_theme()
-        try:
-            self.render()
-        except Exception:
-            pass
+        # 第63轮提速: render() 会重建整页控件(实测 ~100ms), 只在"行级底色"受影响时做 ——
+        #   毛玻璃模式下明细行不铺斑马纹(靠细线分区), 进出该模式必须重渲染;
+        #   仅在液态玻璃 <-> 默认之间切换时, 行背景走 QSS 且 apply_styles 已刷新 → 免重建。
+        if new_frost or was_frost:
+            try:
+                self.render()
+            except Exception:
+                pass
         self._update_all()
         save_settings()
+
+    def set_glass(self, enabled):
+        """液态玻璃开关(供右键菜单等调用)。开它即自动关毛玻璃。"""
+        self._set_material("glass" if enabled else None)
 
     def set_frost(self, on):
-        """毛玻璃模式 (2026-09-23 第60轮)。
+        """毛玻璃开关(供右键菜单等调用)。开它即自动关液态玻璃。"""
+        self._set_material("frost" if on else None)
 
-        与 `set_glass` 刻意分开: `glass` 管"半透明程度", `frost` 管"材质是哪一种"
-        (液态玻璃 / 毛玻璃), 两者可自由组合 —— 例如"毛玻璃 + 高通透"。
+    def choose_frost_image(self):
+        """让用户选一张图片作毛玻璃底纹(自动做模糊+压暗处理)。"""
+        try:
+            from PySide6.QtWidgets import QFileDialog
+            path, _ = QFileDialog.getOpenFileName(
+                self, "选择毛玻璃底纹图片", "",
+                "图片 (*.png *.jpg *.jpeg *.bmp *.webp);;所有文件 (*)")
+            if not path:
+                return
+            ok = FrostTexture.instance().set_custom(path)
+            if not ok:
+                try:
+                    from PySide6.QtWidgets import QMessageBox
+                    QMessageBox.warning(self, "无法使用该图片",
+                                        "图片读取失败, 请换一张试试。")
+                except Exception:
+                    pass
+                return
+            # 处理成功 → 开毛玻璃并刷新
+            if not theme_state.get("frost"):
+                self._set_material("frost")
+            else:
+                self._apply_window_backdrop()
+                self._update_all()
+            save_settings()
+        except Exception:
+            pass
 
-        切换后必须重刷三处 (少任一都会残留旧样):
-          · `apply_styles()`            —— 侧栏等走 QSS 的控件;
-          · `_refresh_subpages_theme()` —— 子页用 QLabel+QSS 上色, update() 不重算 QSS;
-          · `_update_all()`             —— 卡片底板/自绘控件在 paintEvent 里读 theme_state,
-                                           只有重绘才会换成新材质。
+    def reset_frost_image(self):
+        """恢复内置默认底纹(丢弃自定义图)。"""
+        try:
+            FrostTexture.instance().clear_custom()
+            self._apply_window_backdrop()
+            self._update_all()
+            save_settings()
+        except Exception:
+            pass
+
+    def _apply_window_backdrop(self):
+        """按当前明暗/自定义图刷新毛玻璃纹理(浅色与深色用不同的压暗处理)。
+
+        第63轮重做: 纹理是**静态**的(内置或用户自选), 所以这里只是切一下缓存,
+        没有任何抓屏/系统调用 —— 零延迟, 拖拽完全跟手。
         """
-        on = bool(on)
-        if on == bool(theme_state.get("frost")):
-            return
-        theme_state["frost"] = on
-        if on:
-            theme_state["glass"] = False           # 互斥: 让位给毛玻璃
-        BlurBackdrop.instance().invalidate()
-        self.apply_styles()
-        self._refresh_subpages_theme()
-        # 明细行等"行级"控件用 QSS 铺斑马纹, update() 不会清掉它 → 重渲染一次当前页
-        try:
-            self.render()
-        except Exception:
-            pass
-        self._update_all()
-        try:
-            self.btn_frost.setChecked(on)
-        except Exception:
-            pass
-        save_settings()
+        tex = FrostTexture.instance()
+        tex._scaled.clear()          # 明暗切换后纹理处理不同 → 清缩放缓存
+        if theme_state.get("frost"):
+            tex.load(force=True)
 
     def _refresh_subpages_theme(self):
         """2026-09-19 第51轮: 子页面用 QLabel + QSS 上色, 主题切换必须显式重刷,
@@ -5640,8 +5809,16 @@ class CardWindow(QWidget):
             pass
 
     def _update_all(self):
-        for w in QApplication.allWidgets():
-            w.update()
+        """重绘整个窗口树。
+
+        第63轮提速: 原实现遍历 QApplication.allWidgets()(含**其它应用/隐藏窗口**的控件),
+        切换材质时要刷几十上百个不可见控件 → 明显卡顿。改为:
+          ① 只遍历本窗口(self)的子树; ② 跳过不可见控件(反正看不见)。
+        """
+        self.update()
+        for w in self.findChildren(QWidget):
+            if w.isVisible():
+                w.update()
         tip = ChartTip._instance
         if tip is not None and tip.isVisible():
             tip.update()
@@ -6118,9 +6295,24 @@ class CardWindow(QWidget):
         menu = make_menu(self)
         act_hide = menu.addAction("⌫  隐藏窗口 (Esc)")
         act_dark = menu.addAction(("◉ " if theme_state["dark"] else "○ ") + "深色模式")
-        act_blur = menu.addAction(("◉ " if theme_state["glass"] else "○ ") + "液态玻璃 (iOS 27)")
-        # 2026-09-23 (第60轮): 毛玻璃模式 (与液态玻璃并列的第二种材质)
-        act_frost = menu.addAction(("◉ " if theme_state.get("frost") else "○ ") + "🫧 毛玻璃模式")
+
+        # 2026-09-25 (第63轮): 三种材质统一为一个"单选组", 与侧栏按钮语义一致 ——
+        #   默认(无玻璃) / 液态玻璃 / 毛玻璃, 点当前项 = 取消回默认。
+        _cur_glass = bool(theme_state["glass"])
+        _cur_frost = bool(theme_state.get("frost"))
+        mat_menu = menu.addMenu("🪟  窗口材质")
+        act_mat_none = mat_menu.addAction(
+            ("◉ " if not (_cur_glass or _cur_frost) else "○ ") + "▢ 默认 (无玻璃)")
+        act_blur = mat_menu.addAction(
+            ("◉ " if _cur_glass else "○ ") + "💎 液态玻璃 (iOS 27)")
+        act_frost = mat_menu.addAction(
+            ("◉ " if _cur_frost else "○ ") + "🫧 毛玻璃 (磨砂质感)")
+        # 2026-09-25 (第63轮): 毛玻璃底纹 —— 内置图 或 用户自选图片
+        mat_menu.addSeparator()
+        _fc = bool(theme_state.get("frost_custom"))
+        act_frost_pick = mat_menu.addAction(
+            ("● " if _fc else "○ ") + "🖼  选择底纹图片…")
+        act_frost_reset = mat_menu.addAction("↺  恢复默认底纹")
 
         # 玻璃通透度调节菜单
         tr_menu = menu.addMenu("🔮  玻璃通透度")
@@ -6144,17 +6336,17 @@ class CardWindow(QWidget):
             self.hide()
         elif chosen == act_dark:
             self.set_dark(not theme_state["dark"])
+        elif chosen == act_mat_none:
+            self._set_material(None)           # 第63轮: 回默认(无玻璃)
         elif chosen == act_blur:
-            # 第62轮: 两种材质互斥 —— 点当前项则关掉(回到无玻璃), 否则切到它并自动关另一方
-            if theme_state["glass"]:
-                self.set_glass(False)
-            else:
-                self.set_glass(True)
+            # 互斥 + 可取消: 点当前项 = 取消回默认; 否则切到液态玻璃(自动关毛玻璃)
+            self._set_material(None if theme_state["glass"] else "glass")
         elif chosen == act_frost:
-            if theme_state.get("frost"):
-                self.set_frost(False)
-            else:
-                self.set_frost(True)
+            self._set_material(None if theme_state.get("frost") else "frost")
+        elif chosen == act_frost_pick:
+            self.choose_frost_image()
+        elif chosen == act_frost_reset:
+            self.reset_frost_image()
         elif chosen == act_tr_c:
             self.set_glass_transparency("crystal")
         elif chosen == act_tr_b:
@@ -6277,6 +6469,8 @@ def load_settings():
         theme_state["glass"] = bool(d.get("glass"))
         # 2026-09-23 (第60轮): 毛玻璃模式 (与深/浅色、液态玻璃都不冲突)
         theme_state["frost"] = bool(d.get("frost"))
+        # 2026-09-25 (第63轮): 毛玻璃底纹用自定义图 or 内置默认图
+        theme_state["frost_custom"] = bool(d.get("frost_custom"))
         theme_state["source"] = d.get("source", "wb")
         theme_state["pet"] = bool(d.get("pet"))
         # ★ 一次性迁移到新素材库(v3): 旧版设置里的 pet_theme=v1/v2 会把新素材挡掉。
@@ -6712,8 +6906,22 @@ class BallWindow(QWidget):
         a_restart = menu.addAction("🔄  一键重启")
         menu.addSeparator()
 
-        # 2026-09-23 (第60轮): 毛玻璃模式 —— 悬浮球上也能直接切
-        a_frost = menu.addAction(("◉ " if theme_state.get("frost") else "○ ") + "🫧  毛玻璃模式")
+        # 2026-09-25 (第63轮): 三种材质统一单选组 (与面板右键/侧栏按钮语义完全一致)
+        _cur_glass = bool(theme_state["glass"])
+        _cur_frost = bool(theme_state.get("frost"))
+        mat_menu = menu.addMenu("🪟  窗口材质")
+        a_mat_none = mat_menu.addAction(
+            ("◉ " if not (_cur_glass or _cur_frost) else "○ ") + "▢ 默认 (无玻璃)")
+        a_glass = mat_menu.addAction(
+            ("◉ " if _cur_glass else "○ ") + "💎 液态玻璃 (iOS 27)")
+        a_frost = mat_menu.addAction(
+            ("◉ " if _cur_frost else "○ ") + "🫧 毛玻璃 (磨砂质感)")
+        # 2026-09-25 (第63轮): 毛玻璃底纹入口 (与面板菜单一致)
+        mat_menu.addSeparator()
+        _fc = bool(theme_state.get("frost_custom"))
+        a_frost_pick = mat_menu.addAction(
+            ("● " if _fc else "○ ") + "🖼  选择底纹图片…")
+        a_frost_reset = mat_menu.addAction("↺  恢复默认底纹")
         menu.addSeparator()
 
         # 悬浮球右键调节通透度
@@ -6758,9 +6966,23 @@ class BallWindow(QWidget):
             if self.card:
                 self.card.popup_from(self.frameGeometry())
                 self.card.refresh()
+        elif chosen == a_mat_none:
+            if self.card:
+                self.card._set_material(None)          # 回默认(无玻璃)
+        elif chosen == a_glass:
+            if self.card:
+                self.card._set_material(
+                    None if theme_state["glass"] else "glass")   # 可取消
         elif chosen == a_frost:
             if self.card:
-                self.card.set_frost(not theme_state.get("frost"))
+                self.card._set_material(
+                    None if theme_state.get("frost") else "frost")  # 可取消
+        elif chosen == a_frost_pick:
+            if self.card:
+                self.card.choose_frost_image()
+        elif chosen == a_frost_reset:
+            if self.card:
+                self.card.reset_frost_image()
         elif chosen == act_tr_c:
             if self.card:
                 self.card.set_glass_transparency("crystal")
@@ -6997,6 +7219,20 @@ def main():
         app._tray = tray      # 保持引用, 防止被回收
     else:
         app.setQuitOnLastWindowClosed(True)
+    # 2026-09-25 (第63轮): 首次运行时生成毛玻璃内置纹理(抓一次屏 → 模糊 → 存 PNG)。
+    # 必须放后台线程: 生成过程含逐像素处理(约 0.5~1s), 同步做会让启动明显卡顿。
+    def _gen_frost_tex():
+        try:
+            if ensure_frost_texture():
+                FrostTexture.instance().load(force=True)
+                QTimer.singleShot(0, card._update_all)
+        except Exception:
+            pass
+
+    if not os.path.exists(FROST_TEX_DEFAULT):
+        import threading
+        threading.Thread(target=_gen_frost_tex, daemon=True).start()
+
     QTimer.singleShot(0, card.load_initial)
     sys.exit(app.exec())
 

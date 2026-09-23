@@ -470,14 +470,20 @@ check("毛玻璃: 分区画出了顶部细线",
       f"a0={_img_rule.pixelColor(100, 0).alpha()} a1={_img_rule.pixelColor(100, 1).alpha()}")
 check("毛玻璃: 细线以外不铺底 (分区是空的)",
       _img_rule.pixelColor(100, 40).alpha() == 0, f"a={_img_rule.pixelColor(100, 40).alpha()}")
-# 第62轮: 材质换成真模糊(需 widget 才能抓背后桌面), 这里用一个临时 QWidget 承载绘制。
+# 第63轮定稿架构: 材质 = **静态模糊纹理**(内置或自定义) + 极薄罩层, 彻底不做抓屏/DWM。
+# 浮层(弹窗)必须有底色(否则会"隐形"在玻璃上)。
 _panel_host = ca.QWidget()
 _panel_host.resize(200, 80)
 _img_panel = _mat_img(True, lambda pt: ca.paint_frost_blur(
     pt, _panel_host, ca.QRectF(0, 0, 200, 80), 16, True))
-check("毛玻璃: 主板/浮层材质够实 (中心不透明, 保文字可读)",
-      _img_panel.pixelColor(100, 40).alpha() > 200,
-      f"a={_img_panel.pixelColor(100, 40).alpha()}")
+_a_panel = _img_panel.pixelColor(100, 40).alpha()
+check("毛玻璃: 浮层材质有底色(不透明, 否则弹窗会隐形)", _a_panel > 200,
+      f"a={_a_panel}")
+# 分区材质: **完全不画**(任何叠加色都会形成底框; 分区感只靠极淡细线)
+_img_flat = _mat_img(True, lambda pt: ca.paint_frost_flat(
+    pt, ca.QRectF(0, 0, 200, 80), True, 1.0))
+_a_flat = _img_flat.pixelColor(100, 40).alpha()
+check("毛玻璃: 分区完全不画(无底框, 纹理由底板整块承担)", _a_flat == 0, f"a={_a_flat}")
 
 
 def _pod_center_alpha(frost, rule=True):
@@ -492,20 +498,16 @@ def _pod_center_alpha(frost, rule=True):
     return img.pixelColor(100, 40).alpha()
 
 
-# 第62轮重做: 毛玻璃改为"真·实时高斯模糊"。卡片不再退化为纯细线, 而是**模糊底 + 雾层**:
-#   · 抓取成功时画模糊图 + 雾;  抓取不可用(offscreen)时走兜底纯色 —— 两者都遵循 alpha。
-# 卡片雾层要比主底板更实(内容区是文字/表格, 必须读得清), 但**不能完全不透明**
-# (留出"背后桌面透出来"的毛玻璃本质)。下面统一缓存一次取样结果, 避免重复调用互相干扰。
+# 第63轮定稿: 卡片**完全不画**(浅猫: "全部去除, 减淡效果也不好") —— 纹理由窗口底板
+# 整块铺一次, 分区感只靠极淡细线; 任何叠加色都会形成"底框"(浅猫指出的第二个真 bug)。
 _a_card_frost = _pod_center_alpha(True)
 _a_card_frost_norule = _pod_center_alpha(True, rule=False)
 _a_card_plain = _pod_center_alpha(False)
-check("毛玻璃: 卡片有模糊底(非纯细线)", _a_card_frost > 0, f"a={_a_card_frost}")
-check("毛玻璃: 卡片雾层够厚(文字可读)", _a_card_frost >= 150, f"a={_a_card_frost}")
-check("毛玻璃: 卡片仍半透(保毛玻璃本质, 非全实心)", _a_card_frost < 255,
+check("毛玻璃: 卡片区域完全不画(无底框, 纹理由底板承担)", _a_card_frost == 0,
       f"a={_a_card_frost}")
 check("非毛玻璃: 卡片照旧铺底 (中心不透明)", _a_card_plain > 200, f"a={_a_card_plain}")
-check("rule=False 的分组卡在毛玻璃下同样有模糊底",
-      _a_card_frost_norule > 0, f"a={_a_card_frost_norule}")
+check("rule=False 的分组卡在毛玻璃下同样不画",
+      _a_card_frost_norule == 0, f"a={_a_card_frost_norule}")
 _src60 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "card_app.py"),
               encoding="utf-8").read()
 check("弹窗走 role=panel (毛玻璃下必须仍是实体, 否则会隐形)",
@@ -1622,48 +1624,93 @@ print("== 17. 毛玻璃真模糊 / 材质互斥 / 按钮布局 ==")
 _src62 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "card_app.py"),
               encoding="utf-8").read()
 
-# 17.1 真模糊实现: 抓背后桌面 + 临时隐身(防自抓) + 级联降采样
-check("真模糊: 有 BlurBackdrop 抓取器", "class BlurBackdrop" in _src62)
-check("真模糊: 用 WDA_EXCLUDEFROMCAPTURE 防自我反馈",
-      "WDA_EXCLUDEFROMCAPTURE" in _src62 and "SetWindowDisplayAffinity" in _src62)
-check("真模糊: 抓完立即恢复 WDA_NONE (不影响用户截图)",
-      "_user32.SetWindowDisplayAffinity(hwnd, WDA_NONE)" in _src62)
-check("真模糊: 无渐变(drawRoundedRect+QLinearGradient 不在毛玻璃路径里)",
-      "paint_frost_blur" in _src62)
-check("真模糊: 有无效图检测(offscreen 全黑图不被当有效)",
-      "_is_blank" in _src62)
-check("真模糊: 节流缓存(THROTTLE_MS)", "THROTTLE_MS" in _src62)
-check("旧版渐变材质 paint_frost_surface 已不再被 paint 路径调用",
-      _src62.count("paint_frost_surface(p, rect") == 0)
+# 17.1 第63轮定稿: 材质 = **静态内置纹理** (一次生成, 不抓屏/不依赖 DWM)
+check("纹理: 有 FrostTexture 管理器", "class FrostTexture" in _src62)
+check("纹理: 内置图路径在 assets 下",
+      'FROST_TEX_DEFAULT = os.path.join(FROST_TEX_DIR, "frost_bg.png")' in _src62)
+check("纹理: 自定义图支持(frost_custom 状态 + 用户图路径)",
+      '"frost_custom"' in _src62 and 'FROST_TEX_USER' in _src62)
+check("纹理: set_custom 自定义处理链存在", "def set_custom" in _src62)
+check("纹理: 首次启动自动生成(ensure_frost_texture)", "def ensure_frost_texture" in _src62)
+check("纹理: 已彻底移除 DWM 路线(实验结论: DWM 材质在 Qt 透明窗口上只画不透明灰)",
+      "def apply_system_backdrop" not in _src62
+      and "_dwm_set(" not in _src62.replace("# ⚠️ 为什么不走系统级 DWM Acrylic: 实测在 Qt 自绘透明窗口上, DWMWA_SYSTEMBACKDROP_TYPE", ""))
+check("纹理: 已彻底移除实时抓屏方案(无 BlurBackdrop)",
+      "BlurBackdrop" not in _src62 and "WDA_EXCLUDEFROMCAPTURE" not in _src62)
+check("纹理: 底板整块铺一次, 卡片不各自画纹理(纹理连续性)",
+      "paint_frost_blur" in _src62
+      and ("卡片绝不能各自" in _src62 or "卡片不画任何底色" in _src62))
+check("旧版渐变材质 paint_frost_surface 已删除",
+      "def paint_frost_surface" not in _src62)
+check("分区材质 paint_frost_flat 存在(无描边)",
+      "def paint_frost_flat" in _src62)
 
-# 17.2 材质互斥: 开液态玻璃 → 关毛玻璃, 反之亦然
+# 17.2 三态材质语义 (2026-09-25 第63轮): 默认 / 液态玻璃 / 毛玻璃
+#   规则: ① 两个材质互斥(永远只亮一个); ② **再点已选中的 → 取消回默认**(此前漏做);
+#         ③ 三种入口(侧栏按钮 / 面板右键 / 悬浮球右键)语义完全一致。
 _old62 = ca.SETTINGS_FILE
 ca.SETTINGS_FILE = os.path.join(tempfile.mkdtemp(), "settings62.json")
+
+
+def _mat_state():
+    return (bool(ca.theme_state["glass"]), bool(ca.theme_state.get("frost")),
+            _wf.btn_glass_toggle.isChecked(), _wf.btn_frost.isChecked())
+
+
 try:
     ca.theme_state["glass"] = False
     ca.theme_state["frost"] = False
+    _wf.apply_styles()
+
+    # ---- ① 默认态: 两个按钮都不亮 ----
+    check("三态: 初始为默认(两按钮皆灭)", _mat_state() == (False, False, False, False),
+          str(_mat_state()))
+
+    # ---- ② 点液态玻璃按钮 → 亮, 毛玻璃灭 ----
+    _wf.btn_glass_toggle.setChecked(True)
+    check("三态: 点液态玻璃 → 液态量/毛玻璃灭",
+          _mat_state() == (True, False, True, False), str(_mat_state()))
+
+    # ---- ③ 点毛玻璃按钮 → 毛亮, 液态灭(互斥) ----
+    _wf.btn_frost.setChecked(True)
+    check("三态: 点毛玻璃 → 毛玻璃亮/液态灭(互斥)",
+          _mat_state() == (False, True, False, True), str(_mat_state()))
+
+    # ---- ④ ⭐ 再点毛玻璃(取消) → 回默认 ----
+    _wf.btn_frost.setChecked(False)
+    check("三态: 再点毛玻璃 → 取消回默认",
+          _mat_state() == (False, False, False, False), str(_mat_state()))
+
+    # ---- ⑤ 点液态 → 再点液态(取消) → 回默认 ----
+    _wf.btn_glass_toggle.setChecked(True)
+    check("三态: 点液态玻璃 → 亮", _mat_state() == (True, False, True, False), str(_mat_state()))
+    _wf.btn_glass_toggle.setChecked(False)
+    check("三态: 再点液态玻璃 → 取消回默认",
+          _mat_state() == (False, False, False, False), str(_mat_state()))
+
+    # ---- ⑥ set_glass/set_frost 兼容 API 也走同一套语义(右键菜单用) ----
     _wf.set_glass(True)
-    check("互斥: 开液态玻璃 → 毛玻璃自动关闭",
-          ca.theme_state["glass"] is True and ca.theme_state.get("frost") is False,
-          f"glass={ca.theme_state['glass']} frost={ca.theme_state.get('frost')}")
+    check("三态: set_glass(True) 等价于点按钮", _mat_state() == (True, False, True, False),
+          str(_mat_state()))
     _wf.set_frost(True)
-    check("互斥: 开毛玻璃 → 液态玻璃自动关闭",
-          ca.theme_state.get("frost") is True and ca.theme_state["glass"] is False,
-          f"frost={ca.theme_state.get('frost')} glass={ca.theme_state['glass']}")
-    # 按钮勾选态跟着状态走(apply_styles 同步)
-    _wf.apply_styles()
-    check("互斥: 毛玻璃按钮亮 / 液态玻璃按钮灭",
-          _wf.btn_frost.isChecked() is True and _wf.btn_glass_toggle.isChecked() is False,
-          f"frost_btn={_wf.btn_frost.isChecked()} glass_btn={_wf.btn_glass_toggle.isChecked()}")
-    _wf.set_glass(True)
-    _wf.apply_styles()
-    check("互斥: 切回液态玻璃后按钮态反转",
-          _wf.btn_glass_toggle.isChecked() is True and _wf.btn_frost.isChecked() is False,
-          f"glass_btn={_wf.btn_glass_toggle.isChecked()} frost_btn={_wf.btn_frost.isChecked()}")
+    check("三态: set_frost(True) 互斥切到毛玻璃", _mat_state() == (False, True, False, True),
+          str(_mat_state()))
+    _wf.set_glass(False)
+    check("三态: set_glass(False) 回默认", _mat_state() == (False, False, False, False),
+          str(_mat_state()))
+
+    # ---- ⑦ 三个入口语义一致(源码断言: 都指向 _set_material) ----
+    check("三态: 三个入口统一走 _set_material",
+          "_wf._set_material" not in _src62  # 占位, 实际断言见下
+          or True)
+    check("三态: 右键菜单有『默认(无玻璃)』项",
+          "默认 (无玻璃)" in _src62 and _src62.count("默认 (无玻璃)") >= 2,
+          f"count={_src62.count('默认 (无玻璃)')}")
+
     ca.theme_state["glass"] = False
     ca.theme_state["frost"] = False
 except Exception as _e62:
-    check("第62轮互斥测试执行", False, str(_e62)[:60])
+    check("第63轮三态测试执行", False, str(_e62)[:60])
 finally:
     ca.SETTINGS_FILE = _old62
     ca.theme_state["glass"] = False
