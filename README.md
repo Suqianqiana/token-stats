@@ -525,6 +525,11 @@ git config user.name  "浅浅猫"
 
 **开工先 `git pull`，收工 `git push`**；只在 `main` 上协作。
 
+> **网络（本机已配好）**：`github.com` 直连会被重置（`Recv failure: Connection was reset`），
+> 因此本仓库的 `.git/config` 里设了 **仓库级** 代理 `http.proxy = http://127.0.0.1:7890`（指向本机 Clash）——
+> 只影响这个仓库，不动系统与全局配置。**推送前先让 Clash 跑起来**即可，`git push` / `推送到GitHub.bat` 都能直接用。
+> 换到没有该代理的机器时：`git config --unset http.proxy`（或改成那台机器自己的代理地址）。
+
 ### 12.3 三条硬规矩
 
 1. **禁止 `rebase` / `amend` 已推送的提交** —— 一旦重写历史，另一台机器的 commit hash 全部对不上。
