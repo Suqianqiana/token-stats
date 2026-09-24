@@ -39,6 +39,7 @@ V9.2 highlights (Multi-Machine Sync):
     · 侧栏「液态玻璃 | 毛玻璃」并列等高按钮，三态切换（再点已选中的回默认）；明暗切换在最下方
     · 控件随材质换语言(material_btn_qss)：默认实底芯片 / 液态玻璃半透明高光 / 毛玻璃细线无底
     · 选中态在毛玻璃下**从底图取色**(FrostTexture.accent)：只取底图平均色的色相, 半透明填充+同色描边
+    · 左栏「来源」NavButton 的选中态(填充/描边/竖条/文字)同样取底图色 → 全窗只有一个色源
     · 日期区间按钮用 range 角色(padding:3px 8px + 1px 描边), 与旧版 4px 9px 无描边的盒子逐像素等价
     · ⚠️ 回写按钮勾选态(apply_styles 同步材质按钮)必须 blockSignals, 否则会被当成"用户取消"
   - ⚠️ 属性名不要用 `metric`：QWidget 有虚函数 QPaintDevice::metric()，会与 PySide6 覆写冲突而崩
@@ -5323,10 +5324,14 @@ class NavButton(QPushButton):
         glass = theme_state["glass"]
         frost = bool(theme_state.get("frost"))     # 第64轮: 毛玻璃也要参与适配
         r = 9.0
+        # 第66轮(浅猫): 毛玻璃下选中态高亮**也从底图取色** —— 与侧栏/标题栏按钮同一套取色,
+        #   于是整窗在毛玻璃模式下只有一个色源(底图), 不会"左边蓝、右边蓝绿"打架。
+        #   液态玻璃/默认仍用品牌蓝(那两套材质的底色是蓝调玻璃, 取色反而会脏)。
+        hi = FrostTexture.instance().accent(dark) if frost else QColor(BLUE)
 
         # 1. 背景 (选中 > hover > 常态)
         if checked:
-            bg = QColor(BLUE)
+            bg = QColor(hi)
             bg.setAlpha(72 if dark else 30)
             p.setPen(Qt.NoPen)
             p.setBrush(bg)
@@ -5334,7 +5339,7 @@ class NavButton(QPushButton):
             # 材质态下叠一层极淡描边, 让选中块在透光背景上仍有边界感
             # 第64轮: 毛玻璃一并适配 —— 它的描边比液态玻璃更"细气"(与细线分区同源)
             if glass or frost:
-                rim = QColor(BLUE)
+                rim = QColor(hi)
                 if glass:
                     rim.setAlpha(80 if dark else 62)
                 else:
@@ -5356,13 +5361,13 @@ class NavButton(QPushButton):
             bar_h = min(h - 18.0, 20.0)
             y = (h - bar_h) / 2.0
             p.setPen(Qt.NoPen)
-            p.setBrush(BLUE)
+            p.setBrush(hi)
             p.drawRoundedRect(QRectF(3.5, y, 3.0, bar_h), 1.5, 1.5)
 
         # 3. 图标 (居中于固定图标槽, 保证四个按钮文字左边界完全一致)
         f = QFont("Microsoft YaHei UI", m["nav_btn_pt"] - 0.4)
         p.setFont(f)
-        p.setPen(QColor(TEXT2) if not checked else QColor(BLUE))
+        p.setPen(QColor(TEXT2) if not checked else QColor(hi))
         p.drawText(QRectF(self.PAD_L, 0, self.ICON_W, h),
                    Qt.AlignCenter, self.icon_str)
 
@@ -5370,7 +5375,7 @@ class NavButton(QPushButton):
         tf = QFont("Microsoft YaHei UI", m["nav_btn_pt"])
         tf.setBold(bool(checked))
         p.setFont(tf)
-        p.setPen(QColor(BLUE) if checked else (QColor(TEXT) if self._hover else QColor(TEXT2)))
+        p.setPen(QColor(hi) if checked else (QColor(TEXT) if self._hover else QColor(TEXT2)))
         tx = self.PAD_L + self.ICON_W + self.GAP
         p.drawText(QRectF(tx, 0, w - tx - 8, h),
                    Qt.AlignLeft | Qt.AlignVCenter, self.text)

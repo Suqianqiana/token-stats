@@ -1940,6 +1940,80 @@ finally:
     _wf65.apply_styles()
     _wf65.close()
 
+# ========== 20. 左栏「来源」选中态从底图取色 + 内置底纹换新 (2026-09-25 第66轮) ==========
+print("== 20. 来源按钮取色 / 内置底纹 ==")
+
+# 20.1 像素级: 毛玻璃下 NavButton 选中态的竖条/填充都应是"底图取色"
+_cfc66 = ca.theme_state.get("frost_custom")
+ca.theme_state["frost_custom"] = False
+ca.FrostTexture.instance().load(force=True)
+_dark66 = ca.theme_state["dark"]
+try:
+    ca.theme_state["dark"] = True
+    ca.refresh_palette()
+    _acc66 = ca.FrostTexture.instance().accent(True)
+    _nb66 = {}
+    for _mat in ("default", "glass", "frost"):
+        ca.theme_state["glass"] = (_mat == "glass")
+        ca.theme_state["frost"] = (_mat == "frost")
+        ca.refresh_palette()
+        _n = ca.NavButton("WorkBuddy", "📘")
+        _n.setChecked(True)
+        _n.resize(150, 34)
+        _im = _n.grab().toImage()
+        _nb66[_mat] = (_im.pixelColor(5, _im.height() // 2),      # 左侧 3px 指示条(不透明)
+                       _im.pixelColor(_im.width() - 20, 3))       # 选中块填充(半透明, 已与底色混合)
+        _n.deleteLater()
+
+    def _same_rgb(c, want, tol=6):
+        return (abs(c.red() - want.red()) <= tol and abs(c.green() - want.green()) <= tol
+                and abs(c.blue() - want.blue()) <= tol)
+
+    def _hue_gap(c, want):
+        h1, h2 = c.getHsv()[0], want.getHsv()[0]
+        if h1 < 0 or h2 < 0:
+            return 0
+        d = abs(h1 - h2)
+        return min(d, 360 - d)
+
+    check("来源按钮: 毛玻璃下选中态竖条 = 底图取色",
+          _same_rgb(_nb66["frost"][0], _acc66),
+          f"{_nb66['frost'][0].name()} vs {_acc66.name()}")
+    check("来源按钮: 毛玻璃下选中块填充同色系(半透明混合后色相仍一致)",
+          _hue_gap(_nb66["frost"][1], _acc66) <= 15,
+          f"{_nb66['frost'][1].name()} vs {_acc66.name()}")
+    check("来源按钮: 默认档选中态仍是品牌蓝",
+          _same_rgb(_nb66["default"][0], ca.BLUE), _nb66["default"][0].name())
+    check("来源按钮: 液态玻璃档选中态仍是品牌蓝",
+          _same_rgb(_nb66["glass"][0], ca.BLUE), _nb66["glass"][0].name())
+    check("来源按钮: 源码里毛玻璃分支走底图取色(守门)",
+          "accent(dark) if frost else QColor(BLUE)" in _src62)
+
+    # 20.2 内置底纹: 已换成新壁纸, 且本身有颜色(可供取色)
+    _bg66 = ca.FrostTexture.instance().load()
+    _sm66 = _bg66.scaled(16, 16, ca.Qt.IgnoreAspectRatio, ca.Qt.SmoothTransformation)
+    _rr = _gg = _bb = 0
+    for _y in range(_sm66.height()):
+        for _x in range(_sm66.width()):
+            _p = _sm66.pixelColor(_x, _y)
+            _rr += _p.red(); _gg += _p.green(); _bb += _p.blue()
+    _n66 = max(1, _sm66.width() * _sm66.height())
+    _avg66 = ca.QColor(_rr // _n66, _gg // _n66, _bb // _n66)
+    check("内置底纹: 尺寸/存在性正常", _bg66.width() >= 1000 and _bg66.height() >= 500,
+          f"{_bg66.width()}x{_bg66.height()}")
+    check("内置底纹: 本身有色彩(取色才有意义, 不是灰底)",
+          _avg66.getHsv()[1] >= 30, f"S={_avg66.getHsv()[1]} 平均={_avg66.name()}")
+    check("内置底纹: 取色色相 = 底纹平均色相",
+          abs(_acc66.getHsv()[0] - _avg66.getHsv()[0]) <= 3,
+          f"底纹={_avg66.getHsv()[0]} 取色={_acc66.getHsv()[0]}")
+finally:
+    ca.theme_state["dark"] = _dark66
+    ca.theme_state["glass"] = False
+    ca.theme_state["frost"] = False
+    ca.theme_state["frost_custom"] = _cfc66
+    ca.FrostTexture.instance().load(force=True)
+    ca.refresh_palette()
+
 # ---- 还原真实数据目录路径 (临时目录随系统清理) ----
 ca._sn_events_all = orig_events
 ca.SN_AUTOSYNC_FILE = _REAL_AUTOSYNC_FILE
