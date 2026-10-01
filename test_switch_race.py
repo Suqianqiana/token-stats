@@ -1599,6 +1599,28 @@ try:
     check("完整性: keep+drop == 全部文件",
           sorted(_keep + _drop) == sorted(_files))
 
+    # ---- 16.x sid 缓存必须能自愈 (2026-10-01 修真 bug) ----
+    # 浅猫报「翼型优化·最新(09-28)」没去重。真因: sid 缓存一旦写进 cache.json 就永不过期,
+    # 会话边写边改时首部第一个 sessionId 被抓错(实测记成另一个会话的 id) → 同一会话的两份
+    # 被分进不同 sid 组 → 两份都统计(token 翻倍)。修法: 缓存条目带**首部指纹**, 不符就重读。
+    _bad = {f_ok: "wrong-sid-remembered-forever"}      # 旧格式: 裸字符串 sid(错的)
+    _k3, _d3, _sm3 = ca.scanner._dedupe_files(_files, _bad)
+    check("sid 缓存: 旧格式(裸字符串)判为失效 → 重读真实 sid",
+          len(_k3) == 3 and len(_d3) == 2, f"keep={len(_k3)} drop={len(_d3)}")
+    check("sid 缓存: 错误缓存不会破坏去重(仍按真实 sid 分组)",
+          f_ok in _k3 and f_dup in _d3)
+    check("sid 缓存: 自愈后写回新格式(带首部指纹 h)",
+          isinstance(_sm3.get(f_ok), dict) and isinstance(_sm3[f_ok].get("h"), str)
+          and _sm3[f_ok]["s"] == SID, str(_sm3.get(f_ok)))
+    _k4, _d4, _sm4 = ca.scanner._dedupe_files(_files, dict(_sm3))
+    check("sid 缓存: 首部指纹未变 → 命中缓存且结论一致",
+          sorted(_k4) == sorted(_k3) and sorted(_d4) == sorted(_d3))
+    _stale = dict(_sm3)
+    _stale[f_ok] = {"s": "another-sid", "h": "stale-signature"}
+    _k5, _d5, _sm5 = ca.scanner._dedupe_files(_files, _stale)
+    check("sid 缓存: 首部指纹变了 → 强制重读(不沿用旧值)",
+          _sm5[f_ok]["s"] == SID and f_ok in _k5, str(_sm5[f_ok]))
+
     # 端到端: scan_full 只统计去重后的量
     _stats = ca.scanner.scan_full(force=True)
     check("scan_full: dupFilesDropped=2", _stats.get("dupFilesDropped") == 2,

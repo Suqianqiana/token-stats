@@ -5,6 +5,7 @@ Token Usage Scanner — WorkBuddy token 用量增量扫描与聚合引擎
 持久化: 同目录下 cache.json (按文件 mtime+size 增量), stats.json (聚合结果)
 仅用标准库。
 """
+import hashlib
 import json
 import os
 import re
@@ -41,6 +42,7 @@ def _iter_jsonl_files():
 #   ② 大小相同则"文件名 == sessionId"者优先(规范性命名 = 原始文件)
 SID_HEAD_LINES = 40          # 读首部多少行找 sessionId
 SID_HEAD_BYTES = 512 * 1024  # 首部最多读多少字节
+SID_SIG_BYTES = 8192         # sid 缓存的"首部指纹"取多少字节(见 _sid_cache_stale)
 
 
 def _read_session_id(path):
@@ -61,21 +63,53 @@ def _read_session_id(path):
     return None
 
 
+def _head_sig(path):
+    """文件首部指纹(前 SID_SIG_BYTES 字节的 md5)。
+
+    会话文件是**追加**写的, 首部一旦写完就基本不变 —— 所以这个指纹既稳定(不会因续写而
+    频繁失效), 又能识别"首部被重写/恢复/替换"的情况。
+    """
+    try:
+        with open(path, "rb") as f:
+            return hashlib.md5(f.read(SID_SIG_BYTES)).hexdigest()
+    except OSError:
+        return ""
+
+
+def _sid_cache_valid(entry):
+    """sid 缓存条目是否仍是新格式 {s: sid, h: 首部指纹}。
+
+    ⚠️ 旧格式是**裸字符串** sid(第60轮写的), 没有指纹 —— 见 _dedupe_files 的注释:
+    它会把一次误读的 sessionId 永久记住, 直接导致副本不去重。这里一律判为失效并自愈。
+    """
+    return isinstance(entry, dict) and isinstance(entry.get("s"), str) \
+        and isinstance(entry.get("h"), str)
+
+
 def _dedupe_files(files, sid_map=None):
     """按内部 sessionId 去重, 返回 (keep_list, dropped_list, sid_map)。
 
-    sid_map: {path: sid} 缓存(可传入并在返回时合并), 避免每次重读首部。
+    sid_map: {path: {"s": sid, "h": 首部指纹}} 缓存(可传入并在返回时合并), 避免每次重读首部。
     无 sessionId 的文件一律保留(宁多勿漏)。
+
+    ⚠️ 2026-10-01 修真 bug(浅猫报"翼型优化·最新(09-28)"没去重):
+       旧实现只要 sid_map 里有这个路径就**直接用**, 不再重读 —— 于是一次误读就会被永久记住。
+       实测案例: `8170daf4….jsonl` 在缓存里记成了 `222c96b0-…`(会话边写边改时首部抓错),
+       于是它和真正的同会话副本 `242b0035….jsonl`(内部 sid 都是 8170daf4)被分进两组,
+       **两份都统计 → token 翻倍**; 清空缓存后立刻正确(保留大的、丢弃小的)。
+       修法: 缓存条目带**首部指纹**, 指纹不符(或旧格式)就重读 —— 旧的坏缓存会自动自愈。
     """
     if sid_map is None:
         sid_map = {}
     groups = {}   # sid -> [paths]
     passthrough = []   # 无 sid: 直接保留
     for p in files:
-        sid = sid_map.get(p)
-        if sid is None:
-            sid = _read_session_id(p)
-            sid_map[p] = sid or ""
+        entry = sid_map.get(p)
+        sig = _head_sig(p)
+        if not _sid_cache_valid(entry) or entry.get("h") != sig:
+            entry = {"s": _read_session_id(p) or "", "h": sig}
+            sid_map[p] = entry
+        sid = entry.get("s") or ""
         if sid:
             groups.setdefault(sid, []).append(p)
         else:
