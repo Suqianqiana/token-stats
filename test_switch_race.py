@@ -1621,15 +1621,66 @@ try:
     check("sid 缓存: 首部指纹变了 → 强制重读(不沿用旧值)",
           _sm5[f_ok]["s"] == SID and f_ok in _k5, str(_sm5[f_ok]))
 
+    # ---- 16.y 内容级判据(第68轮): 连内部 sessionId 都改掉的"整体复制" ----
+    # 浅猫第二次报「翼型优化·最新(09-28)」重复统计。这次两份的**内部 sid 各不相同**
+    # (8170daf4… vs 242b0035…), 但消息 id 交集 100%、大小/行数/mtime 完全相同 ——
+    # 按 sid 分组永远抓不到, 必须靠"大小相同 + 消息 id 集合重合"来判定。
+    _sidA = "cccc3333-dddd-4444-eeee-555566667777"
+    _sidB = "dddd4444-eeee-5555-ffff-666677778888"
+
+    def _mk2(fn, sid, msgs=4):
+        p = os.path.join(_dd, fn)
+        with open(p, "w", encoding="utf-8") as f:
+            for i in range(msgs):
+                f.write(json.dumps({
+                    "type": "message", "id": "same-msg-%04d" % i, "sessionId": sid,
+                    "timestamp": 1785000000000 + i * 1000, "role": "assistant",
+                    "providerData": {"usage": {"inputTokens": 100, "outputTokens": 10,
+                                               "totalTokens": 110}},
+                }, ensure_ascii=False) + "\n")
+        return p
+
+    _a = _mk2(_sidA + ".jsonl", _sidA)        # 原会话(文件名==内部 sid)
+    _b = _mk2(_sidB + ".jsonl", _sidB)        # 整体复制 + 连 sid 一起改掉
+    # 同大小但内容完全不同 → 必须保留(防误伤)
+    _c = os.path.join(_dd, "eeee5555-ffff-6666-7777-888899990000.jsonl")
+    with open(_c, "w", encoding="utf-8") as f:
+        for i in range(4):
+            f.write(json.dumps({
+                "type": "message", "id": "other-msg-%04d" % i,
+                "sessionId": "eeee5555-ffff-6666-7777-888899990000",
+                "timestamp": 1785000000000 + i * 1000, "role": "assistant",
+                "providerData": {"usage": {"inputTokens": 7, "outputTokens": 1,
+                                           "totalTokens": 8}},
+            }, ensure_ascii=False) + "\n")
+
+    _files2 = sorted(ca.scanner._iter_jsonl_files())
+    _k6, _d6, _ = ca.scanner._dedupe_files(_files2)
+    _b1, _b2, _b3 = os.path.basename(_a), os.path.basename(_b), os.path.basename(_c)
+    _nk = [os.path.basename(x) for x in _k6]
+    _nd = [os.path.basename(x) for x in _d6]
+    check("内容级判据: '同大小+同消息id 但 sid 不同'只保留一份",
+          (_b1 in _nk) != (_b2 in _nk), f"keep={sorted(_nk)}")
+    check("内容级判据: 两份都满足'文件名==sid'时保留更晚写入的那份(规则确定)",
+          (_b1 in _nk) != (_b2 in _nk), f"a={_b1 in _nk} b={_b2 in _nk}")
+    check("内容级判据: 同大小但内容不同者保留(不误伤)", _b3 in _nk)
+    check("内容级判据: 不变量 keep+drop == 全部", sorted(_k6 + _d6) == sorted(_files2))
+    check("内容级判据: Jaccard 判定函数本身",
+          ca.scanner._is_same_content({"x1", "x2", "x3"}, {"x1", "x2", "x3"}) is True
+          and ca.scanner._is_same_content({"x1"}, {"y1"}) is False
+          and ca.scanner._is_same_content(set(), {"x1"}) is False)
+
     # 端到端: scan_full 只统计去重后的量
     _stats = ca.scanner.scan_full(force=True)
-    check("scan_full: dupFilesDropped=2", _stats.get("dupFilesDropped") == 2,
+    # 丢弃 3 份: f_dup(同大小同sid) + f_orig(同sid更小) + _a/_b 中的一份(内容级判据)
+    check("scan_full: dupFilesDropped=3", _stats.get("dupFilesDropped") == 3,
           f"dropped={_stats.get('dupFilesDropped')}")
-    # 去重后应只剩: f_ok(3条) + f_big(5条) + f_nosid(1条无usage) = 8 条 usage
-    check("scan_full: 条目数=8 (去重后)", _stats.get("entriesTotal") == 8,
+    # 去重后应只剩: f_ok(3条) + f_big(5条) + f_nosid(1条无usage) + _b(4条) + _c(4条) = 16 条 usage
+    check("scan_full: 条目数=16 (去重后)", _stats.get("entriesTotal") == 16,
           f"entries={_stats.get('entriesTotal')}")
     _tin = sum(a.get("input", 0) for a in _stats["models"].values())
-    check("scan_full: input=800 (3+5 条 x100)", _tin == 800, f"input={_tin}")
+    # 100*(3+5+4) + 7*4 = 1228
+    check("scan_full: input=1228 (去重后)", _tin == 1228, f"input={_tin}")
 
     # 缓存复跑一致性 (sid_map 命中, 结果不变)
     _k2, _d2, _ = ca.scanner._dedupe_files(_files, dict(_sidmap))

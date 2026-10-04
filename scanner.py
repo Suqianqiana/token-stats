@@ -44,6 +44,16 @@ SID_HEAD_LINES = 40          # 读首部多少行找 sessionId
 SID_HEAD_BYTES = 512 * 1024  # 首部最多读多少字节
 SID_SIG_BYTES = 8192         # sid 缓存的"首部指纹"取多少字节(见 _sid_cache_stale)
 
+# ---------------------------------------------------------------- 内容级判据
+# ⭐ 第68轮: 只看 sessionId **不够**。另有一种副本是"整体复制 + 连内部 sessionId 一起改成
+#   新 UUID"(实测: 「翼型优化·最新(09-28)」的两份, 内部 sid 分别是 8170daf4… 与 242b0035…,
+#   但消息 id 交集 3006/3006 = 100%, 大小/行数/mtime 完全相同) —— 按 sid 分组会分成两组,
+#   于是**两份都统计 → token 翻倍**。补一条内容级判据:
+#     ① 大小完全相同(零成本筛选, 只 stat 不看内容)
+#     ② 前若干条消息 id 集合高度重合(Jaccard ≥ DUP_ID_RATIO) → 判为同一份会话的副本
+DUP_ID_SAMPLE = 300          # 抽取前多少行里的消息 id 做比对
+DUP_ID_RATIO = 0.80          # id 集合重合率阈值
+
 
 def _read_session_id(path):
     """读文件首部若干行, 返回第一个非空 sessionId (找不到返回 None)。"""
@@ -61,6 +71,33 @@ def _read_session_id(path):
     except OSError:
         pass
     return None
+
+
+def _msg_id_sample(path, n=DUP_ID_SAMPLE):
+    """抽前 n 行里的消息 id 集合 —— 用来识别"连内部 sid 都改掉了"的整体复制。
+
+    只看前 n 行: 副本若是整体复制, 开头必然一致, 这已足够判定; 且不必读完整文件(几十 MB)。
+    """
+    ids = set()
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for i, line in enumerate(f):
+                if i >= n:
+                    break
+                m = re.search(r'"id"\s*:\s*"([^"]{6,})"', line)
+                if m:
+                    ids.add(m.group(1))
+    except OSError:
+        pass
+    return ids
+
+
+def _is_same_content(a_ids, b_ids):
+    """两份是不是同一份会话内容(消息 id 集合重合率)。无 id 可比对时返回 False(宁多勿漏)。"""
+    if not a_ids or not b_ids:
+        return False
+    union = len(a_ids | b_ids)
+    return bool(union) and (len(a_ids & b_ids) / union) >= DUP_ID_RATIO
 
 
 def _head_sig(path):
@@ -133,10 +170,70 @@ def _dedupe_files(files, sid_map=None):
         ordered = sorted(ps, key=_rank)
         keep.append(ordered[0])
         dropped.extend(ordered[1:])
+
+    # ---- 第二道判据(第68轮): 连内部 sessionId 都被改掉的"整体复制" ----
+    # 上面按 sid 分组抓不到它们(两份 sid 不同 → 两组 → 都统计)。这里:
+    #   ① 先按**文件大小完全相同**分组(只 stat, 零内容读取, 成本可忽略);
+    #   ② 同大小组内再比"前 N 条消息 id 集合"的 Jaccard 重合率 ≥ DUP_ID_RATIO → 判副本。
+    keep, dropped2 = _dedupe_same_size(keep, sid_map)
+    dropped.extend(dropped2)
     # 只保留仍存在的文件的 sid 缓存(剪掉已删除文件)
     alive = set(files)
     sid_map = {k: v for k, v in sid_map.items() if k in alive}
     return keep, dropped, sid_map
+
+
+def _dedupe_same_size(keep, sid_map=None):
+    """对"大小完全相同"的文件做内容级去重, 返回 (new_keep, extra_dropped)。
+
+    ⭐ 目的(第68轮): 抓住"整体复制 + 连内部 sessionId 一起改掉"的副本 ——
+      这类副本的内部 sid 各不相同, 按 sid 分组永远分不到一起。
+      保留顺序: 文件名==内部 sid 优先 → mtime 更新优先 → 路径字典序(保证结果可复现)。
+    """
+    by_size = {}
+    for p in keep:
+        try:
+            size = os.path.getsize(p)
+        except OSError:
+            continue
+        by_size.setdefault(size, []).append(p)
+
+    new_keep, extra_dropped = [], []
+    for _size, ps in by_size.items():
+        if len(ps) < 2:
+            new_keep.extend(ps)
+            continue
+
+        def _rank2(path):
+            stem = os.path.splitext(os.path.basename(path))[0]
+            sid = ""
+            if sid_map:
+                ent = sid_map.get(path)
+                if isinstance(ent, dict):
+                    sid = ent.get("s") or ""
+            if not sid:
+                sid = _read_session_id(path) or ""
+            try:
+                mt = os.stat(path).st_mtime_ns
+            except OSError:
+                mt = 0
+            return (0 if (sid and stem == sid) else 1, -mt, path)
+
+        kept, sigs = [], {}
+        for p in sorted(ps, key=_rank2):
+            ids = _msg_id_sample(p)
+            dup_of = None
+            for q in kept:
+                if _is_same_content(ids, sigs.get(q) or set()):
+                    dup_of = q
+                    break
+            if dup_of is None:
+                kept.append(p)
+                sigs[p] = ids
+            else:
+                extra_dropped.append(p)
+        new_keep.extend(kept)
+    return new_keep, extra_dropped
 
 
 def _load_cache():
