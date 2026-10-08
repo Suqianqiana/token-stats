@@ -386,9 +386,11 @@ def _extract_usage_from_line(line):
     )
     ts = obj.get("timestamp") or ""
     sid = obj.get("sessionId") or ""
+    mid = obj.get("id") or obj.get("messageId") or ""
 
     out.append({
         "ts": ts,
+        "mid": str(mid),
         "model": str(model),
         "input": inp,
         "output": otp,
@@ -415,10 +417,17 @@ def scan_full(force=False):
     t0 = time.time()
     cache = {} if force else _load_cache()
 
-    # ---- 副本去重(扫描侧): workdaddy 复制产生的同 sessionId 副本只统计一份 ----
+    # ---- 副本处理(第70轮改口径: 不再丢文件, 改为【按消息去重】) ----
+    # ⚠️ 浅猫的真实用法: 两个账号轮换 —— A 号额度用完后, 会话被同步到 B 号继续对话。
+    #    于是"同一会话"会有多个文件: 它们**共享前半段历史**, 但各自都有**后半段真实新用量**。
+    #    第69轮按"文件"判重(整份丢掉), 把 B 号的新用量一起丢了 → **统计偏少**
+    #    (实测: 今日 hy4-preview 只显示 1998 万, 真实应为 8049 万)。
+    # 正确口径: **每个文件都扫**, 但同一条消息(唯一键)只计一次 —— 既不吃重复, 也不丢真实用量。
     all_files = list(_iter_jsonl_files())
     _sid_cache = cache.get("__sids__") or {}
     keep_files, dropped_files, _sid_cache = _dedupe_files(all_files, _sid_cache)
+    # 口径变更: 疑似副本的文件仍然全部扫描(下面按消息去重), 所以真正参与统计的是 all_files。
+    # keep_files / dropped_files 仅用于观测与会话数统计。
 
     models = {}   # model -> agg
     daily = {}    # date -> model -> agg
@@ -441,15 +450,35 @@ def scan_full(force=False):
         bucket["reasoning"] = bucket.get("reasoning", 0) + r
 
     new_cache = {}
-    for path in keep_files:
+    # 第70轮: 消息级去重 —— 扫全部文件, 但同一条消息只计一次(见上方口径说明)
+    _seen_msgs = set()
+
+    def _msg_key(e):
+        """一条 usage 的唯一键 —— **必须用消息 id**, 不能用 sessionId。
+
+        ⚠️ 第70轮踩坑: 一开始用 "sid|ts|total|model", 结果两份账号轮换的会话因为
+        sid 不同, 共享历史被算成两条(测试里 requests=16 而正确是 10)。
+        sessionId 是可被改写的外部特征(第68轮已验证); **消息 id 才是内容固有的**。
+        """
+        mid = e.get("mid") or ""
+        if mid:
+            return mid
+        # 兜底(极老数据没有消息 id): 退回内容特征
+        return "%s|%s|%s|%s" % (e.get("sid", ""), str(e.get("ts", "")),
+                                str(e.get("total", 0)), e.get("model", ""))
+
+    for path in all_files:
         try:
             st = os.stat(path)
             sig_key = f"{st.st_mtime_ns}:{st.st_size}"
             prev = cache.get(path)
             entries_total += 0  # noop for clarity
             if prev and prev.get("sig") == sig_key:
-                # 未变化: 直接沿用历史聚合
+                # 未变化: 直接沿用历史聚合(仍要走消息级去重, 与其它文件的新消息比对)
                 for e in prev.get("entries", []):
+                    if _msg_key(e) in _seen_msgs:
+                        continue
+                    _seen_msgs.add(_msg_key(e))
                     date = e["d"]
                     daily.setdefault(date, {})
                     _agg(daily[date].setdefault(e["m"], {}), e)
@@ -469,6 +498,10 @@ def scan_full(force=False):
                     if len(line) > _MAX_LINE:
                         continue
                     for e in _extract_usage_from_line(line):
+                        # 第70轮: 同一条消息只计一次(两个账号轮换时共享的历史不去重计数)
+                        if _msg_key(e) in _seen_msgs:
+                            continue
+                        _seen_msgs.add(_msg_key(e))
                         date = _norm_date(e["ts"])
                         sid = e.get("sid", "")
                         file_entries.append({"d": date, "m": e["model"],

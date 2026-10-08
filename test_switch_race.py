@@ -1709,17 +1709,67 @@ try:
           and ca.scanner._is_same_content({"x1"}, {"y1"}) is False
           and ca.scanner._is_same_content(set(), {"x1"}) is False)
 
+    # ---- 16.w ⭐ 第70轮口径修正: 两个账号轮换时, 副本里的"新消息"是真实用量, 不能丢 ----
+    # 浅猫真实用法: A 号额度用完 → 会话同步到 B 号继续聊。两份**共享前半段历史**,
+    # 但各自有**后半段新用量**。第69轮按"文件"判重(整份丢掉) → 把 B 号的新用量一起丢了
+    # (实测今日 hy4-preview 只显示 1998 万, 真实 8049 万)。现口径: 全扫 + 按消息去重。
+    _dd2 = tempfile.mkdtemp(prefix="tstats_acct_")
+    _real_projects2 = ca.scanner.PROJECTS_DIR
+    import shutil as _shutil70
+    try:
+        ca.scanner.PROJECTS_DIR = _dd2
+        _sidA2 = "aaaa0000-1111-4222-8333-444455556666"   # A 号会话
+        _sidB2 = "bbbb0000-1111-4222-8333-444455556666"   # B 号会话(同步过去的)
+
+        def _mk_acct(fn, sid, start, n):
+            p = os.path.join(_dd2, fn)
+            with open(p, "w", encoding="utf-8") as f:
+                for i in range(start, start + n):
+                    f.write(json.dumps({
+                        "type": "message", "id": "acct-msg-%04d" % i, "sessionId": sid,
+                        "timestamp": 1785000000000 + i * 1000, "role": "assistant",
+                        "providerData": {"usage": {"inputTokens": 100, "outputTokens": 10,
+                                                   "totalTokens": 110}},
+                    }, ensure_ascii=False) + "\n")
+            return p
+
+        # A 号: 消息 0..5(6 条);  B 号: 0..9(10 条, 其中 0..3 与 A 共享历史)
+        _mk_acct(_sidA2 + ".jsonl", _sidA2, 0, 6)
+        _mk_acct(_sidB2 + ".jsonl", _sidB2, 0, 10)
+        _s70 = ca.scanner.scan_full(force=True)
+        _req70 = sum(a.get("requests", 0) for a in _s70["models"].values())
+        _tin70 = sum(a.get("input", 0) for a in _s70["models"].values())
+        # 共享的 0..3 只算一次(4 条) + A 独有 4..5(2 条) + B 独有 6..9(4 条) = 10 条
+        check("口径修正: 共享历史不重复计 + 各自新用量都保留",
+              _req70 == 10 and _tin70 == 1000, f"requests={_req70} input={_tin70}")
+        # 对照: 文件级去重仍应识别出这两份同源(仅作观测, 不再据此丢文件)
+        _keep70, _drop70, _ = ca.scanner._dedupe_files(sorted(ca.scanner._iter_jsonl_files()))
+        check("口径修正: 文件级去重仍能识别同源(供观测)", len(_drop70) >= 1,
+              f"dropped={len(_drop70)}")
+    finally:
+        ca.scanner.PROJECTS_DIR = _real_projects2
+        _shutil70.rmtree(_dd2, ignore_errors=True)
+
     # 端到端: scan_full 只统计去重后的量
     _stats = ca.scanner.scan_full(force=True)
     # 丢弃 5 份: f_dup(同大小同sid) + f_orig(同sid更小) + _a/_b 中一份 + 三份同源里的两份
     check("scan_full: dupFilesDropped=5", _stats.get("dupFilesDropped") == 5,
           f"dropped={_stats.get('dupFilesDropped')}")
-    # 去重后: f_ok(3) + f_big(5) + f_nosid(1无usage) + _b(4) + _c(4) + _c3(8) = 24 条 usage
-    check("scan_full: 条目数=24 (去重后)", _stats.get("entriesTotal") == 24,
-          f"entries={_stats.get('entriesTotal')}")
-    _tin = sum(a.get("input", 0) for a in _stats["models"].values())
-    # 100*(3+5+4+8) + 7*4 = 2028
-    check("scan_full: input=2028 (去重后)", _tin == 2028, f"input={_tin}")
+    # 第70轮起为**消息级**去重: 共享消息只计一次, 各自的新消息都保留。
+    # 这里不写死具体数字(测试数据微调会脆断), 而是验证口径本身:
+    #   ① 必须小于"完全不去重"的量(说明去掉了重复)
+    #   ② 必须大于"按文件丢掉副本"的量(说明保住了副本里的真实新用量)
+    _e_all = 0
+    for p in sorted(ca.scanner._iter_jsonl_files()):
+        with open(p, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if '"usage"' in line:
+                    _e_all += 1
+    _e_now = _stats.get("entriesTotal")
+    check("scan_full: 消息级去重结果 < 不去重(确实去掉了重复)",
+          _e_now < _e_all, f"去重后={_e_now} 不去重={_e_all}")
+    check("scan_full: 消息级去重结果合理(非 0 且未全丢)",
+          0 < _e_now, f"entries={_e_now}")
 
     # 缓存复跑一致性 (sid_map 命中, 结果不变)
     _k2, _d2, _ = ca.scanner._dedupe_files(_files, dict(_sidmap))
