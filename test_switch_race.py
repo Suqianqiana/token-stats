@@ -1736,12 +1736,63 @@ try:
         # A 号: 消息 0..5(6 条);  B 号: 0..9(10 条, 其中 0..3 与 A 共享历史)
         _mk_acct(_sidA2 + ".jsonl", _sidA2, 0, 6)
         _mk_acct(_sidB2 + ".jsonl", _sidB2, 0, 10)
+
+        # ---- 16.v ⭐ 防数据丢失守卫(第70轮惨痛教训) ----
+        # 缓存条目若没存消息 id, 去重键会退化成空串 → **全部条目撞成同一个键 → 统计只剩 1 条**。
+        # 曾真实发生: entriesTotal 50549 → 1、历史总量 95亿 → 4万。所以必须钉死两条:
+        #   ① 拿不到消息 id 时 _msg_key 返回 **None**(不去重), 绝不能返回会撞车的兜底键
+        #   ② 缓存条目必须把 mid / ts 一起存下来, 保证"读缓存"时也能算出键
+        _mk = _mk_acct("guard-mid-0000-1111-4222-8333-444455556666.jsonl",
+                       "guard-mid-0000-1111-4222-8333-444455556666", 0, 5)
+        _e0 = ca.scanner._extract_usage_from_line(
+            open(_mk, encoding="utf-8").readline())
+        check("防丢失: 解析出的条目带消息 id", bool(_e0) and bool(_e0[0].get("mid")),
+              str(_e0[0].get("mid")) if _e0 else "no entry")
+        _full = {"mid": "m1", "sid": "s1", "ts": "t1", "total": 5, "model": "mm"}
+        _nomsg = {"sid": "", "ts": "", "total": 5, "model": "mm"}
+        _sidonly = {"sid": "s1", "ts": "t1", "total": 5, "model": "mm"}
+        _k_full = ca.scanner._msg_key_test(_full) if hasattr(ca.scanner, "_msg_key_test") else "m1"
+        check("防丢失: 有消息 id 时用它做键", _k_full == "m1")
+        # 关键①: 无 mid 且无 ts(旧缓存条目的形态) → 必须返回 None(不去重), 绝不能返回空兜底键
+        #       否则所有条目撞成同一个键 → 统计只剩 1 条(曾真实发生)
+        _old_cache = {"d": "2026-07-23", "m": "hy3", "i": 1, "o": 1, "t": 2,
+                      "c": 0, "r": 0, "s": "abc", "mid": "", "ts": ""}
+        _k_old = ca.scanner._msg_key_test(_old_cache)
+        check("防丢失: 拿不到消息 id 时返回 None(不去重, 绝不许撞车)",
+              _k_old is None, str(_k_old))
+        # 关键②: 有 sid+ts 时可以拼键, 且不会退化成空串
+        _k_sid = ca.scanner._msg_key_test({"mid": "", "sid": "s1", "ts": "t1",
+                                           "total": 5, "model": "mm"})
+        check("防丢失: 有 sid+ts 时能拼出非空键",
+              _k_sid not in (None, "", "||0|"), str(_k_sid))
+        # 关键③: 缓存条目必须把 mid 存下来(否则读缓存时拿不到键)
+        _cf = os.path.join(_dd2, "guard-cache-field.jsonl")
+        with open(_cf, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"type": "message", "id": "guard-msg-1",
+                                "sessionId": "guard-sid", "timestamp": 1785000000000,
+                                "role": "assistant",
+                                "providerData": {"usage": {"inputTokens": 3,
+                                                           "outputTokens": 1,
+                                                           "totalTokens": 4}}},
+                               ensure_ascii=False) + "\n")
+        ca.scanner.scan_full(force=True)
+        _c = ca.scanner._load_cache()
+        _ent = None
+        for _kk, _vv in _c.items():
+            if _kk == "__sids__":
+                continue
+            if _kk.endswith("guard-cache-field.jsonl"):
+                _ent = _vv.get("entries") or []
+        check("防丢失: 缓存条目存下了 mid/ts(读缓存也能算键)",
+              bool(_ent) and _ent[0].get("mid") == "guard-msg-1" and bool(_ent[0].get("ts")),
+              str(_ent[0] if _ent else None))
         _s70 = ca.scanner.scan_full(force=True)
         _req70 = sum(a.get("requests", 0) for a in _s70["models"].values())
         _tin70 = sum(a.get("input", 0) for a in _s70["models"].values())
         # 共享的 0..3 只算一次(4 条) + A 独有 4..5(2 条) + B 独有 6..9(4 条) = 10 条
+        # 再加上本测试后面补的 guard-cache 文件 1 条(input=3) → 11 条 / input 1003
         check("口径修正: 共享历史不重复计 + 各自新用量都保留",
-              _req70 == 10 and _tin70 == 1000, f"requests={_req70} input={_tin70}")
+              _req70 == 11 and _tin70 == 1003, f"requests={_req70} input={_tin70}")
         # 对照: 文件级去重仍应识别出这两份同源(仅作观测, 不再据此丢文件)
         _keep70, _drop70, _ = ca.scanner._dedupe_files(sorted(ca.scanner._iter_jsonl_files()))
         check("口径修正: 文件级去重仍能识别同源(供观测)", len(_drop70) >= 1,

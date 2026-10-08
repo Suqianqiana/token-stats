@@ -402,6 +402,24 @@ def _extract_usage_from_line(line):
     return out
 
 
+def _msg_key_test(e):
+    """一条 usage 的消息级去重键(模块级, 便于测试直接验证; scan_full 内部用同名闭包)。
+
+    ⚠️ 第70轮两个坑(详见 scan_full 内注释):
+      坑1 用 sid 做键 → 两账号轮换时 sid 不同, 共享历史被算成两条;
+      坑2 缺 mid/ts 时返回空兜底键 → **全部条目撞成一个键, 统计只剩 1 条**(曾真实发生)。
+    正确行为: 有消息 id 用它; 没有则 sid+ts 都齐备才拼; 否则返回 **None**(调用方不去重)。
+    """
+    mid = e.get("mid") or ""
+    if mid:
+        return mid
+    sid = e.get("sid") or ""
+    ts = e.get("ts") or ""
+    if sid and ts:
+        return "%s|%s|%s|%s" % (sid, str(ts), str(e.get("total", 0)), e.get("model", ""))
+    return None
+
+
 def scan_full(force=False):
     """
     全量+增量扫描。返回聚合 dict:
@@ -456,16 +474,24 @@ def scan_full(force=False):
     def _msg_key(e):
         """一条 usage 的唯一键 —— **必须用消息 id**, 不能用 sessionId。
 
-        ⚠️ 第70轮踩坑: 一开始用 "sid|ts|total|model", 结果两份账号轮换的会话因为
-        sid 不同, 共享历史被算成两条(测试里 requests=16 而正确是 10)。
-        sessionId 是可被改写的外部特征(第68轮已验证); **消息 id 才是内容固有的**。
+        ⚠️ 第70轮踩了两个坑, 都记在这里:
+        坑1: 一开始用 "sid|ts|total|model" —— 两个账号轮换时 sid 不同,
+             共享历史被算成两条(测试 requests=16, 正确 10)。
+             sessionId 是可被改写的外部特征(第68轮已验证); **消息 id 才是内容固有的**。
+        坑2(致命): 缓存条目里没存 mid/ts, 于是键退化成空串 "||0|" ——
+             **全部 49985 条撞成同一个键, 统计只剩 1 条**(实测 50549 → 1)。
+             所以: **拿不到消息 id 时返回 None = "无法确定", 调用方跳过不去重**
+             (宁可重复, 绝不许丢), 绝不能返回会撞车的兜底键。
         """
         mid = e.get("mid") or ""
         if mid:
             return mid
-        # 兜底(极老数据没有消息 id): 退回内容特征
-        return "%s|%s|%s|%s" % (e.get("sid", ""), str(e.get("ts", "")),
-                                str(e.get("total", 0)), e.get("model", ""))
+        # 没有消息 id: 只有 sid + ts 都齐备时才敢拼内容键
+        sid = e.get("sid") or ""
+        ts = e.get("ts") or ""
+        if sid and ts:
+            return "%s|%s|%s|%s" % (sid, str(ts), str(e.get("total", 0)), e.get("model", ""))
+        return None      # ← 无法判定 → 调用方不去重
 
     for path in all_files:
         try:
@@ -476,9 +502,11 @@ def scan_full(force=False):
             if prev and prev.get("sig") == sig_key:
                 # 未变化: 直接沿用历史聚合(仍要走消息级去重, 与其它文件的新消息比对)
                 for e in prev.get("entries", []):
-                    if _msg_key(e) in _seen_msgs:
-                        continue
-                    _seen_msgs.add(_msg_key(e))
+                    _k = _msg_key(e)
+                    if _k is not None:
+                        if _k in _seen_msgs:
+                            continue
+                        _seen_msgs.add(_k)
                     date = e["d"]
                     daily.setdefault(date, {})
                     _agg(daily[date].setdefault(e["m"], {}), e)
@@ -498,16 +526,23 @@ def scan_full(force=False):
                     if len(line) > _MAX_LINE:
                         continue
                     for e in _extract_usage_from_line(line):
-                        # 第70轮: 同一条消息只计一次(两个账号轮换时共享的历史不去重计数)
-                        if _msg_key(e) in _seen_msgs:
-                            continue
-                        _seen_msgs.add(_msg_key(e))
+                        # 第70轮: 同一条消息只计一次(两个账号轮换时共享的历史不重复计)
+                        # 拿不到消息 id 时 _msg_key 返回 None → 不去重(宁多勿漏)
+                        _k = _msg_key(e)
+                        if _k is not None:
+                            if _k in _seen_msgs:
+                                continue
+                            _seen_msgs.add(_k)
                         date = _norm_date(e["ts"])
                         sid = e.get("sid", "")
                         file_entries.append({"d": date, "m": e["model"],
                                              "i": e["input"], "o": e["output"],
                                              "t": e["total"], "c": e["cached"],
-                                             "r": e["reasoning"], "s": sid})
+                                             "r": e["reasoning"], "s": sid,
+                                             # 第70轮: 消息级去重必须能在"读缓存"时也拿到键,
+                                             # 所以这里要把 mid / ts 一并存下来(否则键退化为空串 →
+                                             # 全部条目撞车, 统计只剩 1 条)。
+                                             "mid": e.get("mid", ""), "ts": e.get("ts", "")})
                         _agg(daily.setdefault(date, {}).setdefault(e["model"], {}), e)
                         _agg(models.setdefault(e["model"], {}), e)
                         if sid:
