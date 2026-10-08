@@ -1665,6 +1665,45 @@ try:
           (_b1 in _nk) != (_b2 in _nk), f"a={_b1 in _nk} b={_b2 in _nk}")
     check("内容级判据: 同大小但内容不同者保留(不误伤)", _b3 in _nk)
     check("内容级判据: 不变量 keep+drop == 全部", sorted(_k6 + _d6) == sorted(_files2))
+
+    # ---- 16.z ⭐ 第69轮根治: 同一会话 3 份, sid 不同 **且** 大小也不同(各自续写) ----
+    # 这是"反复复发"的那一类: 外部特征(sid/大小/文件名)全都不同,
+    # 只有**消息内容**能对上 → 必须用内容指纹 + 并查集传递闭包才能合并。
+    _sidC = "eeee6666-7777-4888-9999-aaaabbbbcccc"
+    _sidD = "ffff7777-8888-4999-aaaa-bbbbccccdddd"
+
+    def _mk3(fn, sid, msgs, prefix):
+        p = os.path.join(_dd, fn)
+        with open(p, "w", encoding="utf-8") as f:
+            for i in range(msgs):
+                f.write(json.dumps({
+                    "type": "message", "id": "%s-%04d" % (prefix, i), "sessionId": sid,
+                    "timestamp": 1785000000000 + i * 1000, "role": "assistant",
+                    "providerData": {"usage": {"inputTokens": 100, "outputTokens": 10,
+                                               "totalTokens": 110}},
+                }, ensure_ascii=False) + "\n")
+        return p
+
+    # 三份共享前 4 条消息, 但各自续写长度不同 → sid 不同 + 大小也不同
+    _c1 = _mk3(_sidC + ".jsonl", _sidC, 4, "tri")             # 最短
+    _c2 = _mk3(_sidD + ".jsonl", _sidD, 6, "tri")             # 中
+    _c3 = _mk3("99999999-0000-4111-2222-333344445555.jsonl",
+               "99999999-0000-4111-2222-333344445555", 8, "tri")   # 最长(内容最全)
+
+    _files3 = sorted(ca.scanner._iter_jsonl_files())
+    _k7, _d7, _ = ca.scanner._dedupe_files(_files3)
+    _n1 = os.path.basename(_c1); _n2 = os.path.basename(_c2); _n3 = os.path.basename(_c3)
+    _nk7 = [os.path.basename(x) for x in _k7]
+    _nd7 = [os.path.basename(x) for x in _d7]
+    check("根治判据: 3 份(sid 不同且大小不同)只保留 1 份",
+          sum(1 for n in (_n1, _n2, _n3) if n in _nk7) == 1,
+          f"保留={[n for n in (_n1,_n2,_n3) if n in _nk7]}")
+    check("根治判据: 保留内容最全(最大)的那份", _n3 in _nk7 and _n1 in _nd7 and _n2 in _nd7)
+    check("根治判据: 并查集传递闭包生效(三份在同一组)",
+          _n1 in _nd7 and _n2 in _nd7 and _n3 in _nk7)
+    check("根治判据: 不变量 keep+drop == 全部", sorted(_k7 + _d7) == sorted(_files3))
+    check("根治判据: 统一入口存在(_dedupe_by_content)",
+          callable(getattr(ca.scanner, "_dedupe_by_content", None)))
     check("内容级判据: Jaccard 判定函数本身",
           ca.scanner._is_same_content({"x1", "x2", "x3"}, {"x1", "x2", "x3"}) is True
           and ca.scanner._is_same_content({"x1"}, {"y1"}) is False
@@ -1672,15 +1711,15 @@ try:
 
     # 端到端: scan_full 只统计去重后的量
     _stats = ca.scanner.scan_full(force=True)
-    # 丢弃 3 份: f_dup(同大小同sid) + f_orig(同sid更小) + _a/_b 中的一份(内容级判据)
-    check("scan_full: dupFilesDropped=3", _stats.get("dupFilesDropped") == 3,
+    # 丢弃 5 份: f_dup(同大小同sid) + f_orig(同sid更小) + _a/_b 中一份 + 三份同源里的两份
+    check("scan_full: dupFilesDropped=5", _stats.get("dupFilesDropped") == 5,
           f"dropped={_stats.get('dupFilesDropped')}")
-    # 去重后应只剩: f_ok(3条) + f_big(5条) + f_nosid(1条无usage) + _b(4条) + _c(4条) = 16 条 usage
-    check("scan_full: 条目数=16 (去重后)", _stats.get("entriesTotal") == 16,
+    # 去重后: f_ok(3) + f_big(5) + f_nosid(1无usage) + _b(4) + _c(4) + _c3(8) = 24 条 usage
+    check("scan_full: 条目数=24 (去重后)", _stats.get("entriesTotal") == 24,
           f"entries={_stats.get('entriesTotal')}")
     _tin = sum(a.get("input", 0) for a in _stats["models"].values())
-    # 100*(3+5+4) + 7*4 = 1228
-    check("scan_full: input=1228 (去重后)", _tin == 1228, f"input={_tin}")
+    # 100*(3+5+4+8) + 7*4 = 2028
+    check("scan_full: input=2028 (去重后)", _tin == 2028, f"input={_tin}")
 
     # 缓存复跑一致性 (sid_map 命中, 结果不变)
     _k2, _d2, _ = ca.scanner._dedupe_files(_files, dict(_sidmap))
