@@ -1881,6 +1881,14 @@ class HeatMap(QWidget):
         self.daily = {}
         self.setMouseTracking(True)
         self._cells = []
+        # @2026-10-17 第72轮: **拖动平移** ——
+        #   `_pan` = 相对"最新"往回翻的月数 (0 = 最新; 越大越早);
+        #   `_max_pan` 在每次绘制时按"总月数 - 可见月数"算出来(窗口宽度变化也自适应)。
+        self._pan = 0
+        self._drag_x = None
+        self._drag_pan = 0
+        self._month_w = 0.0     # 单个月份占的像素宽 (拖动换算用, 绘制时落地)
+        self._max_pan = 0
         self.apply_size()
 
     def apply_size(self):
@@ -1927,7 +1935,14 @@ class HeatMap(QWidget):
             months[d[:7]].append(d)
 
         fit_m = max(2, int((w - 20) / (7 * unit + 10)))
-        recent_m = sorted(months.keys())[-fit_m:]
+        # @2026-10-17 第72轮: 可见窗口由 _pan 决定 (拖动平移), 不再死盯最近几个月
+        all_m = sorted(months.keys())
+        self._max_pan = max(0, len(all_m) - fit_m)
+        self._pan = max(0, min(self._pan, self._max_pan))
+        end = len(all_m) - self._pan
+        start_i = max(0, end - fit_m)
+        recent_m = all_m[start_i:end]
+        self._month_w = 7 * unit + 12
 
         x = 8
         top = 22
@@ -1963,7 +1978,49 @@ class HeatMap(QWidget):
             p.setBrush(c)
             p.drawRoundedRect(QRectF(64 + i * (cell + 2), h - 14, cell - 1, cell - 1), 1.5, 1.5)
 
+        # @2026-10-17 第72轮: 能平移时, 底部右侧标出"当前显示的月份区间" + 拖动提示
+        if self._max_pan > 0 and recent_m:
+            p.setPen(TEXT3)
+            p.setFont(QFont("Microsoft YaHei UI", 8.2 if is_lg else 7.5))
+            _hint = f"{recent_m[0]} ~ {recent_m[-1]}"
+            if self._pan < self._max_pan:
+                _hint += "   ⟵ 拖动看更早"
+            p.drawText(QRectF(120, h - 15, w - 128, 14),
+                       Qt.AlignRight | Qt.AlignVCenter, _hint)
+
+    # ---------------- 拖动平移 (@2026-10-17 第72轮) ----------------
+    def _can_pan(self):
+        return self._max_pan > 0
+
+    def enterEvent(self, ev):
+        # 手型光标就是"可以拖"的提示
+        if self._can_pan():
+            self.setCursor(Qt.OpenHandCursor)
+
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.LeftButton and self._can_pan():
+            self._drag_x = ev.position().x()
+            self._drag_pan = self._pan
+            self.setCursor(Qt.ClosedHandCursor)
+            ChartTip.instance().hide_tip()      # 拖动时别让悬浮框挡着
+
+    def mouseReleaseEvent(self, ev):
+        if self._drag_x is not None:
+            self._drag_x = None
+            if self._can_pan():
+                self.setCursor(Qt.OpenHandCursor)
+            else:
+                self.unsetCursor()
+
     def mouseMoveEvent(self, ev):
+        # 拖动中: 按"单月像素宽"换算月数 —— 向右拖 = 往回看更早的月份
+        if self._drag_x is not None and self._month_w > 0:
+            delta = int(round((ev.position().x() - self._drag_x) / self._month_w))
+            new_pan = max(0, min(self._max_pan, self._drag_pan + delta))
+            if new_pan != self._pan:
+                self._pan = new_pan
+                self.update()
+            return
         pos = ev.position()
         hit = None
         for cx, cy, cw, ch, d, tot in self._cells:
@@ -1985,6 +2042,8 @@ class HeatMap(QWidget):
 
     def leaveEvent(self, ev):
         ChartTip.instance().hide_tip()
+        self._drag_x = None
+        self.unsetCursor()
 
 
 # ============================================================ DSH 数据层
@@ -6295,9 +6354,12 @@ class CardWindow(QWidget):
             self.render()
             if src == "dsh":
                 # @2026-09-19 第55轮: 别机 DSH 数据已并入本页, 副标题标出构成, 数字才不"来路不明"
+                # @2026-10-17 第72轮: **删除「累计花费 ¥」** —— 浅猫反馈计费口径不准确, 暂不展示计费。
                 _np = int(s.get("mergedPeers", 0) or 0)
                 _src_txt = f" · 含 {_np} 台别机" if _np else ""
-                self.subtitle.setText(f"DSH · {s.get('firstDay','—')} ~ {s.get('lastDay','—')} · 累计花费 ¥{s.get('totalCost', 0):.2f}{_src_txt} · 已更新 {time.strftime('%H:%M:%S')}")
+                self.subtitle.setText(
+                    f"DSH · {s.get('firstDay','—')} ~ {s.get('lastDay','—')}{_src_txt}"
+                    f" · 已更新 {time.strftime('%H:%M:%S')}")
             elif src == "multi":
                 n_peer = len(s.get("peers") or [])
                 self.subtitle.setText(
@@ -6432,10 +6494,10 @@ class CardWindow(QWidget):
 
         td = s.get("today", {})
         trate = td.get("cached", 0) / td.get("input", 1) * 100 if td.get("input") else 0
-        cost_txt = f" · 今日花费 ¥{td.get('cost', 0.0):.2f}" if s.get("dsh") else ""
+        # @2026-10-17 第72轮: 概览条里的「今日花费 ¥」已删除 (浅猫: 计费口径不准确, 暂不展示)
         self.today_bar.setText(
             f"今日概况: 请求 {td.get('requests',0):,} 次 · 输入 {fmt(td.get('input',0))} · 输出 {fmt(td.get('output',0))} "
-            f"· 会话 {td.get('sessions',0)} 个 · 缓存命中 {trate:.0f}%{cost_txt}")
+            f"· 会话 {td.get('sessions',0)} 个 · 缓存命中 {trate:.0f}%")
 
         while self.model_lay.count():
             it = self.model_lay.takeAt(0)

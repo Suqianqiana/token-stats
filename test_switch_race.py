@@ -2227,6 +2227,83 @@ finally:
     ca.FrostTexture.instance().load(force=True)
     ca.refresh_palette()
 
+# ========== 20. DSH 去计费 + 热力图拖动平移 (2026-10-17 第72轮) ==========
+# 浅猫: "概览条处, 计费根本不准确, 暂时我们就完全删除DSH页面和计费有关的内容;
+#        活跃热力希望也可以改成拖动平移, 这样可以看到以前月份的"
+print("== 20. DSH 去计费 + 热力图拖动平移 ==")
+import datetime as _dt72
+from PySide6.QtGui import QMouseEvent as _QME72
+
+_src72 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "card_app.py"),
+              encoding="utf-8").read()
+# 去掉注释行再查 —— 改动说明里会提到"今日花费 ¥"字样, 不能误判成代码里还在展示
+_code72 = "\n".join(ln for ln in _src72.splitlines() if not ln.strip().startswith("#"))
+check("代码里已无「今日花费」展示", "今日花费" not in _code72)
+check("代码里已无「累计花费」展示", "累计花费" not in _code72)
+
+_w72 = ca.CardWindow()
+_w72.refresh = lambda *a, **k: None
+_T72 = time.strftime("%Y-%m-%d")
+_w72.source = "dsh"
+_w72.stats = {"source": "dsh", "dsh": True, "firstDay": _T72, "lastDay": _T72,
+              "models": {"m": {"requests": 1, "input": 100, "output": 50, "cached": 10,
+                               "cacheWrite": 0, "total": 150}},
+              "daily": {_T72: {"m": {"requests": 1, "input": 100, "output": 50,
+                                     "cached": 10, "cacheWrite": 0, "total": 150}}},
+              "dailySessions": {_T72: 1}, "sessionsTotal": 1,
+              "today": {"requests": 3, "input": 900, "output": 400, "cached": 300,
+                        "cacheWrite": 0, "total": 1300, "sessions": 1, "cost": 12.34},
+              "totalCost": 999.99}
+_w72.render()
+_tb72 = _w72.today_bar.text()
+check("DSH 概览条仍在正常出数据 (不是空文本)", "今日概况" in _tb72 and "请求" in _tb72,
+      _tb72[:44])
+check("DSH 概览条已不含任何计费字样", ("¥" not in _tb72) and ("花费" not in _tb72), _tb72)
+_w72.close()
+
+# ---- 热力图拖动平移 ----
+_hm_daily = {}
+_d72 = _dt72.date(2026, 3, 1)
+while _d72 <= _dt72.date(2026, 10, 15):
+    _hm_daily[_d72.isoformat()] = {"m": {"total": 1000 + _d72.day * 37}}
+    _d72 += _dt72.timedelta(days=1)
+_hm = ca.HeatMap()
+_hm.resize(600, 120)
+_hm.set_data(_hm_daily)
+_hm.show()
+app.processEvents()
+_hm.grab()                      # 先绘制一次, 才会算出 _max_pan / _month_w
+check("热力图按宽度算出可平移月数 (>0)", _hm._max_pan > 0, f"max_pan={_hm._max_pan}")
+check("可平移时进入可拖动态", _hm._can_pan() is True and _hm._pan == 0, f"pan={_hm._pan}")
+
+
+def _m72(kind, x, buttons):
+    return _QME72(kind, ca.QPointF(x, 60), ca.QPointF(x, 60), ca.Qt.LeftButton,
+                  buttons, ca.Qt.NoModifier)
+
+
+_hm.mousePressEvent(_m72(ca.QEvent.MouseButtonPress, 300, ca.Qt.LeftButton))
+_hm.mouseMoveEvent(_m72(ca.QEvent.MouseMove, 300 + _hm._month_w, ca.Qt.LeftButton))
+check("向右拖一个月 → 回看更早 (pan 0→1)", _hm._pan == 1, f"pan={_hm._pan}")
+_hm.mouseMoveEvent(_m72(ca.QEvent.MouseMove, 300 + _hm._month_w * 99, ca.Qt.LeftButton))
+check("拖过头被夹在最早月份", _hm._pan == _hm._max_pan, f"pan={_hm._pan}/{_hm._max_pan}")
+_hm.mouseMoveEvent(_m72(ca.QEvent.MouseMove, 300 - _hm._month_w * 99, ca.Qt.LeftButton))
+check("反向拖被夹回最新 (pan=0)", _hm._pan == 0, f"pan={_hm._pan}")
+_hm.mouseReleaseEvent(_m72(ca.QEvent.MouseButtonRelease, 0, ca.Qt.NoButton))
+check("松手后拖动状态复位", _hm._drag_x is None)
+check("月份占的像素宽已算出 (拖动换算依据)", _hm._month_w > 0, f"w={_hm._month_w:.1f}")
+_hm.hide(); _hm.deleteLater()
+
+_hm2 = ca.HeatMap()
+_hm2.resize(1000, 120)
+_hm2.set_data({time.strftime("%Y-%m-%d"): {"m": {"total": 5}}})
+_hm2.show()
+app.processEvents()
+_hm2.grab()
+check("月份装得下时不进入拖动态 (max_pan=0)", _hm2._max_pan == 0 and not _hm2._can_pan(),
+      f"max_pan={_hm2._max_pan}")
+_hm2.hide(); _hm2.deleteLater()
+
 # ---- 还原真实数据目录路径 (临时目录随系统清理) ----
 ca._sn_events_all = orig_events
 ca.SN_AUTOSYNC_FILE = _REAL_AUTOSYNC_FILE
