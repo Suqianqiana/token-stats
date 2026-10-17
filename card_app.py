@@ -117,7 +117,10 @@ SIZE_METRICS = {
         "win_w": 990, "win_h": 610, "sidebar_w": 190,
         "stat_h": 72, "stat_val_pt": 13.2, "stat_lbl_pt": 8.5, "stat_hint_pt": 8.5,
         "stat_val_y": 28,  # 重心明显上提，距底边界留出 15px+ 舒适余量
-        "row_h": 28, "name_w": 110, "total_w": 100, "pct_w": 38, "hit_w": 44, "req_w": 48,
+        # 第72轮: 指标区改为「方案 A 主次分层」(MetricsBand) —— 主数字 + 环比 + 迷你趋势
+        # 第72轮反馈(浅猫截图): 96 太挤 → 加高到 118 给内容呼吸感, 下方模块相应让位
+        "metrics_h": 118, "metrics_val_pt": 28,
+        "row_h": 28, "name_w": 110, "total_w": 76, "pct_w": 50, "hit_w": 44, "req_w": 48,
         "row_pt": 8.8, "row_head_pt": 8.5,
         "chart_min_h": 130, "heat_min_h": 105, "heat_cell": 10.0, "heat_gap": 2.5,
         "today_h": 28, "today_px": 11,
@@ -131,8 +134,10 @@ SIZE_METRICS = {
         "win_w": 1180, "win_h": 730, "sidebar_w": 220,
         "stat_h": 84, "stat_val_pt": 15.8, "stat_lbl_pt": 9.0, "stat_hint_pt": 8.8,
         "stat_val_y": 34,  # 大窗口下同样重心居中偏上，比例舒展
-        "row_h": 34, "name_w": 134, "total_w": 112, "pct_w": 44, "hit_w": 50, "req_w": 54,
+        "row_h": 34, "name_w": 134, "total_w": 88, "pct_w": 56, "hit_w": 50, "req_w": 54,
         "row_pt": 9.2, "row_head_pt": 8.8,  # 表格行高拉开，文字保持干练清秀
+        # 第72轮: 指标区「方案 A 主次分层」; 反馈后 112→136 同步加高
+        "metrics_h": 136, "metrics_val_pt": 32,
         "chart_min_h": 155, "heat_min_h": 120, "heat_cell": 11.5, "heat_gap": 2.8,
         "today_h": 32, "today_px": 12,
         "nav_btn_h": 42, "nav_btn_pt": 9.8,
@@ -343,6 +348,19 @@ def fmt(n):
 
 def fmt_full(n):
     return f"{int(n):,}"
+
+
+def fmt_compact(n):
+    """紧凑计数 (2026-10-17 第72轮): 486.2M / 1.29B / 456.9K —— 浅猫: "token 用 M 来计数, 解决了数字过长问题"。
+
+    与 `fmt` 的区别: `fmt` 走中文单位(亿/万), 适合概览;`fmt_compact` 走 K/M/B, 位数短且**列宽稳定**,
+    适合明细表这种需要右对齐成列的场景。
+    """
+    n = int(n)
+    if n >= 1e9: return f"{n/1e9:.2f}B"
+    if n >= 1e6: return f"{n/1e6:.1f}M"
+    if n >= 1e3: return f"{n/1e3:.1f}K"
+    return f"{n:,}"
 
 
 # ============================================================ 纯净 iOS 27 液态玻璃光学底板
@@ -1539,6 +1557,208 @@ class StatCard(GlassPodFrame):
         p.drawText(QRectF(14, val_y, w - 28, 34), Qt.AlignLeft | Qt.AlignVCenter, self.value_text)
 
 
+class MetricsBand(QWidget):
+    """顶部指标区 —— 方案 A「主次分层」(2026-10-17 第72轮)
+
+    浅猫: "顶部四个小卡片的设计我觉得有点普通的, 层级和呈现可以做到更优秀" →
+      · 左: 合计 Token 作为**主指标** —— 超大数字 + 环比 chip + 近 30 天迷你趋势线;
+      · 右: 缓存命中 / 输入·输出 / 会话·请求 三行**紧凑小指标**, 行间细线分隔;
+      · 中间一条竖细线分栏。
+
+    ⚠️ 三种材质模式(普通 / 液态玻璃 / 毛玻璃)**都不铺底**: 指标区直接落在主板上, 与示意图一致;
+       配色一律走调色板(TEXT / TEXT2 / TEXT3 / BORDER / TRACK), 深浅色自动跟随,
+       分栏线在毛玻璃下用 `frost_rule_color()` 与全窗细线语言统一。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.total = 0
+        self.cached = 0
+        self.rate = 0.0
+        self.input = 0
+        self.output = 0
+        self.sessions = 0
+        self.requests = 0
+        self.today_total = 0
+        self.delta = None       # 近 7 天 vs 前 7 天 环比 (None = 数据不足)
+        self.wow = 0            # 近 7 天合计
+        self.spark = []         # 趋势线数据 (随所选时间区段变化)
+        self.spark_days = ("", "")
+        self.apply_size()
+
+    def apply_size(self):
+        m = curr_metric()
+        self.setFixedHeight(m["metrics_h"])
+        self.update()
+
+    @staticmethod
+    def _day_total(daily, d):
+        try:
+            return sum(int(x.get("total", 0) or 0) for x in daily[d].values())
+        except Exception:
+            return 0
+
+    def set_stats(self, s, tot, n_sess, daily_filtered=None):
+        """由 render() 喂数据 —— 环比与趋势线在这里算好, 绘制只负责画。
+
+        第72轮反馈(浅猫): 趋势线要**跟随所选时间区段**变化 →
+          · 7天 / 30天 / 全部: 直接取该区间每日总量;
+          · 今日: 单日画不出趋势, 回退为最近 7 天(仅作形态参考, 不冒充"今日趋势")。
+        环比仍固定取「近 7 天 vs 前 7 天」—— 与区段无关的稳定参照, 不被单日波动带跑。
+        """
+        self.total = int(tot.get("total", 0) or 0)
+        self.cached = int(tot.get("cached", 0) or 0)
+        self.input = int(tot.get("input", 0) or 0)
+        self.output = int(tot.get("output", 0) or 0)
+        self.requests = int(tot.get("requests", 0) or 0)
+        self.sessions = int(n_sess or 0)
+        self.rate = (self.cached / self.input * 100) if self.input else 0.0
+        self.today_total = int((s.get("today") or {}).get("total", 0) or 0)
+
+        full = {d: a for d, a in (s.get("daily") or {}).items() if d and d != "unknown"}
+        days_all = sorted(full)
+
+        if daily_filtered is None:
+            # 没传区段 → 维持原行为: 近 30 天
+            days_sp = days_all[-30:]
+            src = full
+        else:
+            fd = {d: a for d, a in daily_filtered.items() if d and d != "unknown"}
+            if len(fd) >= 2:
+                days_sp = sorted(fd)
+                src = fd
+            else:
+                # 今日(单日)画不出趋势 → 回退近 7 天作形态参考
+                days_sp = days_all[-7:]
+                src = full
+        self.spark = [self._day_total(src, d) for d in days_sp]
+        self.spark_days = (days_sp[0], days_sp[-1]) if days_sp else ("", "")
+
+        # 环比取"近 7 天 vs 前 7 天": 比日环比稳, 不会被单日波动带跑
+        recent7 = sum(self._day_total(full, d) for d in days_all[-7:])
+        prev7 = sum(self._day_total(full, d) for d in days_all[-14:-7])
+        self.wow = recent7
+        self.delta = ((recent7 - prev7) / prev7 * 100.0) if prev7 > 0 else None
+        self.update()
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        m = curr_metric()
+        dark = theme_state["dark"]
+        hero_w = int(w * 0.55)          # 主指标栏宽
+        col_x = hero_w
+
+        # ---------- ① 主指标: 标签 / 超大数字 / 量级 / 环比 / 趋势线
+        p.setPen(TEXT3)
+        p.setFont(QFont("Microsoft YaHei UI", m["stat_lbl_pt"]))
+        p.drawText(QRectF(0, 0, hero_w, 15), Qt.AlignLeft | Qt.AlignVCenter, "合计 TOKEN")
+
+        val_y0 = 14.0
+        val_h = m["metrics_val_pt"] + 14
+        p.setPen(TEXT)
+        p.setFont(QFont("Consolas", m["metrics_val_pt"], QFont.Bold))
+        val_txt = f"{self.total:,}"
+        p.drawText(QRectF(0, val_y0, hero_w, val_h),
+                   Qt.AlignLeft | Qt.AlignVCenter, val_txt)
+        # 量级(亿 / 万)**紧跟在数字后面** —— 第72轮反馈: 顶到分栏线显得散
+        vw = p.fontMetrics().horizontalAdvance(val_txt)
+        p.setPen(TEXT2)
+        p.setFont(QFont("Microsoft YaHei UI", m["stat_hint_pt"] + 1.5))
+        p.drawText(QRectF(vw + 9, val_y0 + val_h * 0.22, 76, val_h * 0.7),
+                   Qt.AlignLeft | Qt.AlignVCenter, fmt(self.total))
+
+        y2 = val_y0 + val_h
+        tx = 0.0
+        if self.delta is not None:
+            up = self.delta >= 0
+            chip_txt = f"{'▲' if up else '▼'} {abs(self.delta):.1f}%"
+            chip_col = QColor(GREEN if up else "#e05252")
+            p.setFont(QFont("Microsoft YaHei UI", m["stat_hint_pt"]))
+            cw = p.fontMetrics().horizontalAdvance(chip_txt) + 12
+            p.setPen(Qt.NoPen)
+            cc = QColor(chip_col); cc.setAlpha(46 if dark else 40)
+            p.setBrush(cc)
+            p.drawRoundedRect(QRectF(0, y2 - 1, cw, 16), 4, 4)
+            p.setPen(chip_col)
+            p.drawText(QRectF(0, y2 - 1, cw, 16), Qt.AlignCenter, chip_txt)
+            tx = cw + 8
+        p.setPen(TEXT3)
+        p.setFont(QFont("Microsoft YaHei UI", m["stat_hint_pt"]))
+        p.drawText(QRectF(tx, y2 - 1, hero_w - tx, 16), Qt.AlignLeft | Qt.AlignVCenter,
+                   f"近 7 天 {fmt_compact(self.wow)} · 今日 {fmt_compact(self.today_total)}")
+
+        # 趋势线: 随所选时间区段变化; 加**渐变面积填充**让它"落在地上", 不再是一根孤线
+        if len(self.spark) >= 2:
+            mx = max(self.spark) or 1
+            y0 = y2 + 18.0
+            sh = max(22.0, h - y0 - 8.0)
+            n = len(self.spark)
+            pts = [((hero_w - 4.0) * i / (n - 1),
+                    y0 + sh - 3.0 - (self.spark[i] / mx) * (sh - 8.0))
+                   for i in range(n)]
+            if n >= 3:
+                area = QPainterPath()
+                area.moveTo(pts[0][0], y0 + sh)
+                for x, yy in pts:
+                    area.lineTo(x, yy)
+                area.lineTo(pts[-1][0], y0 + sh)
+                area.closeSubpath()
+                fade = QLinearGradient(0, y0, 0, y0 + sh)
+                fade.setColorAt(0.0, QColor(BLUE.red(), BLUE.green(), BLUE.blue(), 82))
+                fade.setColorAt(1.0, QColor(BLUE.red(), BLUE.green(), BLUE.blue(), 0))
+                p.setPen(Qt.NoPen)
+                p.setBrush(QBrush(fade))
+                p.drawPath(area)
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(BLUE, 2.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            for i in range(len(pts) - 1):
+                p.drawLine(QPointF(pts[i][0], pts[i][1]), QPointF(pts[i + 1][0], pts[i + 1][1]))
+
+        # ---------- ② 分栏细线 (毛玻璃下与全窗细线同一套色)
+        rule = frost_rule_color(dark) if theme_state.get("frost") else QColor(BORDER)
+        p.setPen(QPen(rule, 1.0))
+        p.drawLine(QPointF(col_x + 0.5, 4), QPointF(col_x + 0.5, h - 4))
+
+        # ---------- ③ 右侧三行紧凑小指标
+        rows = [
+            (GREEN, "缓存命中", fmt_compact(self.cached), f"{self.rate:.1f}%"),
+            (YELLOW, "输入 / 输出",
+             f"{fmt_compact(self.input)} / {fmt_compact(self.output)}", ""),
+            (PURPLE, "会话 / 请求", f"{self.sessions:,}", f"{self.requests:,} 次"),
+        ]
+        gap = (h - 10.0) / len(rows)
+        RPAD = 8.0        # 右侧留白 (第72轮反馈: 别顶着面板边)
+        for i, (acc, label, value, hint) in enumerate(rows):
+            ty = 5.0 + i * gap
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(acc))
+            p.drawRoundedRect(QRectF(col_x + 18, ty + gap / 2 - 1.5, 16, 3), 1.5, 1.5)
+            p.setPen(TEXT2)
+            p.setFont(QFont("Microsoft YaHei UI", m["stat_lbl_pt"] + 0.5))
+            p.drawText(QRectF(col_x + 38, ty, 120, gap),
+                       Qt.AlignLeft | Qt.AlignVCenter, label)
+            # 数值 + 次要提示, 一律右对齐成列
+            p.setFont(QFont("Consolas", m["stat_val_pt"] + 1, QFont.Bold))
+            vw = p.fontMetrics().horizontalAdvance(value) + 2
+            hw = 0.0
+            if hint:
+                p.setFont(QFont("Consolas", m["stat_hint_pt"]))
+                hw = p.fontMetrics().horizontalAdvance(hint) + 10
+                p.setPen(TEXT3)
+                p.drawText(QRectF(w - RPAD - hw, ty, hw, gap),
+                           Qt.AlignRight | Qt.AlignVCenter, hint)
+            p.setPen(TEXT)
+            p.setFont(QFont("Consolas", m["stat_val_pt"] + 1, QFont.Bold))
+            p.drawText(QRectF(w - RPAD - hw - vw, ty, vw, gap),
+                       Qt.AlignRight | Qt.AlignVCenter, value)
+            if i < len(rows) - 1:
+                p.setPen(QPen(rule, 1.0))
+                p.drawLine(QPointF(col_x + 18, ty + gap), QPointF(w - RPAD, ty + gap))
+        p.end()
+
+
 # ============================================================ 模型明细表
 PAD = 6
 
@@ -1686,7 +1906,8 @@ class ModelRow(QWidget):
                        Qt.AlignVCenter | Qt.AlignRight, text)
 
         x1 = w - PAD - req_w - hit_w - pct_w
-        right_text(fmt_full(self.total), total_w, x1, TEXT, bold=True)
+        # 第72轮反馈: Tokens 用 K/M/B 计数 —— 位数短、列宽稳定 (67,440,666 → 67.4M)
+        right_text(fmt_compact(self.total), total_w, x1, TEXT, bold=True)
         right_text(f"{self.pct:.1f}%", pct_w, x1 + pct_w, TEXT2)
         right_text(f"{self.hit_rate:.0f}%", hit_w, x1 + pct_w + hit_w,
                    GREEN if self.hit_rate >= 80 else TEXT2)
@@ -5656,17 +5877,9 @@ class CardWindow(QWidget):
         dash_lay.setContentsMargins(0, 0, 0, 0)
         dash_lay.setSpacing(10)
 
-        stat_grid = QHBoxLayout()
-        stat_grid.setSpacing(10)
-        self.card_total = StatCard("合计 Token", BLUE)
-        self.card_cache = StatCard("缓存命中", GREEN)
-        self.card_io = StatCard("输入 / 输出", YELLOW)
-        self.card_sess = StatCard("会话 / 请求", PURPLE)
-        for c in (self.card_total, self.card_cache, self.card_io, self.card_sess):
-            stat_grid.addWidget(c, 1)
-            # 毛玻璃下这四张是"一组", 不各画分区线 (第60轮)
-            c.rule = False
-        dash_lay.addLayout(stat_grid)
+        # 2026-10-17 第72轮: 四张并排小卡片 → 方案 A「主次分层」指标区
+        self.metrics = MetricsBand()
+        dash_lay.addWidget(self.metrics)
 
         self.today_bar = QLabel("")
         dash_lay.addWidget(self.today_bar)
@@ -5799,8 +6012,7 @@ class CardWindow(QWidget):
         self.btn_glass_toggle.setFont(QFont("Microsoft YaHei UI", m["nav_btn_pt"]))
         self.btn_frost.setFont(QFont("Microsoft YaHei UI", m["nav_btn_pt"]))
 
-        for c in (self.card_total, self.card_cache, self.card_io, self.card_sess):
-            c.apply_size()
+        self.metrics.apply_size()
 
         self.today_bar.setFixedHeight(m["today_h"])
         self.chart.apply_size()
@@ -6484,13 +6696,10 @@ class CardWindow(QWidget):
         for a in agg.values():
             for k in tot: tot[k] += a.get(k, 0)
 
-        self.card_total.set_value(fmt_full(tot["total"]))
-        rate = tot["cached"] / tot["input"] * 100 if tot["input"] else 0
-        self.card_cache.set_value(fmt_full(tot["cached"]), f"命中率 {rate:.1f}%")
-        self.card_io.set_value(fmt_full(tot["input"]), f"出 {fmt(tot['output'])}")
         ds = s.get("dailySessions", {})
         n_sess = s.get("sessionsTotal", 0) if self.range == "all" else sum(v for d, v in ds.items() if d in daily)
-        self.card_sess.set_value(f"{n_sess:,}", f"请求 {tot['requests']:,}")
+        # 第72轮: 四张卡片 → 指标区一次喂数据; 第72轮反馈: 趋势线要跟随所选时间区段 → 传入过滤后的 daily
+        self.metrics.set_stats(s, tot, n_sess, daily)
 
         td = s.get("today", {})
         trate = td.get("cached", 0) / td.get("input", 1) * 100 if td.get("input") else 0

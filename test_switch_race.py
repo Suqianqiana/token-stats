@@ -2304,6 +2304,39 @@ check("月份装得下时不进入拖动态 (max_pan=0)", _hm2._max_pan == 0 and
       f"max_pan={_hm2._max_pan}")
 _hm2.hide(); _hm2.deleteLater()
 
+# ---- 第72轮反馈: M 计数 + 折线随区段 + MetricsBand ----
+check("fmt_compact: 百万级 → M", ca.fmt_compact(67_440_666) == "67.4M",
+      ca.fmt_compact(67_440_666))
+check("fmt_compact: 十亿级 → B", ca.fmt_compact(2_501_726_965) == "2.50B",
+      ca.fmt_compact(2_501_726_965))
+check("fmt_compact: 千级 → K", ca.fmt_compact(456_900) == "456.9K",
+      ca.fmt_compact(456_900))
+check("fmt_compact: 小数字也收敛", ca.fmt_compact(252_378) == "252.4K",
+      ca.fmt_compact(252_378))
+
+_mb = ca.MetricsBand()
+_mb.resize(700, 118)
+_full = {}
+_d0 = _dt72.date(2026, 8, 1)
+for _i in range(60):
+    _dd = (_d0 + _dt72.timedelta(days=_i)).isoformat()
+    _full[_dd] = {"m": {"total": 10_000_000 + _i * 500_000}}
+_mb.set_stats({"daily": _full, "today": {"total": 1}}, {"total": 1}, 0)
+check("指标区: 不传区段时趋势线默认取近 30 天", len(_mb.spark) == 30, f"n={len(_mb.spark)}")
+_fd72 = {d: a for d, a in _full.items() if d >= "2026-09-15"}
+_mb.set_stats({"daily": _full, "today": {"total": 1}}, {"total": 1}, 0, _fd72)
+check("指标区: 传入区段后趋势线跟随区段", len(_mb.spark) == len(_fd72),
+      f"n={len(_mb.spark)} want={len(_fd72)}")
+_mb.set_stats({"daily": _full, "today": {"total": 1}}, {"total": 1}, 0,
+              {sorted(_full)[-1]: _full[sorted(_full)[-1]]})
+check("指标区: 今日(单日)画不出趋势 → 回退近 7 天", len(_mb.spark) == 7,
+      f"n={len(_mb.spark)}")
+check("指标区: 环比有值 (近7天 vs 前7天)", _mb.delta is not None and _mb.wow > 0,
+      f"delta={_mb.delta}")
+_mb.grab()      # 绘制一次, 确认自绘不抛异常
+check("指标区: 绘制不崩 (grab 成功)", _mb.grab().width() == 700)
+_mb.hide(); _mb.deleteLater()
+
 # ---- 还原真实数据目录路径 (临时目录随系统清理) ----
 ca._sn_events_all = orig_events
 ca.SN_AUTOSYNC_FILE = _REAL_AUTOSYNC_FILE
