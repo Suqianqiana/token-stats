@@ -115,11 +115,11 @@ SIZE_METRICS = {
     "default": {
         "name": "标准模式 (990×610)",
         "win_w": 990, "win_h": 610, "sidebar_w": 190,
-        "stat_h": 72, "stat_val_pt": 13.2, "stat_lbl_pt": 8.5, "stat_hint_pt": 8.5,
+        # 第73轮打磨: 字号/间距向示意图靠拢 (标签加字距、主数字更大、小指标数值加大)
+        "stat_h": 72, "stat_val_pt": 14.8, "stat_lbl_pt": 9.6, "stat_hint_pt": 9.8,
         "stat_val_y": 28,  # 重心明显上提，距底边界留出 15px+ 舒适余量
-        # 第72轮: 指标区改为「方案 A 主次分层」(MetricsBand) —— 主数字 + 环比 + 迷你趋势
-        # 第72轮反馈(浅猫截图): 96 太挤 → 加高到 118 给内容呼吸感, 下方模块相应让位
-        "metrics_h": 118, "metrics_val_pt": 28,
+        # 第72轮: 指标区改为「方案 A 主次分层」(MetricsBand); 第73轮 118→128 再放宽
+        "metrics_h": 128, "metrics_val_pt": 32,
         "row_h": 28, "name_w": 110, "total_w": 76, "pct_w": 50, "hit_w": 44, "req_w": 48,
         "row_pt": 8.8, "row_head_pt": 8.5,
         "chart_min_h": 130, "heat_min_h": 105, "heat_cell": 10.0, "heat_gap": 2.5,
@@ -132,12 +132,12 @@ SIZE_METRICS = {
     "large": {
         "name": "舒适大窗口 (1180×730)",
         "win_w": 1180, "win_h": 730, "sidebar_w": 220,
-        "stat_h": 84, "stat_val_pt": 15.8, "stat_lbl_pt": 9.0, "stat_hint_pt": 8.8,
+        "stat_h": 84, "stat_val_pt": 17.2, "stat_lbl_pt": 10.2, "stat_hint_pt": 10.4,
         "stat_val_y": 34,  # 大窗口下同样重心居中偏上，比例舒展
         "row_h": 34, "name_w": 134, "total_w": 88, "pct_w": 56, "hit_w": 50, "req_w": 54,
         "row_pt": 9.2, "row_head_pt": 8.8,  # 表格行高拉开，文字保持干练清秀
-        # 第72轮: 指标区「方案 A 主次分层」; 反馈后 112→136 同步加高
-        "metrics_h": 136, "metrics_val_pt": 32,
+        # 第72轮: 指标区「方案 A 主次分层」; 反馈后 112→136 同步加高; 第73轮 136→148
+        "metrics_h": 148, "metrics_val_pt": 36,
         "chart_min_h": 155, "heat_min_h": 120, "heat_cell": 11.5, "heat_gap": 2.8,
         "today_h": 32, "today_px": 12,
         "nav_btn_h": 42, "nav_btn_pt": 9.8,
@@ -370,6 +370,21 @@ def fmt_compact(n):
 def frost_rule_color(dark):
     """毛玻璃下「细线分割」用的线色 —— 极淡, 只是若有若无的分区暗示(不是卡片描边)。"""
     return QColor(255, 255, 255, 16) if dark else QColor(28, 38, 58, 20)
+
+
+def paint_frost_card(p, rect, radius, dark):
+    """毛玻璃下的「卡片框」(2026-10-19 第73轮)。
+
+    浅猫: "毛玻璃模式我之前把底下几个卡片的框给去除了, 现在我想要加回来"。
+    只补 **1px 圆角细描边** —— 卡片底(淡罩层)由 `paint_frost_flat()` 负责, 这里不重复铺底,
+    这样"有框"但依然通透, 不会退化成普通模式的实体卡片。
+    """
+    path = QPainterPath()
+    path.addRoundedRect(rect, radius, radius)
+    p.setBrush(Qt.NoBrush)
+    edge = QColor(255, 255, 255, 38) if dark else QColor(28, 38, 58, 46)
+    p.setPen(QPen(edge, 1.0))
+    p.drawPath(path)
 
 
 
@@ -838,26 +853,30 @@ class GlassPodFrame(QFrame):
     只在顶部画 1px 细线做分区; 而**横向并排的一组**(四张指标卡 / 商汤两张积分池卡)
     不该各画一条线, 这些位置传 `rule=False`。
     """
-    def __init__(self, radius=10, parent=None, rule=True):
+    def __init__(self, radius=10, parent=None, rule=True, frame=False):
         super().__init__(parent)
         self.radius = radius
         self.rule = rule
+        # 第73轮: 毛玻璃下是否画回"卡片框"(1px 细描边 + 极淡填充), 只用于底部内容卡片
+        self.frame = frame
 
     def paintEvent(self, ev):
-        paint_pod(self, self.radius, role="section", rule=self.rule)
+        paint_pod(self, self.radius, role="section", rule=self.rule, frame=self.frame)
 
 
-def paint_pod(widget, radius, inset=0.5, role="section", rule=True):
+def paint_pod(widget, radius, inset=0.5, role="section", rule=True, frame=False):
     """把「菲涅尔切角玻璃底层」画在任意 widget 上。
 
     2026-09-19 第52轮抽成独立函数: 原来只有 GlassPodFrame 会画这层底,
     而 GlassDialog 需要继承 QDialog (拿真模态), 无法再继承 QFrame,
     因此把绘制逻辑抽出来供两者共用 —— 保证弹窗与子卡片视觉完全同源。
 
-    update 2026-09-23 (第60轮) 新增两个参数:
+    update 2026-09-23 (第60轮) 新增 `role` / `rule`:
       · `role="section"` 页面里的分区(卡片): 毛玻璃模式下**不画底**, 只在顶部画 1px 细线;
       · `role="panel"`   浮层(自绘弹窗): 浮层必须保持实体, 毛玻璃下换成同一套磨砂玻璃材质,
                          否则弹窗会"隐形"在玻璃上。
+    update 2026-10-19 (第73轮) 新增 `frame`: 毛玻璃下给**底部内容卡片**画回 1px 卡片框
+      (浅猫: "把底下几个卡片的框加回来"), 与"纯细线分区"区分开。
     """
     p = QPainter(widget)
     p.setRenderHint(QPainter.Antialiasing)
@@ -877,6 +896,10 @@ def paint_pod(widget, radius, inset=0.5, role="section", rule=True):
         if role == "panel":
             # 浮层(弹窗)必须更实, 否则会"隐形"在玻璃上
             paint_frost_blur(p, widget, rect, min(r + 4.0, 16.0), dark)
+        elif frame:
+            # 第73轮: 底部内容卡片 —— 淡罩层 + **1px 卡片框**(浅猫要求加回), 不画顶部细线
+            paint_frost_flat(p, rect, dark, alpha=CARD_TINT_ALPHA, widget=widget)
+            paint_frost_card(p, rect, r, dark)
         elif rule:
             # 分区卡片: 纹理 + 稍厚罩层(保证文字清晰) + 一条细线
             paint_frost_flat(p, rect, dark, alpha=CARD_TINT_ALPHA, widget=widget)
@@ -1652,22 +1675,25 @@ class MetricsBand(QWidget):
 
         # ---------- ① 主指标: 标签 / 超大数字 / 量级 / 环比 / 趋势线
         p.setPen(TEXT3)
-        p.setFont(QFont("Microsoft YaHei UI", m["stat_lbl_pt"]))
-        p.drawText(QRectF(0, 0, hero_w, 15), Qt.AlignLeft | Qt.AlignVCenter, "合计 TOKEN")
+        # 第73轮打磨: 标签加字距(示意图的小字标签是"疏排"的), 更像"区块名"而不是一句正文
+        _lf = QFont("Microsoft YaHei UI", m["stat_lbl_pt"])
+        _lf.setLetterSpacing(QFont.PercentageSpacing, 112.0)
+        p.setFont(_lf)
+        p.drawText(QRectF(0, 0, hero_w, 17), Qt.AlignLeft | Qt.AlignVCenter, "合计 TOKEN")
 
-        val_y0 = 14.0
-        val_h = m["metrics_val_pt"] + 14
+        val_y0 = 15.0
+        val_h = m["metrics_val_pt"] + 16
         p.setPen(TEXT)
         p.setFont(QFont("Consolas", m["metrics_val_pt"], QFont.Bold))
         val_txt = f"{self.total:,}"
         p.drawText(QRectF(0, val_y0, hero_w, val_h),
                    Qt.AlignLeft | Qt.AlignVCenter, val_txt)
-        # 量级(亿 / 万)**紧跟在数字后面** —— 第72轮反馈: 顶到分栏线显得散
+        # 量级标注: "≈ 1.42 亿" 紧跟数字之后 (示意图同款: 数字 + 量级)
         vw = p.fontMetrics().horizontalAdvance(val_txt)
         p.setPen(TEXT2)
         p.setFont(QFont("Microsoft YaHei UI", m["stat_hint_pt"] + 1.5))
-        p.drawText(QRectF(vw + 9, val_y0 + val_h * 0.22, 76, val_h * 0.7),
-                   Qt.AlignLeft | Qt.AlignVCenter, fmt(self.total))
+        p.drawText(QRectF(vw + 10, val_y0 + val_h * 0.22, 88, val_h * 0.7),
+                   Qt.AlignLeft | Qt.AlignVCenter, f"≈ {fmt(self.total)}")
 
         y2 = val_y0 + val_h
         tx = 0.0
@@ -1692,8 +1718,8 @@ class MetricsBand(QWidget):
         # 趋势线: 随所选时间区段变化; 加**渐变面积填充**让它"落在地上", 不再是一根孤线
         if len(self.spark) >= 2:
             mx = max(self.spark) or 1
-            y0 = y2 + 18.0
-            sh = max(22.0, h - y0 - 8.0)
+            y0 = y2 + 21.0
+            sh = max(26.0, h - y0 - 10.0)
             n = len(self.spark)
             pts = [((hero_w - 4.0) * i / (n - 1),
                     y0 + sh - 3.0 - (self.spark[i] / mx) * (sh - 8.0))
@@ -5887,7 +5913,7 @@ class CardWindow(QWidget):
         body_split = QHBoxLayout()
         body_split.setSpacing(10)
 
-        self.table_card = GlassPodFrame(radius=10)
+        self.table_card = GlassPodFrame(radius=10, frame=True)
         self.table_card.setObjectName("table_card")
         tv = QVBoxLayout(self.table_card)
         tv.setContentsMargins(8, 6, 8, 6)
@@ -5907,7 +5933,7 @@ class CardWindow(QWidget):
         charts_col = QVBoxLayout()
         charts_col.setSpacing(10)
 
-        self.chart_card = GlassPodFrame(radius=10)
+        self.chart_card = GlassPodFrame(radius=10, frame=True)
         self.chart_card.setObjectName("chart_card")
         cv = QVBoxLayout(self.chart_card)
         cv.setContentsMargins(10, 6, 8, 6)
@@ -5917,7 +5943,7 @@ class CardWindow(QWidget):
         cv.addWidget(self.chart)
         charts_col.addWidget(self.chart_card, 56)
 
-        self.heat_card = GlassPodFrame(radius=10)
+        self.heat_card = GlassPodFrame(radius=10, frame=True)
         self.heat_card.setObjectName("heat_card")
         hv = QVBoxLayout(self.heat_card)
         hv.setContentsMargins(10, 6, 8, 6)
