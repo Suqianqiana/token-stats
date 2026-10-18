@@ -2337,6 +2337,14 @@ _mb.grab()      # 绘制一次, 确认自绘不抛异常
 check("指标区: 绘制不崩 (grab 成功)", _mb.grab().width() == 700)
 _mb.hide(); _mb.deleteLater()
 
+# ---- 第73轮: 毛玻璃下加回底部卡片框 ----
+_src73 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "card_app.py"),
+              encoding="utf-8").read()
+check("提供 paint_frost_card (毛玻璃下的 1px 卡片框)", "def paint_frost_card(" in _src73)
+check("三张内容卡片开启 frame (模型明细/每日用量/活跃热力)",
+      _src73.count("frame=True") >= 3, f"n={_src73.count('frame=True')}")
+check("paint_pod 毛玻璃分支接入了 frame", "elif frame:" in _src73)
+
 # ---- 还原真实数据目录路径 (临时目录随系统清理) ----
 ca._sn_events_all = orig_events
 ca.SN_AUTOSYNC_FILE = _REAL_AUTOSYNC_FILE
