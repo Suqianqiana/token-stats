@@ -2010,8 +2010,12 @@ try:
 
     check("按钮适配: 三档材质下样式互不相同",
           _q_def != _q_gla and _q_gla != _q_fro and _q_def != _q_fro)
-    check("按钮适配: 默认档保持原有实底芯片(观感不变)",
-          ca.qrgba(ca.TRACK) in _q_def[1] and ca.qrgba(ca.TRACK) in _q_def[6])
+    # 第74轮: 日期按钮改"分段控件" —— 未选中=透明(融进外框), 外框 range_box 才带 TRACK 底;
+    # 其余选项按钮(– / ✕ / 明暗)仍是实底芯片, 观感不变。
+    check("按钮适配: 默认档 min/明暗按钮保持实底芯片",
+          ca.qrgba(ca.TRACK) in _q_def[1] and ca.qrgba(ca.TRACK) in _q_def[5])
+    check("按钮适配: 日期按钮分段化(未选中透明 / 选中实色药丸)",
+          "background:transparent" in _q_def[6] and "checked" in _q_def[6])
     check("按钮适配: 液态玻璃档 = 半透明高光片 + 亮描边",
           "rgba(255,255,255,0.10)" in _q_gla[1] and "rgba(255,255,255,0.20)" in _q_gla[1])
     check("按钮适配: 毛玻璃档 = 近乎无底 + 极淡细线",
@@ -2080,10 +2084,11 @@ try:
         ca.refresh_palette()
         _wf65.apply_styles()
         _szs65.append(_wf65.btn_today.sizeHint())
-    check("日期按钮: 三档材质下尺寸都与旧版一致(改回来了)",
-          all(abs(s.width() - _old_sz65.width()) <= 1 and abs(s.height() - _old_sz65.height()) <= 1
-              for s in _szs65),
-          f"旧={_old_sz65.width()}x{_old_sz65.height()} 新={[f'{s.width()}x{s.height()}' for s in _szs65]}")
+    # 第74轮: 分段控件下不再要求"与旧版等宽"(内部无隔断, 盒子由外框统一),
+    # 只要求三档材质下尺寸**彼此一致**(切材质不跳动)。
+    check("日期按钮: 三档材质下尺寸彼此一致(分段控件)",
+          all(s == _szs65[0] for s in _szs65),
+          f"尺寸={[f'{s.width()}x{s.height()}' for s in _szs65]}")
     check("日期按钮: 尺寸靠 padding:3px 8px + 1px 描边等效旧 4px 9px 无描边",
           "padding:3px 8px" in _src62)
 
@@ -2098,7 +2103,8 @@ try:
     check("选中态取色: 不再是恒定的实心品牌蓝",
           "rgba(59,111,224,0.92)" not in _q_range65)
     check("选中态取色: 材质按钮选中态走同一套底图色", _want65 in _wf65.btn_frost.styleSheet())
-    check("选中态取色: 描边同色(比填充更实一点)", ca.qrgba(_acc65, 175) in _q_range65)
+    # 第74轮: 分段控件下选中 = 底图取色的实色药丸(无描边), 填充即取色
+    check("选中态取色: 分段控件选中 = 底图取色实色药丸", _want65 in _q_range65)
 
     # 独立复算: 取色的色相必须与底图平均色一致
     _img65 = ca.FrostTexture.instance().load()
@@ -2344,6 +2350,12 @@ check("提供 paint_frost_card (毛玻璃下的 1px 卡片框)", "def paint_fros
 check("三张内容卡片开启 frame (模型明细/每日用量/活跃热力)",
       _src73.count("frame=True") >= 3, f"n={_src73.count('frame=True')}")
 check("paint_pod 毛玻璃分支接入了 frame", "elif frame:" in _src73)
+
+# ---- 第74轮: 热力图滚轮/光标 + 分段日期控件 + 今日概况底框 ----
+check("热力图提供滚轮翻月 (wheelEvent)", "def wheelEvent" in _src73)
+check("热力图不再用手掌光标 (保持常规形态)", "OpenHandCursor" not in _src73)
+check("日期切换改为分段控件 (seg 角色)", 'material_btn_qss("seg"' in _src73)
+check("今日概况在毛玻璃下有底框", "rgba(255, 255, 255, 0.052)" in _src73)
 
 # ---- 还原真实数据目录路径 (临时目录随系统清理) ----
 ca._sn_events_all = orig_events

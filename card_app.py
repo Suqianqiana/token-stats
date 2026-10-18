@@ -115,12 +115,12 @@ SIZE_METRICS = {
     "default": {
         "name": "标准模式 (990×610)",
         "win_w": 990, "win_h": 610, "sidebar_w": 190,
-        # 第73轮打磨: 字号/间距向示意图靠拢 (标签加字距、主数字更大、小指标数值加大)
-        "stat_h": 72, "stat_val_pt": 14.8, "stat_lbl_pt": 9.6, "stat_hint_pt": 9.8,
+        # 第73/74轮打磨: 字号/间距向示意图靠拢 (标签加字距、主数字更大、小指标数值加大)
+        "stat_h": 72, "stat_val_pt": 15.6, "stat_lbl_pt": 10.2, "stat_hint_pt": 10.6,
         "stat_val_y": 28,  # 重心明显上提，距底边界留出 15px+ 舒适余量
-        # 第72轮: 指标区改为「方案 A 主次分层」(MetricsBand); 第73轮 118→128 再放宽
-        "metrics_h": 128, "metrics_val_pt": 32,
-        "row_h": 28, "name_w": 110, "total_w": 76, "pct_w": 50, "hit_w": 44, "req_w": 48,
+        # 第72轮: 指标区改为「方案 A 主次分层」(MetricsBand); 第74轮 128→132
+        "metrics_h": 132, "metrics_val_pt": 34,
+        "row_h": 28, "name_w": 94, "total_w": 76, "pct_w": 50, "hit_w": 40, "req_w": 48,
         "row_pt": 8.8, "row_head_pt": 8.5,
         "chart_min_h": 130, "heat_min_h": 105, "heat_cell": 10.0, "heat_gap": 2.5,
         "today_h": 28, "today_px": 11,
@@ -132,12 +132,12 @@ SIZE_METRICS = {
     "large": {
         "name": "舒适大窗口 (1180×730)",
         "win_w": 1180, "win_h": 730, "sidebar_w": 220,
-        "stat_h": 84, "stat_val_pt": 17.2, "stat_lbl_pt": 10.2, "stat_hint_pt": 10.4,
+        "stat_h": 84, "stat_val_pt": 18.0, "stat_lbl_pt": 10.8, "stat_hint_pt": 11.2,
         "stat_val_y": 34,  # 大窗口下同样重心居中偏上，比例舒展
-        "row_h": 34, "name_w": 134, "total_w": 88, "pct_w": 56, "hit_w": 50, "req_w": 54,
+        "row_h": 34, "name_w": 118, "total_w": 88, "pct_w": 56, "hit_w": 46, "req_w": 54,
         "row_pt": 9.2, "row_head_pt": 8.8,  # 表格行高拉开，文字保持干练清秀
-        # 第72轮: 指标区「方案 A 主次分层」; 反馈后 112→136 同步加高; 第73轮 136→148
-        "metrics_h": 148, "metrics_val_pt": 36,
+        # 第72轮: 指标区「方案 A 主次分层」; 反馈后 112→136; 第73轮 136→148; 第74轮 148→152
+        "metrics_h": 152, "metrics_val_pt": 38,
         "chart_min_h": 155, "heat_min_h": 120, "heat_cell": 11.5, "heat_gap": 2.8,
         "today_h": 32, "today_px": 12,
         "nav_btn_h": 42, "nav_btn_pt": 9.8,
@@ -381,8 +381,13 @@ def paint_frost_card(p, rect, radius, dark):
     """
     path = QPainterPath()
     path.addRoundedRect(rect, radius, radius)
+    # 淡底 (第74轮反馈: 之前只有框, 底"基本等同于无") —— 让卡片从底板上浮出来一点,
+    # 但仍是"通透的一层", 不是普通模式那种实底卡片。
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(255, 255, 255, 24) if dark else QColor(255, 255, 255, 170))
+    p.drawPath(path)
     p.setBrush(Qt.NoBrush)
-    edge = QColor(255, 255, 255, 38) if dark else QColor(28, 38, 58, 46)
+    edge = QColor(255, 255, 255, 40) if dark else QColor(28, 38, 58, 48)
     p.setPen(QPen(edge, 1.0))
     p.drawPath(path)
 
@@ -1094,6 +1099,14 @@ def material_btn_qss(role, dark, glass, frost, px=12):
                 f" font-weight:600; }}"
                 f"QPushButton:checked:hover{{ background:{acc_hov}; color:white; }}")
 
+    if role == "seg":              # 分段控件里的按钮(第74轮): 外层一个大框, 内部无隔断
+        # 未选中=完全透明(融进外框), 选中=实色药丸 —— 与示意图的 DAY/MONTH/TOTAL 一致
+        return (f"QPushButton{{ background:transparent; color:{fg}; border:none;"
+                f" border-radius:6px; padding:3px 10px;{size} }}"
+                f"QPushButton:hover{{ background:{chip_hov}; color:{fg_hov}; }}"
+                f"QPushButton:checked{{ background:{acc}; color:white; font-weight:600; }}"
+                f"QPushButton:checked:hover{{ background:{acc_hov}; color:white; }}")
+
     if role == "range":            # 时间区间按钮: **尺寸必须与旧版一致**
         # 旧版是 padding:4px 9px + 无描边; 这里用 padding:3px 8px + 1px 描边 ——
         # 盒子尺寸完全相同(宽 文本+18 / 高 文本+8), 默认档描边透明 → 观感也一致。
@@ -1670,8 +1683,12 @@ class MetricsBand(QWidget):
         w, h = self.width(), self.height()
         m = curr_metric()
         dark = theme_state["dark"]
-        hero_w = int(w * 0.55)          # 主指标栏宽
+        # 第74轮反馈: 左右两区之间要**留空** —— 主指标占 58%(右区相应收窄),
+        # 分栏线两侧各留一段呼吸区, 不再让两区紧贴分栏线。
+        hero_w = int(w * 0.58)          # 主指标栏宽
         col_x = hero_w
+        HERO_PAD = 16.0                 # 主指标内容 → 分栏线 的留白
+        COL_PAD = 22.0                  # 分栏线 → 右区内容 的留白
 
         # ---------- ① 主指标: 标签 / 超大数字 / 量级 / 环比 / 趋势线
         p.setPen(TEXT3)
@@ -1679,14 +1696,14 @@ class MetricsBand(QWidget):
         _lf = QFont("Microsoft YaHei UI", m["stat_lbl_pt"])
         _lf.setLetterSpacing(QFont.PercentageSpacing, 112.0)
         p.setFont(_lf)
-        p.drawText(QRectF(0, 0, hero_w, 17), Qt.AlignLeft | Qt.AlignVCenter, "合计 TOKEN")
+        p.drawText(QRectF(0, 0, hero_w - HERO_PAD, 17), Qt.AlignLeft | Qt.AlignVCenter, "合计 TOKEN")
 
         val_y0 = 15.0
         val_h = m["metrics_val_pt"] + 16
         p.setPen(TEXT)
         p.setFont(QFont("Consolas", m["metrics_val_pt"], QFont.Bold))
         val_txt = f"{self.total:,}"
-        p.drawText(QRectF(0, val_y0, hero_w, val_h),
+        p.drawText(QRectF(0, val_y0, hero_w - HERO_PAD, val_h),
                    Qt.AlignLeft | Qt.AlignVCenter, val_txt)
         # 量级标注: "≈ 1.42 亿" 紧跟数字之后 (示意图同款: 数字 + 量级)
         vw = p.fontMetrics().horizontalAdvance(val_txt)
@@ -1712,7 +1729,7 @@ class MetricsBand(QWidget):
             tx = cw + 8
         p.setPen(TEXT3)
         p.setFont(QFont("Microsoft YaHei UI", m["stat_hint_pt"]))
-        p.drawText(QRectF(tx, y2 - 1, hero_w - tx, 16), Qt.AlignLeft | Qt.AlignVCenter,
+        p.drawText(QRectF(tx, y2 - 1, hero_w - HERO_PAD - tx, 16), Qt.AlignLeft | Qt.AlignVCenter,
                    f"近 7 天 {fmt_compact(self.wow)} · 今日 {fmt_compact(self.today_total)}")
 
         # 趋势线: 随所选时间区段变化; 加**渐变面积填充**让它"落在地上", 不再是一根孤线
@@ -1721,7 +1738,7 @@ class MetricsBand(QWidget):
             y0 = y2 + 21.0
             sh = max(26.0, h - y0 - 10.0)
             n = len(self.spark)
-            pts = [((hero_w - 4.0) * i / (n - 1),
+            pts = [((hero_w - HERO_PAD - 4.0) * i / (n - 1),
                     y0 + sh - 3.0 - (self.spark[i] / mx) * (sh - 8.0))
                    for i in range(n)]
             if n >= 3:
@@ -1760,10 +1777,10 @@ class MetricsBand(QWidget):
             ty = 5.0 + i * gap
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(acc))
-            p.drawRoundedRect(QRectF(col_x + 18, ty + gap / 2 - 1.5, 16, 3), 1.5, 1.5)
+            p.drawRoundedRect(QRectF(col_x + COL_PAD, ty + gap / 2 - 1.5, 16, 3), 1.5, 1.5)
             p.setPen(TEXT2)
             p.setFont(QFont("Microsoft YaHei UI", m["stat_lbl_pt"] + 0.5))
-            p.drawText(QRectF(col_x + 38, ty, 120, gap),
+            p.drawText(QRectF(col_x + COL_PAD + 22, ty, 120, gap),
                        Qt.AlignLeft | Qt.AlignVCenter, label)
             # 数值 + 次要提示, 一律右对齐成列
             p.setFont(QFont("Consolas", m["stat_val_pt"] + 1, QFont.Bold))
@@ -1781,7 +1798,7 @@ class MetricsBand(QWidget):
                        Qt.AlignRight | Qt.AlignVCenter, value)
             if i < len(rows) - 1:
                 p.setPen(QPen(rule, 1.0))
-                p.drawLine(QPointF(col_x + 18, ty + gap), QPointF(w - RPAD, ty + gap))
+                p.drawLine(QPointF(col_x + COL_PAD, ty + gap), QPointF(w - RPAD, ty + gap))
         p.end()
 
 
@@ -1917,8 +1934,9 @@ class ModelRow(QWidget):
             p.drawPath(track)
             fill_w = max(8, bw * self.ratio)
             grad = QLinearGradient(bar_left, 0, bar_left + fill_w, 0)
-            grad.setColorAt(0, self.color.lighter(112))
-            grad.setColorAt(1, self.color)
+            # 第74轮: 示意图那种"从本色渐变到浅色"的胶囊 (原来方向是反的)
+            grad.setColorAt(0, self.color)
+            grad.setColorAt(1, self.color.lighter(135))
             fillp = QPainterPath()
             fillp.addRoundedRect(QRectF(bar_left, cy - 4, fill_w, 8), 4, 4)
             p.setBrush(QBrush(grad))
@@ -2239,25 +2257,27 @@ class HeatMap(QWidget):
     def _can_pan(self):
         return self._max_pan > 0
 
-    def enterEvent(self, ev):
-        # 手型光标就是"可以拖"的提示
-        if self._can_pan():
-            self.setCursor(Qt.OpenHandCursor)
-
     def mousePressEvent(self, ev):
+        # 第74轮反馈: 光标保持常规形态(不要手掌) —— 拖动能力靠"可拖"本身被发现即可
         if ev.button() == Qt.LeftButton and self._can_pan():
             self._drag_x = ev.position().x()
             self._drag_pan = self._pan
-            self.setCursor(Qt.ClosedHandCursor)
             ChartTip.instance().hide_tip()      # 拖动时别让悬浮框挡着
 
     def mouseReleaseEvent(self, ev):
         if self._drag_x is not None:
             self._drag_x = None
-            if self._can_pan():
-                self.setCursor(Qt.OpenHandCursor)
-            else:
-                self.unsetCursor()
+
+    def wheelEvent(self, ev):
+        # 第74轮: 滚轮也能翻月份 —— 向下滚 = 看更早, 与"向右拖"同向
+        if not self._can_pan():
+            return
+        step = 1 if ev.angleDelta().y() < 0 else -1
+        new_pan = max(0, min(self._max_pan, self._pan + step))
+        if new_pan != self._pan:
+            self._pan = new_pan
+            self.update()
+        ev.accept()
 
     def mouseMoveEvent(self, ev):
         # 拖动中: 按"单月像素宽"换算月数 —— 向右拖 = 往回看更早的月份
@@ -5868,9 +5888,11 @@ class CardWindow(QWidget):
         top_bar.addWidget(self.subtitle, 1)
 
         self.range_box = QWidget()
+        self.range_box.setObjectName("range_box")
+        # 第74轮: 时间区间改"分段控件" —— 外面一个大框, 内部**无隔断**(spacing 0), 只靠选中态区分
         rb_lay = QHBoxLayout(self.range_box)
-        rb_lay.setContentsMargins(0, 0, 0, 0)
-        rb_lay.setSpacing(4)
+        rb_lay.setContentsMargins(3, 2, 3, 2)
+        rb_lay.setSpacing(0)
         self.btn_today = self._tab_btn("今日")
         self.btn_7 = self._tab_btn("7天")
         self.btn_30 = self._tab_btn("30天")
@@ -6126,9 +6148,9 @@ class CardWindow(QWidget):
         self.src_head.setStyleSheet(f"color:{qname(TEXT3)}; padding-left:4px;")
 
         if frost:
-            # 毛玻璃 (第60轮): 今日概况不铺底不描边, 否则又变回"一张卡片"
-            tb_bg = "transparent"
-            tb_border = "transparent"
+            # 第74轮反馈: 今日概况也要底框 —— 与底部卡片同语言(淡底 + 1px 细描边)
+            tb_bg = "rgba(255, 255, 255, 0.052)" if dark else "rgba(255, 255, 255, 0.52)"
+            tb_border = "rgba(255, 255, 255, 0.14)" if dark else "rgba(28, 38, 58, 0.14)"
         elif glass:
             tb_bg = "rgba(255, 255, 255, 0.08)" if dark else "rgba(255, 255, 255, 0.45)"
             tb_border = "rgba(255, 255, 255, 0.18)" if dark else "rgba(255, 255, 255, 0.70)"
@@ -6154,9 +6176,21 @@ class CardWindow(QWidget):
 
         # 时间区间 + 明暗切换: 同一套"选项"语言
         opt_qss = material_btn_qss("opt", dark, glass, frost, px=m["opt_btn_px"])
-        range_qss = material_btn_qss("range", dark, glass, frost, px=m["opt_btn_px"])
+        range_qss = material_btn_qss("seg", dark, glass, frost, px=m["opt_btn_px"])
         for b in (self.btn_today, self.btn_7, self.btn_30, self.btn_all):
             b.setStyleSheet(range_qss)
+        # 外层大框 (分段控件的"容器"): 圆角 + 1px 细描边, 与卡片/按钮同语言
+        if frost:
+            seg_bg = "rgba(255,255,255,0.045)" if dark else "rgba(255,255,255,0.34)"
+            seg_bd = "rgba(255,255,255,0.13)" if dark else "rgba(28,38,58,0.13)"
+        elif glass:
+            seg_bg = "rgba(255,255,255,0.09)" if dark else "rgba(255,255,255,0.50)"
+            seg_bd = "rgba(255,255,255,0.20)" if dark else "rgba(255,255,255,0.85)"
+        else:
+            seg_bg = qrgba(TRACK)
+            seg_bd = "transparent"
+        self.range_box.setStyleSheet(
+            f"#range_box {{ background:{seg_bg}; border:1px solid {seg_bd}; border-radius:9px; }}")
         # 明暗切换: 独立按钮(非互斥组), 放最下面
         self.btn_theme_toggle.setStyleSheet(opt_qss)
         self.btn_theme_toggle.setText("🌙 暗色" if not dark else "☀️ 亮色")
