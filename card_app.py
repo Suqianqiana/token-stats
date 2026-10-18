@@ -116,10 +116,12 @@ SIZE_METRICS = {
         "name": "标准模式 (990×610)",
         "win_w": 990, "win_h": 610, "sidebar_w": 190,
         # 第73/74轮打磨: 字号/间距向示意图靠拢 (标签加字距、主数字更大、小指标数值加大)
-        "stat_h": 72, "stat_val_pt": 15.6, "stat_lbl_pt": 10.2, "stat_hint_pt": 10.6,
+        # 第75轮: 示意图是 CSS px, Qt 是 pt (1pt=1.333px) —— 之前直接把 34px 当 34pt 用, 大了 33%!
+        #   正确换算: 主数字 34px→25.5pt / 标签 11px→8.3pt / 副文 11.5px→8.6pt / 小指标 15px→11.3pt
+        "stat_h": 72, "stat_val_pt": 11.3, "stat_lbl_pt": 8.3, "stat_hint_pt": 8.6,
         "stat_val_y": 28,  # 重心明显上提，距底边界留出 15px+ 舒适余量
         # 第72轮: 指标区改为「方案 A 主次分层」(MetricsBand); 第74轮 128→132
-        "metrics_h": 132, "metrics_val_pt": 34,
+        "metrics_h": 116, "metrics_val_pt": 25.5,
         "row_h": 28, "name_w": 94, "total_w": 76, "pct_w": 50, "hit_w": 40, "req_w": 48,
         "row_pt": 8.8, "row_head_pt": 8.5,
         "chart_min_h": 130, "heat_min_h": 105, "heat_cell": 10.0, "heat_gap": 2.5,
@@ -132,12 +134,12 @@ SIZE_METRICS = {
     "large": {
         "name": "舒适大窗口 (1180×730)",
         "win_w": 1180, "win_h": 730, "sidebar_w": 220,
-        "stat_h": 84, "stat_val_pt": 18.0, "stat_lbl_pt": 10.8, "stat_hint_pt": 11.2,
+        "stat_h": 84, "stat_val_pt": 13.6, "stat_lbl_pt": 10.0, "stat_hint_pt": 10.2,
         "stat_val_y": 34,  # 大窗口下同样重心居中偏上，比例舒展
         "row_h": 34, "name_w": 118, "total_w": 88, "pct_w": 56, "hit_w": 46, "req_w": 54,
         "row_pt": 9.2, "row_head_pt": 8.8,  # 表格行高拉开，文字保持干练清秀
         # 第72轮: 指标区「方案 A 主次分层」; 反馈后 112→136; 第73轮 136→148; 第74轮 148→152
-        "metrics_h": 152, "metrics_val_pt": 38,
+        "metrics_h": 134, "metrics_val_pt": 30,
         "chart_min_h": 155, "heat_min_h": 120, "heat_cell": 11.5, "heat_gap": 2.8,
         "today_h": 32, "today_px": 12,
         "nav_btn_h": 42, "nav_btn_pt": 9.8,
@@ -1708,7 +1710,7 @@ class MetricsBand(QWidget):
         # 量级标注: "≈ 1.42 亿" 紧跟数字之后 (示意图同款: 数字 + 量级)
         vw = p.fontMetrics().horizontalAdvance(val_txt)
         p.setPen(TEXT2)
-        p.setFont(QFont("Microsoft YaHei UI", m["stat_hint_pt"] + 1.5))
+        p.setFont(QFont("Microsoft YaHei UI", m["stat_hint_pt"] + 2.7))
         p.drawText(QRectF(vw + 10, val_y0 + val_h * 0.22, 88, val_h * 0.7),
                    Qt.AlignLeft | Qt.AlignVCenter, f"≈ {fmt(self.total)}")
 
@@ -1738,7 +1740,9 @@ class MetricsBand(QWidget):
             y0 = y2 + 21.0
             sh = max(26.0, h - y0 - 10.0)
             n = len(self.spark)
-            pts = [((hero_w - HERO_PAD - 4.0) * i / (n - 1),
+            # 第75轮: 折线右端也**往里收**(示意图同款 —— 不顶到分栏线, 右侧留白)
+            spark_w = (hero_w - HERO_PAD) * 0.80
+            pts = [(spark_w * i / (n - 1),
                     y0 + sh - 3.0 - (self.spark[i] / mx) * (sh - 8.0))
                    for i in range(n)]
             if n >= 3:
@@ -1783,7 +1787,7 @@ class MetricsBand(QWidget):
             p.drawText(QRectF(col_x + COL_PAD + 22, ty, 120, gap),
                        Qt.AlignLeft | Qt.AlignVCenter, label)
             # 数值 + 次要提示, 一律右对齐成列
-            p.setFont(QFont("Consolas", m["stat_val_pt"] + 1, QFont.Bold))
+            p.setFont(QFont("Consolas", m["stat_val_pt"] + 0.4, QFont.Bold))
             vw = p.fontMetrics().horizontalAdvance(value) + 2
             hw = 0.0
             if hint:
@@ -1793,7 +1797,7 @@ class MetricsBand(QWidget):
                 p.drawText(QRectF(w - RPAD - hw, ty, hw, gap),
                            Qt.AlignRight | Qt.AlignVCenter, hint)
             p.setPen(TEXT)
-            p.setFont(QFont("Consolas", m["stat_val_pt"] + 1, QFont.Bold))
+            p.setFont(QFont("Consolas", m["stat_val_pt"] + 0.4, QFont.Bold))
             p.drawText(QRectF(w - RPAD - hw - vw, ty, vw, gap),
                        Qt.AlignRight | Qt.AlignVCenter, value)
             if i < len(rows) - 1:
