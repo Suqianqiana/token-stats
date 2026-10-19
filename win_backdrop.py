@@ -60,11 +60,11 @@ if _WIN:
 # ---------------------------------------------------------------- tint 常量
 # 调研 08 号：深色用深基色、浅色用浅基色。下面两个数字可直接微调观感。
 ACRYLIC_ALPHA_DARK = 0x8C        # 深色 tint 不透明度 (~55%)
-ACRYLIC_ALPHA_LIGHT = 0x62       # 浅色 tint 不透明度 (~38%)
-# 第77轮(浅猫截图): 原先浅色 0xAA(67% 近白)会把背后模糊整个盖死,
-# 反馈是"亮色完全没有实现毛玻璃" → 降到 0x62, 模糊立起来。
+ACRYLIC_ALPHA_LIGHT = 0x8A       # 浅色 tint 不透明度 (~54%)
+# 第78轮(浅猫): 浅色要"纯奶白"。上一版 0x62(38%) 太透 → 桌面壁纸的色相渗上来,
+# 她看到的是"纯薄荷绿"。现在: ① 提到 54%; ② tint 用**纯白**, 压住壁纸色相。
 ACRYLIC_RGB_DARK = (0x14, 0x18, 0x1F)    # 深板岩色
-ACRYLIC_RGB_LIGHT = (0xF2, 0xF5, 0xFA)   # 近白
+ACRYLIC_RGB_LIGHT = (0xFF, 0xFF, 0xFF)   # 纯白(奶白的关键)
 
 
 def acrylic_color(dark, alpha=None):
@@ -189,7 +189,7 @@ def apply_acrylic(hwnd, dark, alpha=None):
         ok = fx.set_acrylic(hwnd, acrylic_color(dark, alpha), enable_shadow=True)
         if ok:
             fx.set_dark_mode(hwnd, bool(dark))
-            fx.set_corner(hwnd, 3)
+            fx.set_corner(hwnd, 2)      # 第78轮: 2=ROUND(原来传 3=ROUNDSMALL, 圆角太弱)
         return bool(ok)
     except Exception:
         return False

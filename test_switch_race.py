@@ -2249,6 +2249,8 @@ _src72 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "card_app
 _code72 = "\n".join(ln for ln in _src72.splitlines() if not ln.strip().startswith("#"))
 check("代码里已无「今日花费」展示", "今日花费" not in _code72)
 check("代码里已无「累计花费」展示", "累计花费" not in _code72)
+check("亚克力圆角裁剪用 QRegion(不用 Mono 位图, 避免反转)", "QRegion(path.toFillPolygon" in _src72)
+check("亚克力下去掉外圈透明边距(消灭矩形框)", "_sync_frost_margins" in _src72)
 
 _w72 = ca.CardWindow()
 _w72.refresh = lambda *a, **k: None

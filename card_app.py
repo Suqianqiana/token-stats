@@ -95,7 +95,7 @@ from PySide6.QtCore import (Qt, QRectF, QObject, Signal, QTimer, QPoint, QRect,
                             QPointF, QEvent, QSize)
 from PySide6.QtGui import (QColor, QFont, QPainter, QPen, QBrush, QPainterPath,
                            QLinearGradient, QImage, QPixmap, QGuiApplication, QIcon,
-                           QAction, QFontMetrics, QBitmap)
+                           QAction, QFontMetrics, QBitmap, QRegion)
 from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QVBoxLayout,
                                QHBoxLayout, QGridLayout, QFrame, QPushButton,
                                QScrollArea, QMenu, QSizePolicy, QPlainTextEdit,
@@ -6308,16 +6308,14 @@ class CardWindow(QWidget):
         save_settings()
 
     def _apply_acrylic_mask(self):
-        """第77轮: 用 setMask 把窗口裁成圆角, **彻底消灭** DWM 亚克力铺出来的矩形框。
+        """第78轮重做: 用 **QRegion** 把窗口裁成圆角, 消灭 DWM 亚克力铺出的矩形框。
 
-        历史背景: 本项目第3轮起就用 `FramelessWindowHint + WA_TranslucentBackground`
-        得到"圆角, 圆角外透出桌面" —— 那套机制在**自绘**模式下够用(桌面自然是桌面,
-        看不出矩形)。但 DWM Acrylic 挂在 HWND 上, 铺的是整个**窗口矩形**:
-        于是窗口矩形内、我们圆角外的那一圈, 也都被铺上材质 → 屏幕上一圈"矩形框"。
+        ⚠️ 第77轮踩的坑: 用 `QImage(Format_Mono)` + `QBitmap.fromImage()` 做 mask 时,
+        Mono 的色彩表索引 0 默认就是**白色 = 不透明**, 我 `fill(0)` 以为是"全透明底",
+        实际把整个窗口设成了不透明遮罩 → 浅猫看到"遮罩全覆盖, 什么都看不到也点不了"。
+        → 改用 `QRegion`(由圆角路径的填充多边形生成): 没有位图色彩表语义, 不会反转。
 
-        第77轮我先只把它"填起来"补缝, 浅猫一眼看穿: 那是遗留原生矩形, 是**消灭**而不是掩盖。
-        → 正解就是这个: `QWidget.setMask()` 会把整个窗口(含 DWM 材质层)裁成给定区域,
-        第3轮以来"圆角外透出桌面"用的正是它。mask 为 None 时恢复原状。
+        注意: setMask 会同时影响 DWM 材质与命中测试, 所以任何异常都必须**回退到不裁**。
         """
         try:
             if not ACRYLIC["on"]:
@@ -6325,20 +6323,21 @@ class CardWindow(QWidget):
                     self.clearMask()
                 return
             w, h = self.width(), self.height()
-            if w <= 0 or h <= 0:
+            if w <= 2 or h <= 2:
                 return
-            r = 16.0
-            mask = QImage(int(w), int(h), QImage.Format_Mono)
-            mask.fill(0)                      # 全透明底 → 圆角外一律裁掉
-            mp = QPainter(mask)
-            mp.setRenderHint(QPainter.Antialiasing)
-            mp.setBrush(Qt.white)             # Mono: 白色 = 保留
-            mp.setPen(Qt.NoPen)
-            mp.drawRoundedRect(QRectF(0, 0, float(w), float(h)), r, r)
-            mp.end()
-            self.setMask(QBitmap.fromImage(mask))
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(0, 0, float(w), float(h)), 16.0, 16.0)
+            region = QRegion(path.toFillPolygon().toPolygon())
+            if region.isEmpty():
+                self.clearMask()
+                return
+            self.setMask(region)
         except Exception:
-            pass
+            try:
+                self.clearMask()
+            except Exception:
+                pass
+
 
     def _sync_acrylic(self, force=False):
         """把"要不要 DWM 实时毛玻璃"同步到窗口(第76轮)。
@@ -6364,13 +6363,27 @@ class CardWindow(QWidget):
                     pass
             ACRYLIC["on"] = False
             self._apply_acrylic_mask()      # 退出亚克力 → 解除圆角裁剪
+            self._sync_frost_margins()
             return
         try:
             ok = _winbd.apply_acrylic(hwnd, bool(theme_state.get("dark")))
         except Exception:
             ok = False
         ACRYLIC["on"] = bool(ok)
-        self._apply_acrylic_mask()          # 挂上亚克力 → 立刻把窗口裁成圆角, 消灭矩形框
+        self._apply_acrylic_mask()          # 挂上亚克力 → 裁圆角, 消灭矩形
+        self._sync_frost_margins()          # 亚克力下不要 10px 透明边距(它会被铺成"框")
+
+    def _sync_frost_margins(self):
+        """第78轮: 亚克力模式下去掉窗口外圈 10px 透明边距。
+
+        这是"消灭矩形框"最直接的保险: 那圈边距在亚克力下同样被 DWM 铺上材质,
+        正是浅猫截图里"四周的矩形框"。去掉后窗口＝面板, 不存在"面板外的材质区"。
+        """
+        try:
+            m = 0 if ACRYLIC["on"] else 10
+            self.outer_lay.setContentsMargins(m, m, m, m)
+        except Exception:
+            pass
 
     def showEvent(self, ev):
         super().showEvent(ev)
