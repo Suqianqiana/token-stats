@@ -2349,14 +2349,18 @@ check("指标区: 绘制不崩 (grab 成功)", _mb.grab().width() == 700)
 _mb.hide(); _mb.deleteLater()
 
 # ---- 第73轮: 毛玻璃下加回底部卡片框 ----
+_src84 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "card_app.py"), encoding="utf-8").read()
 _src73 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "card_app.py"),
               encoding="utf-8").read()
 check("提供 paint_frost_card (毛玻璃下的 1px 卡片框)", "def paint_frost_card(" in _src73)
 check("三张内容卡片开启 frame (模型明细/每日用量/活跃热力)",
       _src73.count("frame=True") >= 3, f"n={_src73.count('frame=True')}")
 check("paint_pod 毛玻璃分支接入了 frame", "elif frame:" in _src73)
-check("亚克力模式用 mask 把外圈 10px 挖掉(不再铺一圈材质)",
-      "self._apply_acrylic_mask()" in _src73 and "QRectF(10.0, 10.0" in _src73)
+# 第84轮定论: SetWindowRgn 只裁 Qt 绘制, DWM 材质仍铺满窗口矩形 →
+# 真正解法是"窗口=面板"(亚克力下窗口缩 20px, 可见面板尺寸与其它模式一致)
+check("亚克力下窗口缩 20px 保持面板尺寸一致", 'tw, th = m["win_w"] - 20' in _src84)
+check("亚克力下外边距为 0(窗口=面板, 无多余材质圈)", 'pad = 0' in _src84)
+check("亚克力 mask 覆盖整个窗口(不再内缩)", 'QRectF(0.0, 0.0, float(w), float(h))' in _src84)
 check("亚克力不再调用 set_corner/add_shadow(原生边框根源)",
       "set_corner(hwnd, 2)" not in _src73)
 check("静态背景再点一次回默认模式", '"static" if on else None' in _src73)

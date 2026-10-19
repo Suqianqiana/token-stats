@@ -6070,6 +6070,11 @@ class CardWindow(QWidget):
         m = SIZE_METRICS[mode_name]
         self.setFixedSize(m["win_w"], m["win_h"])
         self.resize(m["win_w"], m["win_h"])
+        # 第84轮: 亚克力下窗口要比基准小 20px(让可见面板尺寸与其它模式一致) → 交给统一口径处理
+        try:
+            self._sync_frost_margins()
+        except Exception:
+            pass
 
         self.sidebar.setFixedWidth(m["sidebar_w"])
         self.card.sep_x = float(m["sidebar_w"])
@@ -6319,7 +6324,7 @@ class CardWindow(QWidget):
             # 裁到**面板区域**(外圈 10px 边距之外), 半径与面板 14px 对齐:
             # 这样窗外那圈是纯壁纸 → 没有 DWM 材质、没有矩形框, 而我们的圆角外框原样保留。
             path = QPainterPath()
-            path.addRoundedRect(QRectF(10.0, 10.0, float(w) - 20.0, float(h) - 20.0), 14.0, 14.0)
+            path.addRoundedRect(QRectF(0.0, 0.0, float(w), float(h)), 14.0, 14.0)   # 窗口＝面板(第84轮)
             region = QRegion(path.toFillPolygon().toPolygon())
             if region.isEmpty():
                 self.clearMask()
@@ -6389,19 +6394,30 @@ class CardWindow(QWidget):
         self._sync_frost_margins()
 
     def _sync_frost_margins(self):
-        """第79轮: 真模糊模式下窗口＝面板(外边距 0), 其余材质保留 10px 圆角外框。
+        """第84轮(浅猫对照图定论): 亚克力下 **窗口＝面板**, 且窗口缩小 20px 以保持面板尺寸不变。
 
-        为什么必须这样(屏捕实测结论):
-          · 真模糊只能由 DWM 的 AccentPolicy(Acrylic) 提供;
-          · 它没有"区域"参数, 一定铺满**整个窗口矩形**;
-          · 而 setMask/SetWindowRgn 会让该材质直接失效(窗口变纯透明能看穿网页)。
-        ⇒ "保留 10px 外圈壁纸环" 与 "真·实时模糊" 物理上不能并存。
-          本项优先满足"消灭原生矩形 + 保留干净圆角外框(面板本身的圆角, 由 DWM 提供)";
-          需要外圈壁纸环时 → 用「静态背景」材质(它走静态底纹, 保留 10px 环)。
+        实测结论(四材质左上角 4x 对照):
+          · SetWindowRgn/setMask **只裁 Qt 的绘制**, DWM 的 AccentPolicy 材质仍然铺满**整个窗口矩形**
+            → 面板内缩 10px 时, 那 10px 就被填成"一圈材质", 也就是浅猫反复看到的那圈多余外框;
+          · 所以真模糊下窗口必须**等于**面板(外边距 0), 否则那圈必然存在。
+        ⚠️ 但直接 margins=0 会让可见面板比其它模式**大 20px**(割裂)。折中:
+          亚克力下把**窗口**缩 20px(990x610 → 970x590), 外边距 0 →
+          可见面板 = 970x590, 与其它模式(990-20 x 610-20) **完全一致**, 又没有多余材质圈。
         """
         try:
-            m = 10
-            self.outer_lay.setContentsMargins(m, m, m, m)
+            m = SIZE_METRICS.get(theme_state.get("window_size", "default"),
+                                 SIZE_METRICS["default"])
+            if ACRYLIC["on"]:
+                pad = 0
+                tw, th = m["win_w"] - 20, m["win_h"] - 20
+            else:
+                pad = 10
+                tw, th = m["win_w"], m["win_h"]
+            self.outer_lay.setContentsMargins(pad, pad, pad, pad)
+            # 仅在尺寸不对时才改, 避免 resizeEvent → _sync_acrylic → 这里 的循环
+            if (self.width(), self.height()) != (tw, th):
+                self.setFixedSize(tw, th)
+                self.resize(tw, th)
         except Exception:
             pass
 
@@ -6409,8 +6425,10 @@ class CardWindow(QWidget):
         super().showEvent(ev)
         # 第76/77轮: 同样要在 show 之后(winId 才稳定) → 刷新纹理缓存 + 挂 DWM 材质 + 圆角裁剪
         # (本方法是唯一的 showEvent 实现, 覆盖了上面早期的同名定义)
-        self._apply_window_backdrop()
+        # 第84轮: 先只挂材质(0.15ms 级), 让窗口**立刻**出现; 纹理解码这种重活推迟 30ms,
+        # 否则"一键重启"后会有一段时间看不到窗口, 观感像卡住。
         QTimer.singleShot(0, lambda: self._sync_acrylic(force=True))
+        QTimer.singleShot(30, self._apply_window_backdrop)
 
     def changeEvent(self, ev):
         super().changeEvent(ev)
