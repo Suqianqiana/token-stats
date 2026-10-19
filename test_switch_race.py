@@ -1937,10 +1937,13 @@ check("布局: 液态玻璃与毛玻璃在同一行(同一 layout)",
 check("布局: 明暗切换在材质按钮之后(最下面)",
       _src62.index("self.btn_theme_toggle = QPushButton") >
       _src62.index("self.btn_glass_toggle = QPushButton"))
-check("布局: 三按钮统一与刷新按钮同高(refresh_h)",
+# 第77轮: 改成循环统一赋值(新增"静态背景"按钮, 与明暗切换同一行)
+check("布局: 明暗/材质/静态背景按钮统一与刷新按钮同高(refresh_h)",
       '_opt_h = m["refresh_h"]' in _src62
-      and "self.btn_frost.setFixedHeight(_opt_h)" in _src62
-      and "self.btn_theme_toggle.setFixedHeight(_opt_h)" in _src62)
+      and "setFixedHeight(_opt_h)" in _src62
+      and "_opt_ft = QFont(" in _src62)
+check("布局: 静态背景按钮同高同字号(与明暗切换在同一行)",
+      "btn_static_bg" in _src62 and 'getattr(self, "btn_static_bg", None)' in _src62)
 check("布局: 材质按钮有独立样式(选中实心/未选描边)",
       "mat_style" in _src62 and "material_btn_qss" in _src62)   # 第64轮: 样式改为按材质分档生成
 
@@ -2356,6 +2359,51 @@ check("热力图提供滚轮翻月 (wheelEvent)", "def wheelEvent" in _src73)
 check("热力图不再用手掌光标 (保持常规形态)", "OpenHandCursor" not in _src73)
 check("日期切换改为分段控件 (seg 角色)", 'material_btn_qss("seg"' in _src73)
 check("今日概况在毛玻璃下有底框", "rgba(255, 255, 255, 0.052)" in _src73)
+
+# ---- 第76轮: 真毛玻璃(DWM Acrylic) + 静态背景 ----
+try:
+    import win_backdrop as _wb76
+except Exception:
+    _wb76 = None
+check("提供 win_backdrop 模块 (DWM Acrylic)", _wb76 is not None)
+if _wb76 is not None:
+    check("tint 是 8 位 AARRGGBB",
+          len(_wb76.acrylic_color(True)) == 8 and len(_wb76.acrylic_color(False)) == 8,
+          _wb76.acrylic_color(True))
+    check("深浅 tint 基色不同 (调研08: 亮度差可达39)",
+          _wb76.acrylic_color(True)[2:] != _wb76.acrylic_color(False)[2:],
+          f"{_wb76.acrylic_color(True)} vs {_wb76.acrylic_color(False)}")
+    check("GradientColor 字节序被反转 (AARRGGBB → BBGGRRAA)",
+          _wb76.WindowsWindowEffect._gradient("8C14181F").value == 0x1F18148C,
+          hex(_wb76.WindowsWindowEffect._gradient("8C14181F").value))
+check("theme_state 含 frost_static (才能落盘)",
+      "frost_static" in ca.theme_state and isinstance(ca.theme_state["frost_static"], bool))
+check("侧栏有静态背景按钮 + 提供 set_static_bg",
+      hasattr(ca.CardWindow, "btn_static_bg") if False else
+      ("btn_static_bg" in _src73 and "def set_static_bg" in _src73))
+check('_frost_fill 在 Acrylic 生效时不画纹理', 'ACRYLIC["on"]' in _src73)
+
+_w76 = ca.CardWindow()
+_w76.refresh = lambda *a, **k: None
+ca.theme_state["frost"] = False
+ca.theme_state["frost_static"] = False
+_w76.set_static_bg(True)
+check("开静态背景时若不在毛玻璃 → 顺带进入毛玻璃 (否则开了没效果)",
+      bool(ca.theme_state.get("frost")) and bool(ca.theme_state.get("frost_static")),
+      f"frost={ca.theme_state.get('frost')} static={ca.theme_state.get('frost_static')}")
+_w76.set_static_bg(False)
+check("关静态背景 → 回到实时毛玻璃", ca.theme_state.get("frost_static") is False)
+_saved76 = os.path.join(tempfile.mkdtemp(), "settings.json")
+_old76 = ca.SETTINGS_FILE
+ca.SETTINGS_FILE = _saved76
+ca.theme_state["frost_static"] = True
+ca.save_settings()
+check("frost_static 能落盘",
+      json.load(open(_saved76, encoding="utf-8")).get("frost_static") is True)
+ca.SETTINGS_FILE = _old76
+ca.theme_state["frost"] = False
+ca.theme_state["frost_static"] = False
+_w76.close()
 
 # ---- 还原真实数据目录路径 (临时目录随系统清理) ----
 ca._sn_events_all = orig_events

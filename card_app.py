@@ -56,6 +56,10 @@ import time
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
 import scanner  # noqa: E402
+try:
+    import win_backdrop as _winbd        # 第76轮: DWM 实时毛玻璃(Acrylic)
+except Exception:                        # 非 Windows / 导入失败 → 自动降级为静态底纹
+    _winbd = None
 import peer_store  # noqa: E402   # 2026-09-19 (第50轮): 多机数据源 导出/导入/合并
 
 
@@ -91,7 +95,7 @@ from PySide6.QtCore import (Qt, QRectF, QObject, Signal, QTimer, QPoint, QRect,
                             QPointF, QEvent, QSize)
 from PySide6.QtGui import (QColor, QFont, QPainter, QPen, QBrush, QPainterPath,
                            QLinearGradient, QImage, QPixmap, QGuiApplication, QIcon,
-                           QAction, QFontMetrics)
+                           QAction, QFontMetrics, QBitmap)
 from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QVBoxLayout,
                                QHBoxLayout, QGridLayout, QFrame, QPushButton,
                                QScrollArea, QMenu, QSizePolicy, QPlainTextEdit,
@@ -208,7 +212,14 @@ theme_state = {
     # 2026-09-25 (第63轮): 毛玻璃底纹是否用**用户自定义图**(True) 还是内置默认图(False)。
     # 同样必须进 theme_state 才能落盘。
     "frost_custom": False,
+    # 2026-10-19 (第76轮): **静态背景** —— 毛玻璃模式下改用静态底纹(内置/自定义图)代替
+    # DWM 实时 Acrylic。默认值 False = 默认走真·实时毛玻璃。
+    "frost_static": False,
 }
+
+# 2026-10-19 (第76轮): 真毛玻璃(DWM Acrylic)是否已挂到窗口上。
+#   True 时窗口背后的模糊由系统合成器完成, Qt 侧只铺极淡 tint —— 于是 _frost_fill 不再画纹理。
+ACRYLIC = {"on": False}
 SETTINGS_FILE = os.path.join(scanner.PLUGIN_DATA_DIR, "settings.json")
 
 BLUE   = QColor("#3b6fe0")
@@ -386,7 +397,7 @@ def paint_frost_card(p, rect, radius, dark):
     # 淡底 (第74轮反馈: 之前只有框, 底"基本等同于无") —— 让卡片从底板上浮出来一点,
     # 但仍是"通透的一层", 不是普通模式那种实底卡片。
     p.setPen(Qt.NoPen)
-    p.setBrush(QColor(255, 255, 255, 24) if dark else QColor(255, 255, 255, 170))
+    p.setBrush(QColor(255, 255, 255, 24) if dark else QColor(255, 255, 255, 105))
     p.drawPath(path)
     p.setBrush(Qt.NoBrush)
     edge = QColor(255, 255, 255, 40) if dark else QColor(28, 38, 58, 48)
@@ -702,8 +713,14 @@ def _frost_fill(p, widget, rect, dark, alpha):
     alpha 语义: ≥1 更实(文字多的地方), <1 更透。两种明暗各自合成:
       · 深色 = 画纹理 → 压暗罩;
       · 浅色 = 铺白底 → 纹理以低不透明度叠上(避免深纹理透成灰斑)。
+
+    第76轮: ACRYLIC["on"] 为真时**不再画纹理** —— 模糊由 DWM 在窗口背后实时合成,
+    这里只铺一层极淡 tint 保证文字可读即可(画纹理反而会把实时模糊盖死)。
     """
     alpha = max(0.0, min(1.6, float(alpha)))
+    if ACRYLIC["on"]:
+        p.fillRect(rect, QColor(255, 255, 255, 16 if dark else 78))
+        return
     pm = None
     if widget is not None:
         try:
@@ -783,8 +800,13 @@ class LiquidGlassFrame(QFrame):
         dark = theme_state["dark"]
         glass = theme_state["glass"]
 
-        # 毛玻璃模式 (第63轮重做): 主底板铺**内置/自定义模糊纹理** —— 不再抓屏、不再依赖 DWM。
+        # 毛玻璃模式: 静态底纹(内置/自定义) 或 DWM 实时 Acrylic(第76轮)。
         if theme_state.get("frost"):
+            if ACRYLIC["on"]:
+                # 亚克力下**什么都不画**: DWM 铺的是整个窗口矩形, Qt 再画只会两层叠加。
+                # 圆角外的矩形由 _apply_acrylic_mask() 用 setMask 裁掉(第77轮) ——
+                # 那是我们一直以来让"圆角外透出桌面"的同一机制, 对 DWM 材质同样有效。
+                return
             paint_frost_blur(p, self, rect, 14, dark)
             # 侧边栏分隔线: 细线 (与分区线同一套语言)
             p.setPen(QPen(frost_rule_color(dark), 1.0))
@@ -5870,11 +5892,22 @@ class CardWindow(QWidget):
         mat_row.addWidget(self.btn_frost, 1)
         side_lay.addLayout(mat_row)
 
-        # 明暗切换放最下面 (第62轮按浅猫要求下移)
+        # 明暗切换 + 静态背景 **同一行** (第76轮按浅猫要求)
+        opt_row = QHBoxLayout()
+        opt_row.setSpacing(6)
         self.btn_theme_toggle = QPushButton("🌙 暗色" if not theme_state["dark"] else "☀️ 亮色")
         self.btn_theme_toggle.setCursor(Qt.PointingHandCursor)
         self.btn_theme_toggle.clicked.connect(lambda: self.set_dark(not theme_state["dark"]))
-        side_lay.addWidget(self.btn_theme_toggle)
+        opt_row.addWidget(self.btn_theme_toggle, 1)
+
+        # 静态背景: 毛玻璃模式下改用静态底纹(内置/自定义图)代替 DWM 实时模糊
+        self.btn_static_bg = QPushButton("静态背景")
+        self.btn_static_bg.setCheckable(True)
+        self.btn_static_bg.setChecked(bool(theme_state.get("frost_static")))
+        self.btn_static_bg.setCursor(Qt.PointingHandCursor)
+        self.btn_static_bg.toggled.connect(self._on_static_btn)
+        opt_row.addWidget(self.btn_static_bg, 1)
+        side_lay.addLayout(opt_row)
 
         main_layout.addWidget(self.sidebar)
 
@@ -6024,11 +6057,11 @@ class CardWindow(QWidget):
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
+        # 第77轮: mask 依赖窗口尺寸, 改尺寸后必须重裁, 否则圆角外又露矩形
+        if ACRYLIC["on"]:
+            self._apply_acrylic_mask()
 
-    def showEvent(self, ev):
-        super().showEvent(ev)
-        # 窗口句柄就绪后再应用系统模糊(必须 show 之后 winId 才有效)
-        self._apply_window_backdrop()
+    # 注: showEvent 统一实现在下方(第76/77轮, 需要同时刷新纹理缓存 + 挂 DWM 材质)
 
     # ---------------- 动态尺寸适配器 ----------------
     def apply_size_mode(self, mode_name, save=True):
@@ -6055,14 +6088,16 @@ class CardWindow(QWidget):
         self.btn_refresh.setFixedHeight(m["refresh_h"])
         self.btn_refresh.setFont(QFont("Microsoft YaHei UI", m["nav_btn_pt"], QFont.Bold))
 
-        # 第62轮: 三个按钮统一与「刷新数据」同高(原 opt_btn_h=28/30 偏扁, 视觉不协调)
+        # 第62轮: 按钮统一与「刷新数据」同高(原 opt_btn_h=28/30 偏扁, 视觉不协调)
+        # 第77轮: 静态背景与明暗切换同一行 → 一起纳入同高同字号, 否则两者盒高不一致
         _opt_h = m["refresh_h"]
-        self.btn_theme_toggle.setFixedHeight(_opt_h)
-        self.btn_glass_toggle.setFixedHeight(_opt_h)
-        self.btn_frost.setFixedHeight(_opt_h)
-        self.btn_theme_toggle.setFont(QFont("Microsoft YaHei UI", m["nav_btn_pt"]))
-        self.btn_glass_toggle.setFont(QFont("Microsoft YaHei UI", m["nav_btn_pt"]))
-        self.btn_frost.setFont(QFont("Microsoft YaHei UI", m["nav_btn_pt"]))
+        _opt_ft = QFont("Microsoft YaHei UI", m["nav_btn_pt"])
+        for _b in (self.btn_theme_toggle, self.btn_glass_toggle, self.btn_frost,
+                   getattr(self, "btn_static_bg", None)):
+            if _b is None:
+                continue
+            _b.setFixedHeight(_opt_h)
+            _b.setFont(_opt_ft)
 
         self.metrics.apply_size()
 
@@ -6213,6 +6248,14 @@ class CardWindow(QWidget):
             _b.blockSignals(True)
             _b.setChecked(_on)
             _b.blockSignals(False)
+        # 第76轮: 静态背景按钮 —— 与明暗切换同一行, 毛玻璃模式下才真正起作用
+        if getattr(self, "btn_static_bg", None) is not None:
+            self.btn_static_bg.setStyleSheet(
+                material_btn_qss("opt", dark, glass, frost, px=m["opt_btn_px"]))
+            _sb = bool(theme_state.get("frost_static"))
+            self.btn_static_bg.blockSignals(True)
+            self.btn_static_bg.setChecked(_sb)
+            self.btn_static_bg.blockSignals(False)
 
         # NavButton 为纯自绘 (见类内 paintEvent), 不再套 QSS, 避免与自绘叠加产生双重背景
         for b in (self.btn_nav_wb, self.btn_nav_dsh, self.btn_nav_sn, self.btn_nav_multi):
@@ -6228,6 +6271,11 @@ class CardWindow(QWidget):
         theme_state["dark"] = dark
         refresh_palette()
         self._apply_window_backdrop()     # 第63轮: 暗色影响 DWM 材质观感, 需重应用
+        # 第76轮: Acrylic 的 tint 基色必须随明暗切换(深浅亮度差可达 39) → force 重挂一次
+        try:
+            self._sync_acrylic(force=True)
+        except Exception:
+            pass
         self.apply_styles()
         apply_app_qss()
         self._refresh_subpages_theme()
@@ -6237,6 +6285,105 @@ class CardWindow(QWidget):
     def _on_glass_btn(self, checked):
         """液态玻璃按钮 (三维语义见 _set_material)。"""
         self._set_material("glass" if checked else None)
+
+    def _on_static_btn(self, checked):
+        """静态背景按钮(第76轮)。"""
+        self.set_static_bg(checked)
+
+    def set_static_bg(self, on):
+        """静态背景开关(第76轮): 毛玻璃模式下改用静态底纹代替 DWM 实时 Acrylic。
+
+        开 → 若当前不在毛玻璃模式则顺带进入(否则开了没效果, 会让人以为坏了);
+        关 → 回到 DWM 实时毛玻璃。
+        """
+        on = bool(on)
+        if on == bool(theme_state.get("frost_static")):
+            return
+        theme_state["frost_static"] = on
+        if on and not theme_state.get("frost"):
+            self._set_material("frost")          # 内部会 _apply_window_backdrop + save
+            return
+        self._sync_acrylic()
+        self._update_all()
+        save_settings()
+
+    def _apply_acrylic_mask(self):
+        """第77轮: 用 setMask 把窗口裁成圆角, **彻底消灭** DWM 亚克力铺出来的矩形框。
+
+        历史背景: 本项目第3轮起就用 `FramelessWindowHint + WA_TranslucentBackground`
+        得到"圆角, 圆角外透出桌面" —— 那套机制在**自绘**模式下够用(桌面自然是桌面,
+        看不出矩形)。但 DWM Acrylic 挂在 HWND 上, 铺的是整个**窗口矩形**:
+        于是窗口矩形内、我们圆角外的那一圈, 也都被铺上材质 → 屏幕上一圈"矩形框"。
+
+        第77轮我先只把它"填起来"补缝, 浅猫一眼看穿: 那是遗留原生矩形, 是**消灭**而不是掩盖。
+        → 正解就是这个: `QWidget.setMask()` 会把整个窗口(含 DWM 材质层)裁成给定区域,
+        第3轮以来"圆角外透出桌面"用的正是它。mask 为 None 时恢复原状。
+        """
+        try:
+            if not ACRYLIC["on"]:
+                if self.mask() is not None:
+                    self.clearMask()
+                return
+            w, h = self.width(), self.height()
+            if w <= 0 or h <= 0:
+                return
+            r = 16.0
+            mask = QImage(int(w), int(h), QImage.Format_Mono)
+            mask.fill(0)                      # 全透明底 → 圆角外一律裁掉
+            mp = QPainter(mask)
+            mp.setRenderHint(QPainter.Antialiasing)
+            mp.setBrush(Qt.white)             # Mono: 白色 = 保留
+            mp.setPen(Qt.NoPen)
+            mp.drawRoundedRect(QRectF(0, 0, float(w), float(h)), r, r)
+            mp.end()
+            self.setMask(QBitmap.fromImage(mask))
+        except Exception:
+            pass
+
+    def _sync_acrylic(self, force=False):
+        """把"要不要 DWM 实时毛玻璃"同步到窗口(第76轮)。
+
+        规则: 毛玻璃开 **且** 静态背景关 → 挂 Acrylic; 否则移除。
+        失败(非 Windows / 系统关闭"透明度效果" / 调用异常) → 自动降级:
+        ACRYLIC["on"] 置 False, 于是 _frost_fill 恢复画静态底纹。
+        """
+        want = bool(theme_state.get("frost")) and not bool(theme_state.get("frost_static"))
+        if _winbd is None or not _winbd.supported():
+            want = False
+        if want == ACRYLIC["on"] and not force:
+            return
+        try:
+            hwnd = int(self.winId())
+        except Exception:
+            hwnd = 0
+        if not want:
+            if ACRYLIC["on"] or force:
+                try:
+                    _winbd.remove_acrylic(hwnd)
+                except Exception:
+                    pass
+            ACRYLIC["on"] = False
+            self._apply_acrylic_mask()      # 退出亚克力 → 解除圆角裁剪
+            return
+        try:
+            ok = _winbd.apply_acrylic(hwnd, bool(theme_state.get("dark")))
+        except Exception:
+            ok = False
+        ACRYLIC["on"] = bool(ok)
+        self._apply_acrylic_mask()          # 挂上亚克力 → 立刻把窗口裁成圆角, 消灭矩形框
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        # 第76/77轮: 同样要在 show 之后(winId 才稳定) → 刷新纹理缓存 + 挂 DWM 材质 + 圆角裁剪
+        # (本方法是唯一的 showEvent 实现, 覆盖了上面早期的同名定义)
+        self._apply_window_backdrop()
+        QTimer.singleShot(0, lambda: self._sync_acrylic(force=True))
+
+    def changeEvent(self, ev):
+        super().changeEvent(ev)
+        # 最小化恢复 / 跨屏 DPI 变化后 DWM 会掉材质 → 重新挂上
+        if ev.type() == QEvent.WindowStateChange and not self.isMinimized():
+            QTimer.singleShot(60, lambda: self._sync_acrylic(force=True))
 
     def _on_frost_btn(self, checked):
         """毛玻璃按钮 (三维语义见 _set_material)。"""
@@ -6257,6 +6404,10 @@ class CardWindow(QWidget):
         was_frost = bool(theme_state.get("frost"))    # 判"是否进出毛玻璃模式"用
         theme_state["glass"] = new_glass
         theme_state["frost"] = new_frost
+        # 第77轮(浅猫): 「静态背景」是毛玻璃的子开关 —— 离开毛玻璃必须自动取消,
+        # 否则它亮着却不生效(液态玻璃/默认模式下它管不着任何东西)。
+        if not new_frost and bool(theme_state.get("frost_static")):
+            theme_state["frost_static"] = False
         refresh_palette()
         self._apply_window_backdrop()                 # 刷新静态模糊纹理缓存
         self.apply_styles()                           # 内部会同步两个按钮的勾选态
@@ -6331,6 +6482,8 @@ class CardWindow(QWidget):
         tex._scaled.clear()          # 明暗切换后纹理处理不同 → 清缩放缓存
         if theme_state.get("frost"):
             tex.load(force=True)
+        # 第76轮: 静态底纹缓存刷新完, 再决定要不要挂 DWM 实时 Acrylic
+        self._sync_acrylic()
 
     def _refresh_subpages_theme(self):
         """2026-09-19 第51轮: 子页面用 QLabel + QSS 上色, 主题切换必须显式重刷,
@@ -6842,7 +6995,10 @@ class CardWindow(QWidget):
         act_blur = mat_menu.addAction(
             ("◉ " if _cur_glass else "○ ") + "💎 液态玻璃 (iOS 27)")
         act_frost = mat_menu.addAction(
-            ("◉ " if _cur_frost else "○ ") + "🫧 毛玻璃 (磨砂质感)")
+            ("◉ " if _cur_frost else "○ ") + "🫧 毛玻璃 (系统实时模糊)")
+        # 第76轮: 静态背景 —— 关掉实时模糊, 改用内置/自定义静态底纹
+        act_static = mat_menu.addAction(
+            ("◉ " if bool(theme_state.get("frost_static")) else "○ ") + "🖼  静态背景 (静态底纹)")
         # 2026-09-25 (第63轮): 毛玻璃底纹 —— 内置图 或 用户自选图片
         mat_menu.addSeparator()
         _fc = bool(theme_state.get("frost_custom"))
@@ -6877,6 +7033,8 @@ class CardWindow(QWidget):
         elif chosen == act_blur:
             # 互斥 + 可取消: 点当前项 = 取消回默认; 否则切到液态玻璃(自动关毛玻璃)
             self._set_material(None if theme_state["glass"] else "glass")
+        elif chosen == act_static:
+            self.set_static_bg(not theme_state.get("frost_static"))
         elif chosen == act_frost:
             self._set_material(None if theme_state.get("frost") else "frost")
         elif chosen == act_frost_pick:
@@ -7007,6 +7165,7 @@ def load_settings():
         theme_state["frost"] = bool(d.get("frost"))
         # 2026-09-25 (第63轮): 毛玻璃底纹用自定义图 or 内置默认图
         theme_state["frost_custom"] = bool(d.get("frost_custom"))
+        theme_state["frost_static"] = bool(d.get("frost_static"))
         theme_state["source"] = d.get("source", "wb")
         theme_state["pet"] = bool(d.get("pet"))
         # ★ 一次性迁移到新素材库(v3): 旧版设置里的 pet_theme=v1/v2 会把新素材挡掉。
