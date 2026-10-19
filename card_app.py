@@ -6050,9 +6050,15 @@ class CardWindow(QWidget):
     def moveEvent(self, ev):
         """窗口移动后背景区域变了, 模糊底必须重抓(否则显示的是旧位置的桌面)。"""
         super().moveEvent(ev)
+        # 第86轮: 双层窗口 —— 背板要跟着主窗口走(否则材质和面板错位)
+        if getattr(self, "_frost_win", None) is not None and self._frost_win.isVisible():
+            self._position_frost_window()
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
+        # 第86轮: 双层窗口 —— 尺寸变化时同步背板矩形
+        if getattr(self, "_frost_win", None) is not None and self._frost_win.isVisible():
+            self._position_frost_window()
         # 第79轮: 模糊区域是"按像素写死"的 → 改尺寸后必须按新尺寸重设
         if ACRYLIC["on"] or theme_state.get("frost"):
             self._sync_acrylic(force=True)
@@ -6338,87 +6344,84 @@ class CardWindow(QWidget):
 
 
     def _sync_acrylic(self, force=False):
-        """把"要不要 DWM 实时毛玻璃"同步到窗口(第76轮)。
+        """第86轮: 双层窗口 —— 材质挂在底层背板上, 主窗口只画内容。
 
-        规则: 毛玻璃开 **且** 静态背景关 → 挂 Acrylic; 否则移除。
-        失败(非 Windows / 系统关闭"透明度效果" / 调用异常) → 自动降级:
-        ACRYLIC["on"] 置 False, 于是 _frost_fill 恢复画静态底纹。
+        实测(第84/85轮三方案对照): AccentPolicy 材质必然铺满**整个窗口矩形**,
+        SetWindowRgn / setMask / 模糊区域全都拦不住 → 只要材质挂在主窗口上,
+        面板外那 10px 就一定是材质。⇒ 解法: 让材质挂在一个**恰好等于面板矩形的
+        底层小窗口**上, 主窗口浮在它上面只画罩层 —— 面板外那圈就露出真实桌面,
+        与其它三种模式完全一致。
         """
         want = bool(theme_state.get("frost")) and not bool(theme_state.get("frost_static"))
         if _winbd is None or not _winbd.supported():
             want = False
         if want == ACRYLIC["on"] and not force:
             return
-        try:
-            hwnd = int(self.winId())
-        except Exception:
-            hwnd = 0
         if not want:
-            if ACRYLIC["on"] or force:
-                try:
-                    _winbd.clear_blur_region(hwnd)
-                    _winbd.remove_acrylic(hwnd)
-                    # 第80轮: 必须把客户区框还原, 否则 add_shadow 留下的原生实线边框会一直挂在最外层
-                    _winbd.reset_frame(hwnd)
-                    _winbd.reset_corner(hwnd)
-                except Exception:
-                    pass
             try:
-                if self.mask() is not None:
-                    self.clearMask()
+                _winbd.clear_blur_region(int(self.winId()))
+                _winbd.remove_acrylic(int(self.winId()))
+                _winbd.reset_frame(int(self.winId()))
+                _winbd.reset_corner(int(self.winId()))
             except Exception:
                 pass
+            if getattr(self, "_frost_win", None) is not None:
+                try:
+                    self._frost_win.hide()
+                    _winbd.remove_acrylic(int(self._frost_win.winId()))
+                    _winbd.reset_frame(int(self._frost_win.winId()))
+                    _winbd.reset_corner(int(self._frost_win.winId()))
+                except Exception:
+                    pass
             ACRYLIC["on"] = False
             self._sync_frost_margins()
             return
-        # 第79轮实验结论(屏捕实测):
-        #   · DwmEnableBlurBehindWindow + 模糊区域 → Win11 上**不产生任何模糊**, 只有透明(能看清背后网页);
-        #   · setMask / SetWindowRgn → 会让 AccentPolicy 材质**失效**(窗口退回纯透明);
-        #   · 只有 AccentPolicy(Acrylic) 是真模糊, 而它没有"只作用于某区域"的参数, 必然铺满窗口矩形。
-        # ⇒ 想真模糊, 窗口就必须等于面板(不再留外圈 10px); 想保留外圈壁纸环, 只能用静态底纹。
-        #   本项按浅猫"消灭原生矩形 + 保留干净圆角外框"来做: 窗口=面板, 圆角交给 DWM。
+        # ---- 挂材质: 挂在底层背板窗口(尺寸=面板矩形) ----
         ok = False
         try:
-            _winbd.clear_blur_region(hwnd)      # 确保不残留区域模糊
-            # 第82轮: **先裁窗口区域(排除外圈 10px), 再挂材质** ——
-            # 之前我判"setMask 会让材质失效", 那其实是字节序 bug 造成的假象(第80轮已修);
-            # 重新实测: 先 mask 再挂材质, 两者可以同时成立, 外圈就不再被铺材质。
-            ACRYLIC["on"] = True
-            self._apply_acrylic_mask()
-            ok = _winbd.apply_acrylic(hwnd, bool(theme_state.get("dark")))
+            fw = self._ensure_frost_window()
+            self._position_frost_window()
+            ok = _winbd.apply_acrylic(int(fw.winId()), bool(theme_state.get("dark")))
+            fw.show()
+            fw.lower()          # 背板必须待在主窗口下面
+            self.raise_()
         except Exception:
             ok = False
         ACRYLIC["on"] = bool(ok)
-        if not ok:
-            self._apply_acrylic_mask()          # 失败则解除裁剪, 避免窗口被裁成怪形状
         self._sync_frost_margins()
 
-    def _sync_frost_margins(self):
-        """第84轮(浅猫对照图定论): 亚克力下 **窗口＝面板**, 且窗口缩小 20px 以保持面板尺寸不变。
+    def _ensure_frost_window(self):
+        """创建/复用垫在面板正下方的"亚克力背板窗口"(尺寸=面板矩形)。"""
+        fw = getattr(self, "_frost_win", None)
+        if fw is None:
+            fw = QWidget(None, Qt.FramelessWindowHint | Qt.Window | Qt.WindowStaysOnTopHint)
+            fw.setAttribute(Qt.WA_TranslucentBackground)
+            fw.setObjectName("frost_backdrop")
+            self._frost_win = fw
+        return fw
 
-        实测结论(四材质左上角 4x 对照):
-          · SetWindowRgn/setMask **只裁 Qt 的绘制**, DWM 的 AccentPolicy 材质仍然铺满**整个窗口矩形**
-            → 面板内缩 10px 时, 那 10px 就被填成"一圈材质", 也就是浅猫反复看到的那圈多余外框;
-          · 所以真模糊下窗口必须**等于**面板(外边距 0), 否则那圈必然存在。
-        ⚠️ 但直接 margins=0 会让可见面板比其它模式**大 20px**(割裂)。折中:
-          亚克力下把**窗口**缩 20px(990x610 → 970x590), 外边距 0 →
-          可见面板 = 970x590, 与其它模式(990-20 x 610-20) **完全一致**, 又没有多余材质圈。
+    def _position_frost_window(self):
+        """把背板窗口对齐到主窗口的**面板矩形**(外圈 10px 不属于它)。"""
+        fw = getattr(self, "_frost_win", None)
+        if fw is None:
+            return
+        try:
+            g = self.frameGeometry()
+            fw.setGeometry(g.x() + 10, g.y() + 10,
+                           max(1, g.width() - 20), max(1, g.height() - 20))
+        except Exception:
+            pass
+
+    def _sync_frost_margins(self):
+        """第86轮: 外边距**恒为 10px** —— 与其它三种模式完全统一, 不再有任何特殊口径。
+
+        材质挂在底层背板窗口上, 主窗口自身不带任何 DWM 材质,
+        因此不再需要第84轮"窗口=面板/缩20px"的妥协, 布局口径与其它模式完全一致。
         """
         try:
-            m = SIZE_METRICS.get(theme_state.get("window_size", "default"),
-                                 SIZE_METRICS["default"])
-            if ACRYLIC["on"]:
-                pad = 0
-                tw, th = m["win_w"] - 20, m["win_h"] - 20
-            else:
-                pad = 10
-                tw, th = m["win_w"], m["win_h"]
-            self.outer_lay.setContentsMargins(pad, pad, pad, pad)
-            # 仅在尺寸不对时才改, 避免 resizeEvent → _sync_acrylic → 这里 的循环
-            if (self.width(), self.height()) != (tw, th):
-                self.setFixedSize(tw, th)
-                self.resize(tw, th)
+            self.outer_lay.setContentsMargins(10, 10, 10, 10)
         except Exception:
+            pass
             pass
 
     def showEvent(self, ev):
@@ -6433,8 +6436,13 @@ class CardWindow(QWidget):
     def changeEvent(self, ev):
         super().changeEvent(ev)
         # 最小化恢复 / 跨屏 DPI 变化后 DWM 会掉材质 → 重新挂上
-        if ev.type() == QEvent.WindowStateChange and not self.isMinimized():
-            QTimer.singleShot(60, lambda: self._sync_acrylic(force=True))
+        if ev.type() == QEvent.WindowStateChange:
+            fw = getattr(self, "_frost_win", None)
+            if self.isMinimized():
+                if fw is not None and fw.isVisible():
+                    fw.hide()                       # 第86轮: 主窗最小化 → 背板一起藏
+            elif fw is not None:
+                QTimer.singleShot(60, lambda: self._sync_acrylic(force=True))
 
     def _on_frost_btn(self, checked):
         """毛玻璃按钮 (三维语义见 _set_material)。"""
@@ -7027,6 +7035,10 @@ class CardWindow(QWidget):
     def hideEvent(self, ev):
         super().hideEvent(ev)
         ChartTip.instance().hide_tip()
+        # 第86轮: 主窗口隐藏时, 垫在下面的亚克力背板也要一起藏, 否则屏幕上剩一块"玻璃板"
+        fw = getattr(self, "_frost_win", None)
+        if fw is not None and fw.isVisible():
+            fw.hide()
 
     def mousePressEvent(self, ev):
         if ev.button() == Qt.LeftButton and ev.position().y() < 50:

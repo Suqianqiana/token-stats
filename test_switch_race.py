@@ -2356,11 +2356,11 @@ check("提供 paint_frost_card (毛玻璃下的 1px 卡片框)", "def paint_fros
 check("三张内容卡片开启 frame (模型明细/每日用量/活跃热力)",
       _src73.count("frame=True") >= 3, f"n={_src73.count('frame=True')}")
 check("paint_pod 毛玻璃分支接入了 frame", "elif frame:" in _src73)
-# 第84轮定论: SetWindowRgn 只裁 Qt 绘制, DWM 材质仍铺满窗口矩形 →
-# 真正解法是"窗口=面板"(亚克力下窗口缩 20px, 可见面板尺寸与其它模式一致)
-check("亚克力下窗口缩 20px 保持面板尺寸一致", 'tw, th = m["win_w"] - 20' in _src84)
-check("亚克力下外边距为 0(窗口=面板, 无多余材质圈)", 'pad = 0' in _src84)
-check("亚克力 mask 覆盖整个窗口(不再内缩)", 'QRectF(0.0, 0.0, float(w), float(h))' in _src84)
+# 第86轮定论: 材质挂**底层背板窗口**(尺寸=面板矩形), 主窗口只画内容 →
+# 面板外那圈露出真实桌面(与其它模式一致), 且不再需要"窗口=面板/缩20px"的妥协
+check("双层窗口: 有背板创建器 _ensure_frost_window", "def _ensure_frost_window" in _src84)
+check("双层窗口: 背板对齐面板矩形(外圈 10px 不属于它)", "_position_frost_window" in _src84)
+check("双层窗口: 主窗口外边距恒为 10px(与其它模式统一)", "setContentsMargins(10, 10, 10, 10)" in _src84)
 check("亚克力不再调用 set_corner/add_shadow(原生边框根源)",
       "set_corner(hwnd, 2)" not in _src73)
 check("静态背景再点一次回默认模式", '"static" if on else None' in _src73)
