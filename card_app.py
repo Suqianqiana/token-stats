@@ -220,6 +220,11 @@ theme_state = {
 # 2026-10-19 (第76轮): 真毛玻璃(DWM Acrylic)是否已挂到窗口上。
 #   True 时窗口背后的模糊由系统合成器完成, Qt 侧只铺极淡 tint —— 于是 _frost_fill 不再画纹理。
 ACRYLIC = {"on": False}
+
+# 第93轮: 主面板圆角半径 —— 与背板 Win11 系统圆角(实测约 10~11 逻辑px)对齐,
+# 让"背板的圆"和"面板的圆"重合, 圆角缺口处就不再露出背板的方形材质角。
+# 所有模式统一使用这个值(浅猫: 所有模式圆角一起同步)。
+_PANEL_RADIUS = 10
 SETTINGS_FILE = os.path.join(scanner.PLUGIN_DATA_DIR, "settings.json")
 
 BLUE   = QColor("#3b6fe0")
@@ -267,6 +272,12 @@ def refresh_palette():
         HOVER=mk(t["HOVER"], (g["CARD"] if g else 255)),
         ZEBRA=mk(t["ZEBRA"], (g["CARD"] if g else 255)),
     )
+    # 第94轮: 浅色毛玻璃下面板是**半透明**的(背板模糊 + 白 tint 48% + 罩层),
+    # 浅灰小字(TEXT3=150,158,172, 为不透明白底 246,248,251 设计)会和背景融在一起
+    # —— 浅猫截图: 顶部"WorkBuddy · …"和"合计 TOKEN"基本看不清。
+    # ⇒ 浅色毛玻璃专用: 把灰字加深一档保证对比度(只影响毛玻璃, 液态玻璃/默认不动)。
+    if theme_state.get("frost") and not theme_state["dark"]:
+        globals().update(TEXT2=QColor(64, 72, 88), TEXT3=QColor(96, 104, 120))
 
 
 def qrgba(c, alpha=None):
@@ -796,14 +807,14 @@ class LiquidGlassFrame(QFrame):
         w, h = self.width(), self.height()
         rect = QRectF(0.5, 0.5, w - 1.0, h - 1.0)
         path = QPainterPath()
-        path.addRoundedRect(rect, 14, 14)
+        path.addRoundedRect(rect, _PANEL_RADIUS, _PANEL_RADIUS)   # 第93轮: 10(对齐系统圆角)
 
         dark = theme_state["dark"]
         glass = theme_state["glass"]
 
         # 毛玻璃模式: 静态底纹(内置/自定义) 或 区域实时模糊(+Qt 侧罩层, 见 _frost_fill)。
         if theme_state.get("frost"):
-            paint_frost_blur(p, self, rect, 14, dark)
+            paint_frost_blur(p, self, rect, _PANEL_RADIUS, dark)
             # 侧边栏分隔线: 细线 (与分区线同一套语言)
             p.setPen(QPen(frost_rule_color(dark), 1.0))
             p.drawLine(QPointF(self.sep_x, 1.0), QPointF(self.sep_x, h - 1.0))
@@ -6277,15 +6288,19 @@ class CardWindow(QWidget):
 
     def set_dark(self, dark):
         theme_state["dark"] = dark
-        # 第80轮(浅猫: 毛玻璃下背景比文字慢半拍): **先把 DWM tint 下发**(单次 0.15ms),
-        # 再去干耗时的事(纹理重载/样式重刷) —— 否则背景那一路会排在后面, 视觉上就"慢半拍"。
+        # 第92轮(浅猫: 文字/组件与 DWM 背景切换不同步):
+        #   · DWM 的 tint 是**异步合成**的, 而 Qt 的样式重刷如果用 update() 只是"排队",
+        #     两边就会各走各的节奏 → 观感不同步;
+        #   · 现在的做法: ① **先**下发 tint(尽早进入 DWM 队列); ② 用 **repaint() 同步**
+        #     把文字/组件立刻画出来 —— 两边都在**同一帧**被提交, 差距只剩 DWM 自身的 1 帧延迟。
+        # 第93轮回退: 第92轮"tint 先发 + repaint"实测**更不同步**(tint 一发 DWM 立即变色,
+        # 而样式重刷要几十 ms, 拉长了不同步窗口) → 回到"样式全部刷完 → 最后发 tint"的次序。
         refresh_palette()
         self._apply_window_backdrop()     # 第63轮: 暗色影响 DWM 材质观感, 需重应用
         self.apply_styles()
         apply_app_qss()
         self._refresh_subpages_theme()
         self._update_all()
-        # 第81轮: DWM tint **最后**下发(单次 0.15ms), 与文字/组件的重刷落在同一拍
         try:
             self._sync_acrylic(force=True)
         except Exception:
@@ -6381,7 +6396,17 @@ class CardWindow(QWidget):
         try:
             fw = self._ensure_frost_window()
             self._position_frost_window()
-            ok = _winbd.apply_acrylic(int(fw.winId()), bool(theme_state.get("dark")))
+            # corner=True: 背板走 Win11 原生圆角(浅猫 demo v2 投票选定的方案) ——
+            # 背板自己是圆的 → 圆角缺口不再溢出方形材质角, 直边也无需内缩(没有未模糊带)。
+            # 第91轮: 背板**内缩0 + 系统圆角**(浅猫 demo 选定, 探针实测: 无未模糊带 15.1、
+            # 外环干净 4.3; 相比内缩6 的"未模糊带 39.5"明显更好)。
+            # 第91轮定案: corner=False + 内缩6。理由见数据:
+            #   corner=True(系统圆角) 会带出外扩边框/辉光, 必然污染外圈(= 外框问题复现),
+            #   关投影(Qt.NoDropShadowWindowHint 在 Windows 无效 / DWM NCRP_DISABLED) 也救不回来;
+            #   内缩0 则四角尖材质 86~96, 不可接受。
+            # ⇒ 保留当前这组(四角 1.4 干净 / 外环 0.2 干净), 代价是直边 6px 未模糊带。
+            ok = _winbd.apply_acrylic(int(fw.winId()), bool(theme_state.get("dark")),
+                                      corner=True)      # 方案B: 背板走 Win11 原生圆角
             fw.show()
             fw.lower()          # 背板必须待在主窗口下面
             self.raise_()
@@ -6391,24 +6416,44 @@ class CardWindow(QWidget):
         self._sync_frost_margins()
 
     def _ensure_frost_window(self):
-        """创建/复用垫在面板正下方的"亚克力背板窗口"(尺寸=面板矩形)。"""
+        """创建/复用垫在面板正下方的"亚克力背板窗口"(尺寸=面板矩形)。
+
+        ⚠️ 第91轮关键: 必须带 **Qt.NoDropShadowWindowHint** ——
+        背板是个顶层窗口, Windows 会给它画投影; 投影会落到主窗口的外圈 10px 上,
+        这正是核验器一直报"外环残留"的真因(数据特征也吻合: 下环 87.6 > 左右 33 >
+        上环 16.9, 就是典型投影的方向性)。去掉投影后, 背板才能内缩 0(模糊铺满到边缘)
+        而不污染外圈。
+        """
         fw = getattr(self, "_frost_win", None)
         if fw is None:
-            fw = QWidget(None, Qt.FramelessWindowHint | Qt.Window | Qt.WindowStaysOnTopHint)
+            fw = QWidget(None, Qt.FramelessWindowHint | Qt.Window |
+                         Qt.WindowStaysOnTopHint | Qt.NoDropShadowWindowHint)
             fw.setAttribute(Qt.WA_TranslucentBackground)
             fw.setObjectName("frost_backdrop")
             self._frost_win = fw
         return fw
 
     def _position_frost_window(self):
-        """把背板窗口对齐到主窗口的**面板矩形**(外圈 10px 不属于它)。"""
+        """把背板窗口对齐到主窗口的**面板矩形**。
+
+        第87轮: 背板比面板**再内缩 6px** —— 面板是 14px 圆角, 背板若是同尺寸的直角矩形,
+        四个圆角缺口处就会露出背板的方形材质角(浅猫截图里"圆角处仍有一点点材质")。
+        内缩 6px 后背板的直角完全藏进面板的圆角曲线之内(14px 圆角的缺口对角线边界
+        在距角 4.1px 处, 6px > 4.1px), 缺口处露出的是**真实桌面**; 代价只是面板直边
+        处有 6px 宽的"未模糊带"(背板没盖到), 视觉上几乎不可察觉。
+        """
         fw = getattr(self, "_frost_win", None)
         if fw is None:
             return
         try:
-            g = self.frameGeometry()
-            fw.setGeometry(g.x() + 10, g.y() + 10,
-                           max(1, g.width() - 20), max(1, g.height() - 20))
+            # 第91轮关键修正: 必须用 **geometry()**, 不能用 frameGeometry() ——
+            # 后者在无边框窗口上会**含 DWM 阴影边距(约10px)**, 等于把背板整体往外挪 10px,
+            # 于是背板盖住整个窗口(连外圈 10px 环带一起) —— 这正是核验器一直报"外环残留"的
+            # 真正原因; 也解释了为什么之前"内缩6"看起来干净(16 > 阴影偏移10, 恰好落进面板内)。
+            g = self.geometry()
+            INSET = 10               # 方案B: 背板与面板矩形完全重合 → 模糊铺到边缘, 无未模糊带
+            fw.setGeometry(g.x() + INSET, g.y() + INSET,
+                           max(1, g.width() - INSET * 2), max(1, g.height() - INSET * 2))
         except Exception:
             pass
 
@@ -6487,10 +6532,44 @@ class CardWindow(QWidget):
         # 之前 _apply_window_backdrop() 在样式重刷之前就调 _sync_acrylic() → AccentPolicy 先消失,
         # 窗口变纯透明, 屏幕上就闪一下"全透", 之后才画上液态玻璃/静态背景。改到此处: 先刷完样式
         # 与内容, 最后一步才撤 DWM, 中间帧永远有东西。
-        try:
-            self._sync_acrylic(force=True)
-        except Exception:
-            pass
+        # 第87轮: 光"最后"还不够 —— update() 只是**排队**重绘, 真正画完在下一轮事件循环;
+        # 立刻撤 DWM 仍会闪一帧全透。改为**延迟 110ms** 再撤: 旧材质多留一瞬, 新样式先画好,
+        # 切换变成"材质→材质"的直接过渡, 不再经过透明态。
+        # 第88轮: 只对"**离开**毛玻璃"延迟 ——
+        #   · 进入毛玻璃若也延迟 110ms, 这 110ms 里 ACRYLIC["on"] 还是 False,
+        #     _frost_fill 会先画一帧**静态纹理**(浅猫看到的"闪一下静态图片模式") → 进入必须立即挂;
+        #   · 延迟撤完后必须补一次重绘: 否则最后一帧停留在"只有罩层"的画(毛玻璃→静态背景
+        #     会"丢失底图全透", 因为撤材质后没人触发重绘)。
+        # 第92轮(浅猫逐项观察后的定案):
+        #   判据不能看 frost, 要看**材质是否还要用** —— 静态背景虽然 frost=True, 但它**不用
+        #   亚克力**, 所以"毛玻璃→静态背景"同样属于"撤材质":
+        #     · 毛玻璃→静态背景: 旧代码立即撤 → 背板没了、新静态底图还没画 → 闪一下全透
+        #     · 毛玻璃→液态玻璃: 延迟130ms → 新样式已经画在材质之上 → 先"发闷不透", 再才正常
+        #   ⇒ 正解: 先用 **repaint() 同步**把新样式画到屏幕上(update() 只是排队, 不够),
+        #     然后**立即**撤材质 —— 既不会经过透明态, 也不会出现"新样式盖在材质上"的那一帧。
+        _will_want = new_frost and not new_static
+        if ACRYLIC["on"] and not _will_want:
+            # 第93轮(浅猫: 上轮顺序仍闪): 正确次序是 ——
+            #   ① 先把 ACRYLIC["on"] 置 False(这样紧接着的重绘画的是**新样式的实底**,
+            #      而不是亚克力模式下那层近乎透明的罩层 —— 上轮就是败在这里);
+            #   ② repaint() 同步绘制(新样式已盖住背板材质);
+            #   ③ 最后才撤材质(此时它被挡住, 撤不撤都看不见)。
+            ACRYLIC["on"] = False
+            try:
+                self.repaint()
+                self.card.repaint()
+            except Exception:
+                pass
+            try:
+                self._sync_acrylic(force=True)
+            except Exception:
+                pass
+            self._update_all()
+        else:
+            try:
+                self._sync_acrylic(force=True)   # 进入毛玻璃/静态互切: 立即同步
+            except Exception:
+                pass
         save_settings()
 
     def set_glass(self, enabled):

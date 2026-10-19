@@ -189,14 +189,18 @@ def supported():
     return _SUPPORTED
 
 
-def apply_acrylic(hwnd, dark, alpha=None, shadow=False):
+def apply_acrylic(hwnd, dark, alpha=None, shadow=False, corner=False):
     """给窗口挂上 Acrylic。
 
-    ⚠️ 第81轮: **不要 add_shadow()、不要 set_corner()** —— 这两个 DWM 调用会让 Windows
-    给窗口画**原生边框 / 原生小圆角**, 而且切回其它模式后不会自动消失:
-      · add_shadow(): DwmExtendFrameIntoClientArea(-1,-1,-1,-1) → 最外圈实线边框
-      · set_corner(): DWMWA_WINDOW_CORNER_PREFERENCE → 原生小圆角 + 1px 边框(本类真凶)
-    ⇒ 两者都不调用, 边框才彻底没有。退出亚克力时再用 reset_frame()/reset_corner() 兜底还原。
+    ⚠️ add_shadow(): DwmExtendFrameIntoClientArea(-1,-1,-1,-1) 会让 Windows 在最外圈画
+    **原生实线边框**, 且切回其它模式不会自动消失 → **永远不要调用**(第81轮真凶之一)。
+
+    ⚠️ set_corner(): DWMWA_WINDOW_CORNER_PREFERENCE 让 Win11 把窗口**裁成原生圆角**,
+    但它也会带出 1px 描边, 曾经是"原生外框"的真凶。
+      · **主窗口**: 绝不能调(那就是外框的来源);
+      · **底层背板窗口**(第86轮双层架构): 却**必须**调 —— 浅猫在 demo v2 亲自投票选定
+        "系统圆角背板 + 面板圆角14 + 内缩0" 为最佳观感: 背板自己是圆的, 就不会往面板的
+        圆角缺口里溢出方形材质角, 直边也不需要内缩(没有未模糊带)。
     """
     fx = effect()
     if fx is None or not hwnd:
@@ -205,6 +209,8 @@ def apply_acrylic(hwnd, dark, alpha=None, shadow=False):
         ok = fx.set_acrylic(hwnd, acrylic_color(dark, alpha), enable_shadow=True)
         if ok:
             fx.set_dark_mode(hwnd, bool(dark))
+            if corner:
+                fx.set_corner(hwnd, 2)      # 仅背板使用
         return bool(ok)
     except Exception:
         return False
@@ -311,6 +317,25 @@ def reset_corner(hwnd):
         from ctypes.wintypes import c_int as _c
         v = _c(0)
         fx._dwm_set(int(hwnd), 33, byref(v), 4)
+        return True
+    except Exception:
+        return False
+
+def disable_shadow(hwnd):
+    """关掉窗口的**投影**(DWMWA_NCRENDERING_POLICY = DWMNCRP_DISABLED)。
+
+    为什么需要它: 背板是个顶层窗口, Windows 会给它画投影; 投影会落到主窗口的外圈 10px 上,
+    那正是"外圈被材质覆盖"的观感来源(核验器数据也吻合: 下环 > 左右 > 上环, 是典型投影方向性)。
+    Qt 的 Qt.NoDropShadowWindowHint 在 Windows 上**不生效**(实测窗口标志里没有它),
+    所以只能走 DWM 的这条属性。
+    """
+    fx = effect()
+    if fx is None or not hwnd:
+        return False
+    try:
+        from ctypes.wintypes import c_int as _c
+        v = _c(1)                      # DWMNCRP_DISABLED
+        fx._dwm_set(int(hwnd), 2, byref(v), 4)   # DWMWA_NCRENDERING_POLICY = 2
         return True
     except Exception:
         return False
