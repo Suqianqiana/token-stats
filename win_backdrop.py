@@ -59,8 +59,11 @@ if _WIN:
 
 # ---------------------------------------------------------------- tint 常量
 # 调研 08 号：深色用深基色、浅色用浅基色。下面两个数字可直接微调观感。
-ACRYLIC_ALPHA_DARK = 0x8C        # 深色 tint 不透明度 (~55%)
-ACRYLIC_ALPHA_LIGHT = 0x8A       # 浅色 tint 不透明度 (~54%)
+ACRYLIC_ALPHA_DARK = 0x8C       # 深色 tint (~55%, 压住壁纸色相)
+ACRYLIC_ALPHA_LIGHT = 0x7A      # 浅色 tint (~48%, 第82轮浅猫指定)
+# 第80轮(浅猫): "毛玻璃下背景比文字慢半拍" 的根因不是 tint 本身(单次下发实测 0.15ms),
+# 而是 set_dark 里**先做了耗时的纹理重载/样式重刷**, 才去换 tint。
+# → 修法: set_dark 里**先下发 tint**(见 CardWindow.set_dark), tint 仍按明暗给足分量。
 # 第78轮(浅猫): 浅色要"纯奶白"。上一版 0x62(38%) 太透 → 桌面壁纸的色相渗上来,
 # 她看到的是"纯薄荷绿"。现在: ① 提到 54%; ② tint 用**纯白**, 压住壁纸色相。
 ACRYLIC_RGB_DARK = (0x14, 0x18, 0x1F)    # 深板岩色
@@ -103,11 +106,18 @@ class WindowsWindowEffect:
     # ------------------------------------------------------------ 内部
     @staticmethod
     def _gradient(aarrggbb):
-        """'AARRGGBB' → DWM 的 DWORD。⚠️ 内存布局是 BB GG RR AA，必须反转字节。"""
+        """'AARRGGBB' → DWM 的 DWORD。
+
+        ⚠️ DWM 的 `ACCENT_POLICY.GradientColor` 是 **AABBGGRR**(RGB 三通道反序),
+        不是整串字节倒置。第79轮之前我按整串倒置(BBGGRRAA)写, 结果:
+          · 浅色 8AFFFFFF → 读成 A=FF,R=8A,G=FF,B=FF = **不透明青色**(浅猫看到的"薄荷绿")
+          · 深色 8C14181F → 读成 A=1F(仅 12% 不透明), RGB=8C1418 = 暗红
+        正确做法: 只把 R 与 B 对调。
+        """
         s = str(aarrggbb).replace("#", "")
         if len(s) != 8:
             raise ValueError("gradient color must be 8 hex chars (AARRGGBB)")
-        return DWORD(int(''.join(s[i:i + 2] for i in range(6, -1, -2)), base=16))
+        return DWORD(int(s[0:2] + s[6:8] + s[4:6] + s[2:4], base=16))
 
     def _apply(self, hwnd):
         hwnd = int(hwnd)
@@ -179,18 +189,38 @@ def supported():
     return _SUPPORTED
 
 
-def apply_acrylic(hwnd, dark, alpha=None):
-    """给窗口挂上 Acrylic（含阴影/圆角）。失败返回 False。"""
+def apply_acrylic(hwnd, dark, alpha=None, shadow=False):
+    """给窗口挂上 Acrylic。
+
+    ⚠️ 第81轮: **不要 add_shadow()、不要 set_corner()** —— 这两个 DWM 调用会让 Windows
+    给窗口画**原生边框 / 原生小圆角**, 而且切回其它模式后不会自动消失:
+      · add_shadow(): DwmExtendFrameIntoClientArea(-1,-1,-1,-1) → 最外圈实线边框
+      · set_corner(): DWMWA_WINDOW_CORNER_PREFERENCE → 原生小圆角 + 1px 边框(本类真凶)
+    ⇒ 两者都不调用, 边框才彻底没有。退出亚克力时再用 reset_frame()/reset_corner() 兜底还原。
+    """
     fx = effect()
     if fx is None or not hwnd:
         return False
     try:
-        fx.add_shadow(hwnd)
         ok = fx.set_acrylic(hwnd, acrylic_color(dark, alpha), enable_shadow=True)
         if ok:
             fx.set_dark_mode(hwnd, bool(dark))
-            fx.set_corner(hwnd, 2)      # 第78轮: 2=ROUND(原来传 3=ROUNDSMALL, 圆角太弱)
         return bool(ok)
+    except Exception:
+        return False
+
+
+def reset_frame(hwnd):
+    """把客户区框还原(MARGINS 0) —— 撤掉 add_shadow 留下的原生边框。
+
+    离开毛玻璃/静态背景时必须调用: 否则那圈实线边框会一直挂在窗口最外层。
+    """
+    fx = effect()
+    if fx is None or not hwnd:
+        return False
+    try:
+        m = MARGINS(0, 0, 0, 0)
+        return int(fx._extend(int(hwnd), byref(m))) == 0
     except Exception:
         return False
 
@@ -202,5 +232,85 @@ def remove_acrylic(hwnd):
         return False
     try:
         return bool(fx.remove(hwnd))
+    except Exception:
+        return False
+
+
+# ================================================================ 区域模糊（第79轮）
+# 为什么不再用 AccentPolicy：
+#   实测（屏捕对比）—— `QWidget.setMask()`/窗口区域 一旦生效, Windows 会让
+#   `SetWindowCompositionAttribute(AccentPolicy)` 的材质**失效**（窗口退回纯透明,
+#   于是只能看到没模糊的壁纸, 浅猫那张"一片青色"就是这个）。
+#   而 AccentPolicy 本身没有"只作用于某个区域"的参数, 它一定铺满整个窗口矩形,
+#   于是圆角外那圈边距也带材质 → 就是她反复看到的"矩形框"。
+#
+# 正解: `DwmEnableBlurBehindWindow` + **模糊区域**(DWM_BB_BLURREGION)。
+#   · 只模糊给定区域 → 圆角外那圈保持纯壁纸(没有材质, 没有矩形框), 圆角外框原样保留;
+#   · 不改变窗口形状 → 命中测试/拖动完全不受影响;
+#   · 它不含 tint → 底色由 Qt 自己画（我们本来就有完整的毛玻璃罩层）。
+if _WIN:
+    from ctypes.wintypes import HANDLE
+
+    class DWM_BLURBEHIND(Structure):
+        _fields_ = [("dwFlags", DWORD), ("fEnable", c_bool),
+                    ("hRgnBlur", HANDLE), ("fTransitionOnMaximized", c_bool)]
+
+    _DWM_BB_ENABLE = 0x1
+    _DWM_BB_BLURREGION = 0x2
+
+
+def set_blur_region(hwnd, x, y, w, h, radius=14):
+    """在窗口的指定矩形区域(圆角)内开启实时模糊。失败返回 False。"""
+    if not _WIN or not hwnd:
+        return False
+    try:
+        gdi32 = WinDLL("gdi32")
+        dwmapi = WinDLL("dwmapi")
+        rgn = gdi32.CreateRoundRectRgn(int(x), int(y), int(x + w), int(y + h),
+                                       int(radius * 2), int(radius * 2))
+        if not rgn:
+            return False
+        bb = DWM_BLURBEHIND(_DWM_BB_ENABLE | _DWM_BB_BLURREGION, True, rgn, False)
+        dwmapi.DwmEnableBlurBehindWindow.restype = LONG
+        rc = dwmapi.DwmEnableBlurBehindWindow(int(hwnd), byref(bb))
+        try:
+            gdi32.DeleteObject(rgn)
+        except Exception:
+            pass
+        return int(rc) == 0
+    except Exception:
+        return False
+
+
+def clear_blur_region(hwnd):
+    """关闭区域模糊。"""
+    if not _WIN or not hwnd:
+        return False
+    try:
+        dwmapi = WinDLL("dwmapi")
+        bb = DWM_BLURBEHIND(_DWM_BB_ENABLE, False, None, False)
+        dwmapi.DwmEnableBlurBehindWindow.restype = LONG
+        rc = dwmapi.DwmEnableBlurBehindWindow(int(hwnd), byref(bb))
+        return int(rc) == 0
+    except Exception:
+        return False
+
+
+
+def reset_corner(hwnd):
+    """把 DWM 圆角偏好还原成默认(0) —— 撤掉 set_corner 画的**原生小圆角 + 1px 边框**。
+
+    第81轮: 这才是浅猫截图里那个偏矩形边框的真凶(第77~80 轮我误判成 add_shadow/边距)。
+    DWMWA_WINDOW_CORNER_PREFERENCE 会让 Win11 给窗口画原生边框, 且**不会**被
+    DwmExtendFrameIntoClientArea 还原 —— 离开毛玻璃时必须显式调它。
+    """
+    fx = effect()
+    if fx is None or not hwnd:
+        return False
+    try:
+        from ctypes.wintypes import c_int as _c
+        v = _c(0)
+        fx._dwm_set(int(hwnd), 33, byref(v), 4)
+        return True
     except Exception:
         return False

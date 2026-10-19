@@ -2355,6 +2355,11 @@ check("提供 paint_frost_card (毛玻璃下的 1px 卡片框)", "def paint_fros
 check("三张内容卡片开启 frame (模型明细/每日用量/活跃热力)",
       _src73.count("frame=True") >= 3, f"n={_src73.count('frame=True')}")
 check("paint_pod 毛玻璃分支接入了 frame", "elif frame:" in _src73)
+check("亚克力模式用 mask 把外圈 10px 挖掉(不再铺一圈材质)",
+      "self._apply_acrylic_mask()" in _src73 and "QRectF(10.0, 10.0" in _src73)
+check("亚克力不再调用 set_corner/add_shadow(原生边框根源)",
+      "set_corner(hwnd, 2)" not in _src73)
+check("静态背景再点一次回默认模式", '"static" if on else None' in _src73)
 
 # ---- 第74轮: 热力图滚轮/光标 + 分段日期控件 + 今日概况底框 ----
 check("热力图提供滚轮翻月 (wheelEvent)", "def wheelEvent" in _src73)
@@ -2375,9 +2380,12 @@ if _wb76 is not None:
     check("深浅 tint 基色不同 (调研08: 亮度差可达39)",
           _wb76.acrylic_color(True)[2:] != _wb76.acrylic_color(False)[2:],
           f"{_wb76.acrylic_color(True)} vs {_wb76.acrylic_color(False)}")
-    check("GradientColor 字节序被反转 (AARRGGBB → BBGGRRAA)",
-          _wb76.WindowsWindowEffect._gradient("8C14181F").value == 0x1F18148C,
+    # 第81轮: DWM 要的是 AABBGGRR(只对调 R/B), 不是整串倒置
+    check("GradientColor 字节序: AARRGGBB -> AABBGGRR",
+          _wb76.WindowsWindowEffect._gradient("8C14181F").value == 0x8C1F1814,
           hex(_wb76.WindowsWindowEffect._gradient("8C14181F").value))
+    check("纯白在两种解读下一致(白色不会踩字节序坑)",
+          _wb76.WindowsWindowEffect._gradient("86FFFFFF").value == 0x86FFFFFF)
 check("theme_state 含 frost_static (才能落盘)",
       "frost_static" in ca.theme_state and isinstance(ca.theme_state["frost_static"], bool))
 check("侧栏有静态背景按钮 + 提供 set_static_bg",
