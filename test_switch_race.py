@@ -1934,9 +1934,12 @@ finally:
 check("布局: 液态玻璃与毛玻璃在同一行(同一 layout)",
       "mat_row.addWidget(self.btn_glass_toggle" in _src62
       and "mat_row.addWidget(self.btn_frost" in _src62)
-check("布局: 明暗切换在材质按钮之后(最下面)",
-      _src62.index("self.btn_theme_toggle = QPushButton") >
+# 第95轮: 侧栏底部重排 —— 明暗+刷新一行(在主题按钮**之上**), 主题行, 设置, 版本号
+check("布局: 明暗切换在主题按钮之前(顶部一行)",
+      _src62.index("self.btn_theme_toggle = QPushButton") <
       _src62.index("self.btn_glass_toggle = QPushButton"))
+check("布局: 侧栏底部有「设置」按钮且带 toggled",
+      'self.btn_settings.toggled.connect(self._on_settings_btn)' in _src62)
 # 第77轮: 改成循环统一赋值(新增"静态背景"按钮, 与明暗切换同一行)
 check("布局: 明暗/材质/静态背景按钮统一与刷新按钮同高(refresh_h)",
       '_opt_h = m["refresh_h"]' in _src62

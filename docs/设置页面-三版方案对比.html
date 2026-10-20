@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>设置页面 · 三版方案对比（Token 统计卡片）</title>
+<style>
+  :root{
+    --bg:#0f1116; --panel:#1a1d24; --panel2:#20242c; --line:#2c313b;
+    --tx:#eef1f6; --tx2:#b6bdca; --tx3:#8b93a3; --accent:#6b8afd;
+    --ok:#4ec98a; --radius:10px;
+  }
+  html.light{
+    --bg:#f2f4f8; --panel:#ffffff; --panel2:#f7f9fc; --line:#e4e8f0;
+    --tx:#161a22; --tx2:#5c6473; --tx3:#8a93a4; --accent:#3d6bf5;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);
+       font:14px/1.6 "Microsoft YaHei UI","Segoe UI",system-ui,sans-serif;padding:26px}
+  h1{font-size:19px;margin:0 0 4px}
+  .sub{color:var(--tx3);font-size:12.5px;margin-bottom:16px}
+  .bar{display:flex;gap:8px;align-items:center;margin-bottom:18px;flex-wrap:wrap}
+  .tab{padding:7px 14px;border-radius:8px;border:1px solid var(--line);background:var(--panel);
+       color:var(--tx2);cursor:pointer;font-size:13px}
+  .tab.on{background:var(--accent);color:#fff;border-color:transparent}
+  .theme{margin-left:auto;padding:7px 14px;border-radius:8px;border:1px solid var(--line);
+         background:var(--panel);color:var(--tx2);cursor:pointer;font-size:13px}
+  .wrap{display:flex;gap:18px;flex-wrap:wrap}
+  .stage{flex:1 1 640px;min-width:560px}
+  .notes{flex:0 0 300px;min-width:260px}
+  /* 模拟程序窗口 */
+  .win{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+       overflow:hidden;display:flex;height:560px;box-shadow:0 18px 40px rgba(0,0,0,.35)}
+  .side{width:176px;flex:none;background:var(--panel2);border-right:1px solid var(--line);
+        padding:14px 10px;display:flex;flex-direction:column;gap:3px}
+  .brand{font-size:14px;font-weight:700;padding:6px 8px 12px}
+  .nav{padding:8px 10px;border-radius:8px;color:var(--tx2);font-size:13px;cursor:default}
+  .nav.on{background:var(--accent);color:#fff}
+  .nav.sub{font-size:12px;padding-left:18px;color:var(--tx3)}
+  .nav.sub.on{background:rgba(107,138,253,.16);color:var(--accent);font-weight:600}
+  .side .sp{flex:1}
+  .side .foot{font-size:11px;color:var(--tx3);padding:8px}
+  .main{flex:1;padding:16px 18px;overflow:auto}
+  .ttl{font-size:16px;font-weight:700;margin:2px 0 12px}
+  .card{background:var(--panel2);border:1px solid var(--line);border-radius:var(--radius);
+        padding:12px 14px;margin-bottom:12px}
+  .card h3{margin:0 0 2px;font-size:13px;font-weight:700}
+  .card .hint{color:var(--tx3);font-size:11.5px;margin-bottom:8px}
+  .row{display:flex;align-items:center;gap:12px;padding:9px 0;border-top:1px solid var(--line)}
+  .row:first-of-type{border-top:0}
+  .row .lb{flex:1;min-width:0}
+  .row .lb b{display:block;font-size:13px;font-weight:600}
+  .row .lb span{display:block;color:var(--tx3);font-size:11.5px}
+  .sw{width:40px;height:22px;border-radius:11px;background:var(--line);position:relative;flex:none}
+  .sw.on{background:var(--accent)}
+  .sw i{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff}
+  .sw.on i{left:21px}
+  .seg{display:flex;gap:0;background:var(--panel);border:1px solid var(--line);
+       border-radius:9px;padding:2px;flex:none}
+  .seg b{padding:5px 10px;border-radius:7px;font-size:12px;font-weight:600;color:var(--tx2)}
+  .seg b.on{background:var(--accent);color:#fff}
+  .pill{padding:5px 11px;border-radius:7px;border:1px solid var(--line);
+        background:var(--panel);font-size:12px;color:var(--tx2);flex:none}
+  .picks{display:flex;gap:8px;flex-wrap:wrap}
+  .pick{padding:8px 12px;border-radius:9px;border:1px solid var(--line);background:var(--panel);
+        font-size:12.5px;color:var(--tx2)}
+  .pick.on{border-color:var(--accent);background:rgba(107,138,253,.14);color:var(--accent);font-weight:600}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .note{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+        padding:12px 14px;margin-bottom:12px}
+  .note h4{margin:0 0 6px;font-size:13px}
+  .note p{margin:0 0 6px;font-size:12.5px;color:var(--tx2)}
+  .note .tag{display:inline-block;padding:2px 8px;border-radius:6px;background:rgba(107,138,253,.14);
+             color:var(--accent);font-size:11px;margin-right:6px}
+  .hide{display:none}
+  .grp{font-size:11.5px;color:var(--tx3);text-transform:none;margin:14px 0 6px;font-weight:700}
+</style>
+</head>
+<body>
+<h1>设置页面 · 三版方案对比</h1>
+<div class="sub">入口：左菜单栏新增「设置」。三版共用同一套设置项，差异在信息组织方式。</div>
+
+<div class="bar">
+  <div class="tab on" onclick="show('A',this)">方案 A · 分组卡片流</div>
+  <div class="tab" onclick="show('B',this)">方案 B · 二级导航 + 表单</div>
+  <div class="tab" onclick="show('C',this)">方案 C · 紧凑开关列表</div>
+  <div class="theme" onclick="document.documentElement.classList.toggle('light')">🌗 明/暗切换</div>
+</div>
+
+<div class="wrap">
+  <div class="stage">
+
+  <!-- ============ 方案 A ============ -->
+  <div id="A">
+    <div class="win">
+      <div class="side">
+        <div class="brand">Token 统计</div>
+        <div class="nav">概览</div>
+        <div class="nav">模型明细</div>
+        <div class="nav">每日用量</div>
+        <div class="nav">多机同步</div>
+        <div class="sp"></div>
+        <div class="nav on">⚙️ 设置</div>
+        <div class="foot">v9.4-frost</div>
+      </div>
+      <div class="main">
+        <div class="ttl">设置</div>
+
+        <div class="card">
+          <h3>外观</h3>
+          <div class="hint">材质三选一，再点已选中可取消回默认</div>
+          <div class="row"><div class="lb"><b>深色模式</b><span>夜间更护眼</span></div><div class="sw on"><i></i></div></div>
+          <div class="row"><div class="lb"><b>窗口材质</b></div>
+            <div class="seg"><b>默认</b><b class="on">毛玻璃</b><b>液态</b><b>静态</b></div></div>
+          <div class="row"><div class="lb"><b>液态玻璃透明度</b><span>仅液态玻璃生效</span></div>
+            <div class="seg"><b>晶透</b><b class="on">标准</b><b>柔和</b></div></div>
+          <div class="row"><div class="lb"><b>毛玻璃底纹</b><span>当前：内置默认</span></div>
+            <div class="picks"><span class="pill">选择图片…</span><span class="pill">♻️ 恢复默认</span></div></div>
+        </div>
+
+        <div class="card">
+          <h3>窗口与启动</h3>
+          <div class="row"><div class="lb"><b>窗口尺寸</b></div>
+            <div class="seg"><b class="on">990×610</b><b>1180×730</b></div></div>
+          <div class="row"><div class="lb"><b>开机自启动</b></div><div class="sw"><i></i></div></div>
+          <div class="row"><div class="lb"><b>窗口置顶</b><span>始终显示在最前</span></div><div class="sw on"><i></i></div></div>
+        </div>
+
+        <div class="card">
+          <h3>数据源</h3>
+          <div class="picks">
+            <span class="pick on">WorkBuddy</span><span class="pick">DSH 本地</span>
+            <span class="pick">商汤额度</span><span class="pick">多机合并</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>桌宠</h3>
+          <div class="hint">点顶 1/3 抚摸，底 2/3 点击</div>
+          <div class="row"><div class="lb"><b>显示桌宠</b></div><div class="sw on"><i></i></div></div>
+          <div class="row"><div class="lb"><b>桌宠主题</b></div>
+            <div class="grid2">
+              <span class="pick on">deepseek娘V4Pro</span>
+              <span class="pick">最新素材 v3</span>
+              <span class="pick">新版素材 v2</span>
+              <span class="pick">原版 v1</span>
+            </div></div>
+          <div class="row"><div class="lb"><b>双击桌宠打开面板</b></div><div class="sw on"><i></i></div></div>
+        </div>
+
+        <div class="card">
+          <h3>关于</h3>
+          <div class="row"><div class="lb"><b>版本</b><span>v9.4-frost</span></div>
+            <div class="picks"><span class="pill">🔄 一键重启</span><span class="pill">🔃 刷新数据</span></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 方案 B ============ -->
+  <div id="B" class="hide">
+    <div class="win">
+      <div class="side">
+        <div class="brand">Token 统计</div>
+        <div class="nav">概览</div>
+        <div class="nav">模型明细</div>
+        <div class="nav">每日用量</div>
+        <div class="nav">多机同步</div>
+        <div class="sp"></div>
+        <div class="nav on">⚙️ 设置</div>
+        <div class="foot">v9.4-frost</div>
+      </div>
+      <div class="main" style="display:flex;gap:0;padding:0">
+        <div style="width:118px;flex:none;border-right:1px solid var(--line);padding:14px 8px">
+          <div class="nav sub on">外观</div>
+          <div class="nav sub">窗口</div>
+          <div class="nav sub">数据源</div>
+          <div class="nav sub">桌宠</div>
+          <div class="nav sub">关于</div>
+        </div>
+        <div style="flex:1;padding:16px 18px;overflow:auto">
+          <div class="ttl">外观</div>
+          <div class="grp">主题</div>
+          <div class="row"><div class="lb"><b>深色模式</b><span>夜间更护眼</span></div><div class="sw on"><i></i></div></div>
+          <div class="grp">材质</div>
+          <div class="picks">
+            <span class="pick">⬜ 默认</span><span class="pick on">🌫️ 毛玻璃</span>
+            <span class="pick">💧 液态玻璃</span><span class="pick">🖼 静态背景</span>
+          </div>
+          <div class="grp">液态玻璃透明度</div>
+          <div class="picks">
+            <span class="pick">💎 晶透水滴</span><span class="pick on">💧 标准液态</span>
+            <span class="pick">🌫️ 柔和微透</span>
+          </div>
+          <div class="grp">毛玻璃底纹</div>
+          <div class="picks"><span class="pill">选择图片…</span><span class="pill">♻️ 恢复默认</span></div>
+          <div style="height:14px"></div>
+          <div class="hint" style="color:var(--tx3);font-size:11.5px">
+            右侧只显示当前分类，切换左侧二级导航即可；分类增加时不用改布局。
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 方案 C ============ -->
+  <div id="C" class="hide">
+    <div class="win">
+      <div class="side">
+        <div class="brand">Token 统计</div>
+        <div class="nav">概览</div>
+        <div class="nav">模型明细</div>
+        <div class="nav">每日用量</div>
+        <div class="nav">多机同步</div>
+        <div class="sp"></div>
+        <div class="nav on">⚙️ 设置</div>
+        <div class="foot">v9.4-frost</div>
+      </div>
+      <div class="main">
+        <div class="ttl">设置</div>
+        <div class="grp">外观</div>
+        <div class="row"><div class="lb"><b>深色模式</b></div><div class="sw on"><i></i></div></div>
+        <div class="row"><div class="lb"><b>窗口材质</b><span>毛玻璃</span></div>
+          <div class="seg"><b class="on">🌫️</b><b>💧</b><b>🖼</b><b>⬜</b></div></div>
+        <div class="row"><div class="lb"><b>液态玻璃透明度</b><span>标准液态</span></div>
+          <div class="seg"><b>💎</b><b class="on">💧</b><b>🌫️</b></div></div>
+        <div class="row"><div class="lb"><b>毛玻璃底纹</b><span>内置默认</span></div>
+          <div class="picks"><span class="pill">更改…</span></div></div>
+
+        <div class="grp">窗口</div>
+        <div class="row"><div class="lb"><b>窗口尺寸</b><span>990×610</span></div>
+          <div class="seg"><b class="on">标准</b><b>大窗</b></div></div>
+        <div class="row"><div class="lb"><b>开机自启动</b></div><div class="sw"><i></i></div></div>
+        <div class="row"><div class="lb"><b>窗口置顶</b></div><div class="sw on"><i></i></div></div>
+
+        <div class="grp">数据源</div>
+        <div class="row"><div class="lb"><b>当前数据源</b><span>WorkBuddy</span></div>
+          <div class="seg"><b class="on">WB</b><b>DSH</b><b>商汤</b><b>多机</b></div></div>
+
+        <div class="grp">桌宠</div>
+        <div class="row"><div class="lb"><b>显示桌宠</b></div><div class="sw on"><i></i></div></div>
+        <div class="row"><div class="lb"><b>桌宠主题</b><span>deepseek娘V4Pro</span></div>
+          <div class="seg"><b class="on">V4</b><b>V3</b><b>V2</b><b>V1</b></div></div>
+        <div class="row"><div class="lb"><b>双击打开面板</b></div><div class="sw on"><i></i></div></div>
+
+        <div class="grp">关于</div>
+        <div class="row"><div class="lb"><b>版本</b><span>v9.4-frost</span></div>
+          <div class="picks"><span class="pill">🔄 重启</span></div></div>
+      </div>
+    </div>
+  </div>
+
+  </div>
+
+  <div class="notes">
+    <div class="note" id="nA">
+      <h4>方案 A · 分组卡片流</h4>
+      <p><span class="tag">改动最小</span><span class="tag">最贴合现状</span></p>
+      <p>沿用程序现有的「玻璃卡片 + 顶部细线」语言，每组一张卡，一屏内自上而下读完。</p>
+      <p><b>优点</b>：与主页视觉完全一致，不割裂；新增设置项只需加一行。</p>
+      <p><b>取舍</b>：设置项变多后页面会变长（需滚动）。</p>
+    </div>
+    <div class="note hide" id="nB">
+      <h4>方案 B · 二级导航 + 表单</h4>
+      <p><span class="tag">扩展性最好</span><span class="tag">不滚动</span></p>
+      <p>内容区再分两栏：左侧分类导航，右侧只显示当前分类的详细表单。</p>
+      <p><b>优点</b>：以后加"提醒/导出/账号"等大类也不用重构；每项可配更详细的说明与预览。</p>
+      <p><b>取舍</b>：层次多了一级，视觉元素略多。</p>
+    </div>
+    <div class="note hide" id="nC">
+      <h4>方案 C · 紧凑开关列表</h4>
+      <p><span class="tag">最清爽</span><span class="tag">系统设置感</span></p>
+      <p>一行一项、分组用小号灰字标题，控件统一右对齐，去掉卡片外框。</p>
+      <p><b>优点</b>：密度高，一屏能看全部设置；最像现代系统设置。</p>
+      <p><b>取舍</b>：比其它页少了"卡片"质感，需要靠间距和细线维持精致度。</p>
+    </div>
+  </div>
+</div>
+
+<script>
+function show(k, el){
+  ['A','B','C'].forEach(function(x){
+    document.getElementById(x).classList.toggle('hide', x!==k);
+    document.getElementById('n'+x).classList.toggle('hide', x!==k);
+  });
+  document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('on')});
+  el.classList.add('on');
+}
+</script>
+</body>
+</html>

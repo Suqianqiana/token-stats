@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>统计主页重设计 · 三版方案对比</title>
+<style>
+  :root{
+    --bg:#0b0e14; --panel:rgba(24,29,39,.90); --panel2:rgba(30,36,48,.72);
+    --tx:#f0f3f8; --tx2:#c3cad6; --tx3:#8b93a3;
+    --line:rgba(255,255,255,.10); --line2:rgba(255,255,255,.06);
+    --blue:#3b6fe0; --green:#22a06b; --yellow:#d9a214; --purple:#8b5cd6;
+    --mono:Consolas,"SFMono-Regular",Menlo,monospace;
+    --sans:"Microsoft YaHei UI","PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:
+      radial-gradient(1200px 700px at 18% 92%, rgba(70,130,255,.20), transparent 60%),
+      linear-gradient(135deg,#1a2740 0%,#0c111c 45%,#06080d 100%);
+    font-family:var(--sans);color:var(--tx);min-height:100vh;padding:26px 18px 40px}
+  .wrap{max-width:1000px;margin:0 auto}
+
+  /* ---------- 页头 / 翻页控制 ---------- */
+  .pg-head{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap;margin-bottom:14px}
+  .pg-title{font-size:19px;font-weight:700;letter-spacing:.3px}
+  .pg-title small{display:block;font-size:12px;font-weight:400;color:var(--tx3);margin-top:4px}
+  .tabs{margin-left:auto;display:flex;gap:6px}
+  .tabs button{background:rgba(255,255,255,.06);border:1px solid var(--line);color:var(--tx2);
+    border-radius:8px;padding:7px 13px;font-size:12.5px;cursor:pointer;font-family:var(--sans);transition:.18s}
+  .tabs button:hover{background:rgba(255,255,255,.13);color:#fff}
+  .tabs button.on{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:700}
+  .hint{width:100%;font-size:11.5px;color:var(--tx3)}
+  kbd{background:rgba(255,255,255,.10);border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:11px}
+
+  /* ---------- 翻页容器 ---------- */
+  .deck{position:relative;min-height:640px}
+  .page{position:absolute;inset:0;opacity:0;transform:translateY(12px);
+    transition:opacity .34s ease, transform .34s ease;pointer-events:none}
+  .page.on{opacity:1;transform:none;pointer-events:auto}
+
+  /* ---------- 应用窗口 ---------- */
+  .win{width:990px;height:610px;background-image:url("../assets/frost_bg.png");
+    background-size:cover;background-position:center;border-radius:14px;padding:10px;
+    box-shadow:0 26px 70px rgba(0,0,0,.55)}
+  .card{width:100%;height:100%;border-radius:16px;border:1px solid rgba(255,255,255,.14);
+    background:linear-gradient(180deg,rgba(35,41,54,.86) 0%,rgba(21,25,34,.90) 70%,rgba(16,19,26,.92) 100%);
+    backdrop-filter:blur(2px);display:flex;overflow:hidden}
+
+  /* 侧栏 */
+  .side{width:190px;flex:0 0 190px;padding:16px 14px;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:8px}
+  .brand{display:flex;align-items:center;gap:7px;font-size:13.5px;font-weight:700}
+  .dot{color:var(--blue);font-size:14px}
+  .src-h{font-size:10.5px;color:var(--tx3);padding-left:4px;margin-top:8px}
+  .nav{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:8px;font-size:12.5px;color:var(--tx2)}
+  .nav.on{background:rgba(255,255,255,.12);color:#fff;font-weight:600}
+  .side .sp{flex:1}
+  .sbtn{background:rgba(255,255,255,.07);border-radius:7px;padding:7px;font-size:12px;text-align:center;color:var(--tx2)}
+  .sbtn.pri{background:var(--blue);color:#fff;font-weight:600}
+  .srow{display:flex;gap:6px}
+
+  /* 工作区 */
+  .work{flex:1;padding:14px 18px;display:flex;flex-direction:column;gap:9px;min-width:0}
+  .topbar{display:flex;align-items:center;gap:10px}
+  .sub{font-size:11.5px;color:var(--tx3);flex:1}
+  .seg{display:flex;gap:4px;background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:8px;padding:3px}
+  .seg span{padding:4px 9px;border-radius:6px;font-size:11.5px;color:var(--tx3)}
+  .seg span.on{background:var(--blue);color:#fff;font-weight:600}
+
+  /* ---------- 方案 A：主次分层 ---------- */
+  .A-metrics{display:grid;grid-template-columns:1.35fr 1fr;gap:16px;align-items:stretch}
+  .hero{padding:4px 0}
+  .hero .lbl{font-size:11px;color:var(--tx3);letter-spacing:.6px}
+  .hero .val{font-family:var(--mono);font-size:34px;font-weight:700;line-height:1.15;margin-top:2px}
+  .hero .val em{font-style:normal;font-size:15px;color:var(--tx2);margin-left:6px}
+  .hero .sub2{display:flex;align-items:center;gap:8px;margin-top:6px;font-size:11.5px;color:var(--tx3)}
+  .chip{background:rgba(34,160,107,.16);color:#4fd39a;border-radius:5px;padding:2px 6px;font-size:11px}
+  .hero .spark{margin-top:8px;opacity:.9}
+  .A-mini{display:flex;flex-direction:column;justify-content:center;border-left:1px solid var(--line);padding-left:16px}
+  .A-row{display:flex;align-items:baseline;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line2)}
+  .A-row:last-child{border-bottom:none}
+  .A-row .k{font-size:11.5px;color:var(--tx3);display:flex;align-items:center;gap:6px}
+  .A-row .v{font-family:var(--mono);font-size:15px;font-weight:700}
+  .A-row .v em{font-style:normal;font-size:11px;color:var(--tx3);margin-left:5px}
+
+  /* ---------- 方案 B：四列 + 迷你趋势 ---------- */
+  .B-metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+  .B-item{padding:8px 11px;border:1px solid var(--line);border-radius:11px;background:rgba(255,255,255,.035)}
+  .B-item .lbl{font-size:10.5px;color:var(--tx3);display:flex;align-items:center;gap:6px}
+  .B-item .v{font-family:var(--mono);font-size:19px;font-weight:700;margin-top:3px;line-height:1.2}
+  .B-item .v em{font-style:normal;font-size:11px;color:var(--tx3);margin-left:4px}
+  .B-item .sp{margin-top:7px}
+  .B-item .d{font-size:10.5px;color:var(--tx3);margin-top:3px}
+
+  /* ---------- 方案 C：单排指标带 ---------- */
+  .C-metrics{display:grid;grid-template-columns:repeat(4,1fr);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+  .C-item{padding:9px 14px;border-left:1px solid var(--line2)}
+  .C-item:first-child{border-left:none}
+  .C-item .lbl{font-size:10.5px;color:var(--tx3);letter-spacing:.4px}
+  .C-item .v{font-family:var(--mono);font-size:20px;font-weight:700;margin-top:2px;line-height:1.2}
+  .C-item .v em{font-style:normal;font-size:11px;color:var(--tx3);margin-left:4px}
+
+  /* 概览条 */
+  .ov{font-size:11.5px;color:var(--tx2);background:rgba(255,255,255,.05);
+     border:1px solid var(--line);border-radius:7px;padding:6px 11px}
+
+  /* 下方内容（示意） */
+  .body{display:grid;grid-template-columns:1.25fr 1fr;gap:12px;flex:1;min-height:0}
+  .pane{border:1px solid var(--line);border-radius:11px;background:rgba(255,255,255,.03);padding:9px 11px;min-height:0}
+  .pane h4{margin:0 0 7px;font-size:11.5px;font-weight:600;color:var(--tx2);display:flex;align-items:center;gap:6px}
+  .bar-i{width:10px;height:3px;border-radius:2px;display:inline-block}
+  .mline{display:flex;align-items:center;gap:8px;font-size:11.5px;padding:3.5px 0}
+  .mline .n{flex:1;color:var(--tx2)}
+  .mline .t{font-family:var(--mono);font-size:12px}
+  .mline .b{flex:0 0 66px;height:5px;border-radius:3px;background:rgba(255,255,255,.09);overflow:hidden}
+  .mline .b i{display:block;height:100%;border-radius:3px}
+  .mline .p{width:34px;text-align:right;color:var(--tx3);font-size:10.5px;font-family:var(--mono)}
+  .chart{flex:1;display:flex;align-items:flex-end;gap:3px;padding-top:8px}
+  .chart i{flex:1;border-radius:2px 2px 0 0;background:linear-gradient(180deg,#4a86f0,#2b57b8)}
+  .heat{display:flex;gap:2.5px;margin-top:6px}
+  .heat .col{display:flex;flex-direction:column;gap:2.5px}
+  .heat i{width:9px;height:9px;border-radius:2px;background:rgba(255,255,255,.07)}
+
+  /* ---------- 对比表 ---------- */
+  .cmp{margin-top:18px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:rgba(255,255,255,.03)}
+  .cmp table{width:100%;border-collapse:collapse;font-size:12.5px}
+  .cmp th,.cmp td{padding:9px 12px;border-bottom:1px solid var(--line2);text-align:left;vertical-align:top}
+  .cmp th{background:rgba(255,255,255,.05);color:var(--tx2);font-weight:600;font-size:12px}
+  .cmp tr:last-child td{border-bottom:none}
+  .cmp td.v{color:var(--tx2)}
+  .tag{display:inline-block;background:rgba(59,111,224,.18);color:#8fb4ff;border-radius:5px;padding:1px 6px;font-size:11px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="pg-head">
+    <div class="pg-title">统计主页重设计 · 三版方案<small>按 ← → 翻页对比；数据为合成示例，非真实用量</small></div>
+    <div class="tabs" id="tabs">
+      <button data-i="0" class="on">A · 主次分层</button>
+      <button data-i="1">B · 四列+趋势</button>
+      <button data-i="2">C · 单排指标带</button>
+    </div>
+    <div class="hint">翻页：<kbd>←</kbd><kbd>→</kbd>　　当前底纹/主题＝你实机的「深色 + 毛玻璃 + 内置底纹」</div>
+  </div>
+
+  <div class="deck" id="deck">
+
+    <!-- ========== A ========== -->
+    <section class="page on">
+      <div class="win"><div class="card">
+        <div class="side">
+          <div class="brand"><span class="dot">●</span>Token 统计</div>
+          <div class="src-h">数据源</div>
+          <div class="nav on">📘 WorkBuddy</div><div class="nav">🗄️ DSH 本地</div>
+          <div class="nav">⚡ 商汤额度</div><div class="nav">🔀 多机合并</div>
+          <div class="sp"></div>
+          <div class="sbtn pri">⟳ 刷新数据</div>
+          <div class="srow"><div class="sbtn">☀️ 亮色</div><div class="sbtn">毛玻璃·开</div></div>
+        </div>
+        <div class="work">
+          <div class="topbar">
+            <div class="sub">WorkBuddy · 近 30 天 · 已更新 07:12</div>
+            <div class="seg"><span>今日</span><span>7天</span><span class="on">30天</span><span>全部</span></div>
+          </div>
+
+          <div class="A-metrics">
+            <div class="hero">
+              <div class="lbl">合计 TOKEN</div>
+              <div class="val">1,286,540,000<em>≈ 12.87 亿</em></div>
+              <div class="sub2"><span class="chip">▲ 12.4%</span><span>今日 +50,231,000 · 较上周同期</span></div>
+              <svg class="spark" width="330" height="30" viewBox="0 0 330 30">
+                <polyline fill="none" stroke="#3b6fe0" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"
+                  points="0,24 24,22 48,25 72,18 96,20 120,14 144,16 168,11 192,15 216,9 240,12 264,7 288,10 312,4 330,6"/>
+              </svg>
+            </div>
+            <div class="A-mini">
+              <div class="A-row"><span class="k"><i class="bar-i" style="background:#22a06b"></i>缓存命中</span><span class="v">812,330,000<em>63.2%</em></span></div>
+              <div class="A-row"><span class="k"><i class="bar-i" style="background:#d9a214"></i>输入 / 输出</span><span class="v">986.2M / 300.3M</span></div>
+              <div class="A-row"><span class="k"><i class="bar-i" style="background:#8b5cd6"></i>会话 / 请求</span><span class="v">1,284 / 24,610</span></div>
+            </div>
+          </div>
+
+          <div class="ov">今日概况: 请求 3,210 次 · 输入 41.2M · 输出 9.1M · 会话 68 个 · 缓存命中 66%</div>
+
+          <div class="body">
+            <div class="pane"><h4><i class="bar-i" style="background:#3b6fe0"></i>模型明细</h4>
+              <div class="mline"><span class="n">deepseek-v4-flash</span><span class="b"><i style="width:78%;background:linear-gradient(90deg,#3b6fe0,#7aa1f0)"></i></span><span class="t">486.2M</span><span class="p">38%</span></div>
+              <div class="mline"><span class="n">glm-5.2</span><span class="b"><i style="width:52%;background:linear-gradient(90deg,#8b5cd6,#b896ee)"></i></span><span class="t">324.1M</span><span class="p">25%</span></div>
+              <div class="mline"><span class="n">deepseek-v4</span><span class="b"><i style="width:38%;background:linear-gradient(90deg,#22a06b,#5fd6a2)"></i></span><span class="t">236.7M</span><span class="p">18%</span></div>
+              <div class="mline"><span class="n">kimi-k2</span><span class="b"><i style="width:22%;background:linear-gradient(90deg,#d9a214,#f0cd6a)"></i></span><span class="t">137.9M</span><span class="p">11%</span></div>
+              <div class="mline"><span class="n">claude-sonnet-4.5</span><span class="b"><i style="width:12%;background:linear-gradient(90deg,#e05252,#f08a8a)"></i></span><span class="t">74.6M</span><span class="p">6%</span></div>
+            </div>
+            <div class="pane"><h4><i class="bar-i" style="background:#3b6fe0"></i>每日用量分布</h4>
+              <div class="chart"><i style="height:38%"></i><i style="height:52%"></i><i style="height:44%"></i><i style="height:61%"></i><i style="height:49%"></i><i style="height:72%"></i><i style="height:58%"></i><i style="height:66%"></i><i style="height:83%"></i><i style="height:61%"></i><i style="height:74%"></i><i style="height:55%"></i><i style="height:69%"></i><i style="height:88%"></i><i style="height:64%"></i></div>
+              <h4 style="margin-top:10px"><i class="bar-i" style="background:#22a06b"></i>活跃热力</h4>
+              <div class="heat" id="hA"></div>
+            </div>
+          </div>
+        </div>
+      </div></div>
+    </section>
+
+    <!-- ========== B ========== -->
+    <section class="page">
+      <div class="win"><div class="card">
+        <div class="side">
+          <div class="brand"><span class="dot">●</span>Token 统计</div>
+          <div class="src-h">数据源</div>
+          <div class="nav on">📘 WorkBuddy</div><div class="nav">🗄️ DSH 本地</div>
+          <div class="nav">⚡ 商汤额度</div><div class="nav">🔀 多机合并</div>
+          <div class="sp"></div>
+          <div class="sbtn pri">⟳ 刷新数据</div>
+          <div class="srow"><div class="sbtn">☀️ 亮色</div><div class="sbtn">毛玻璃·开</div></div>
+        </div>
+        <div class="work">
+          <div class="topbar">
+            <div class="sub">WorkBuddy · 近 30 天 · 已更新 07:12</div>
+            <div class="seg"><span>今日</span><span>7天</span><span class="on">30天</span><span>全部</span></div>
+          </div>
+
+          <div class="B-metrics">
+            <div class="B-item">
+              <div class="lbl"><i class="bar-i" style="background:#3b6fe0"></i>合计 Token</div>
+              <div class="v">1.29B</div>
+              <svg class="sp" width="100%" height="26" viewBox="0 0 150 26" preserveAspectRatio="none">
+                <polyline fill="none" stroke="#3b6fe0" stroke-width="2" points="0,20 15,17 30,21 45,13 60,15 75,9 90,11 105,6 120,8 135,3 150,5"/>
+              </svg>
+              <div class="d">▲ 12.4%　今日 +50.2M</div>
+            </div>
+            <div class="B-item">
+              <div class="lbl"><i class="bar-i" style="background:#22a06b"></i>缓存命中</div>
+              <div class="v">812.3M<em>63.2%</em></div>
+              <svg class="sp" width="100%" height="26" viewBox="0 0 150 26" preserveAspectRatio="none">
+                <polyline fill="none" stroke="#22a06b" stroke-width="2" points="0,16 15,18 30,14 45,17 60,12 75,15 90,10 105,13 120,9 135,11 150,7"/>
+              </svg>
+              <div class="d">▲ 3.1%　较上周</div>
+            </div>
+            <div class="B-item">
+              <div class="lbl"><i class="bar-i" style="background:#d9a214"></i>输入 / 输出</div>
+              <div class="v">986 / 300<em>M</em></div>
+              <svg class="sp" width="100%" height="26" viewBox="0 0 150 26" preserveAspectRatio="none">
+                <polyline fill="none" stroke="#d9a214" stroke-width="2" points="0,19 15,16 30,20 45,15 60,18 75,13 90,17 105,11 120,15 135,12 150,9"/>
+              </svg>
+              <div class="d">出/入 ≈ 30.5%</div>
+            </div>
+            <div class="B-item">
+              <div class="lbl"><i class="bar-i" style="background:#8b5cd6"></i>会话 / 请求</div>
+              <div class="v">1,284<em>/ 24,610</em></div>
+              <svg class="sp" width="100%" height="26" viewBox="0 0 150 26" preserveAspectRatio="none">
+                <polyline fill="none" stroke="#8b5cd6" stroke-width="2" points="0,14 15,17 30,12 45,18 60,11 75,16 90,13 105,18 120,10 135,15 150,12"/>
+              </svg>
+              <div class="d">日均 43 会话</div>
+            </div>
+          </div>
+
+          <div class="ov">今日概况: 请求 3,210 次 · 输入 41.2M · 输出 9.1M · 会话 68 个 · 缓存命中 66%</div>
+
+          <div class="body">
+            <div class="pane"><h4><i class="bar-i" style="background:#3b6fe0"></i>模型明细</h4>
+              <div class="mline"><span class="n">deepseek-v4-flash</span><span class="b"><i style="width:78%;background:linear-gradient(90deg,#3b6fe0,#7aa1f0)"></i></span><span class="t">486.2M</span><span class="p">38%</span></div>
+              <div class="mline"><span class="n">glm-5.2</span><span class="b"><i style="width:52%;background:linear-gradient(90deg,#8b5cd6,#b896ee)"></i></span><span class="t">324.1M</span><span class="p">25%</span></div>
+              <div class="mline"><span class="n">deepseek-v4</span><span class="b"><i style="width:38%;background:linear-gradient(90deg,#22a06b,#5fd6a2)"></i></span><span class="t">236.7M</span><span class="p">18%</span></div>
+              <div class="mline"><span class="n">kimi-k2</span><span class="b"><i style="width:22%;background:linear-gradient(90deg,#d9a214,#f0cd6a)"></i></span><span class="t">137.9M</span><span class="p">11%</span></div>
+            </div>
+            <div class="pane"><h4><i class="bar-i" style="background:#3b6fe0"></i>每日用量分布</h4>
+              <div class="chart"><i style="height:38%"></i><i style="height:52%"></i><i style="height:44%"></i><i style="height:61%"></i><i style="height:49%"></i><i style="height:72%"></i><i style="height:58%"></i><i style="height:66%"></i><i style="height:83%"></i><i style="height:61%"></i><i style="height:74%"></i><i style="height:55%"></i><i style="height:69%"></i><i style="height:88%"></i><i style="height:64%"></i></div>
+              <h4 style="margin-top:10px"><i class="bar-i" style="background:#22a06b"></i>活跃热力</h4>
+              <div class="heat" id="hB"></div>
+            </div>
+          </div>
+        </div>
+      </div></div>
+    </section>
+
+    <!-- ========== C ========== -->
+    <section class="page">
+      <div class="win"><div class="card">
+        <div class="side">
+          <div class="brand"><span class="dot">●</span>Token 统计</div>
+          <div class="src-h">数据源</div>
+          <div class="nav on">📘 WorkBuddy</div><div class="nav">🗄️ DSH 本地</div>
+          <div class="nav">⚡ 商汤额度</div><div class="nav">🔀 多机合并</div>
+          <div class="sp"></div>
+          <div class="sbtn pri">⟳ 刷新数据</div>
+          <div class="srow"><div class="sbtn">☀️ 亮色</div><div class="sbtn">毛玻璃·开</div></div>
+        </div>
+        <div class="work">
+          <div class="topbar">
+            <div class="sub">WorkBuddy · 近 30 天 · 已更新 07:12</div>
+            <div class="seg"><span>今日</span><span>7天</span><span class="on">30天</span><span>全部</span></div>
+          </div>
+
+          <div class="C-metrics">
+            <div class="C-item"><div class="lbl">合计 Token</div><div class="v">1,286,540,000<em>12.87亿</em></div></div>
+            <div class="C-item"><div class="lbl">缓存命中</div><div class="v">812,330,000<em>63.2%</em></div></div>
+            <div class="C-item"><div class="lbl">输入 / 输出</div><div class="v">986.2M<em>/ 300.3M</em></div></div>
+            <div class="C-item"><div class="lbl">会话 / 请求</div><div class="v">1,284<em>/ 24,610</em></div></div>
+          </div>
+
+          <div class="ov">今日概况: 请求 3,210 次 · 输入 41.2M · 输出 9.1M · 会话 68 个 · 缓存命中 66%</div>
+
+          <div class="body" style="grid-template-columns:1.05fr 1fr">
+            <div class="pane"><h4><i class="bar-i" style="background:#3b6fe0"></i>模型明细</h4>
+              <div class="mline"><span class="n">deepseek-v4-flash</span><span class="b"><i style="width:78%;background:linear-gradient(90deg,#3b6fe0,#7aa1f0)"></i></span><span class="t">486.2M</span><span class="p">38%</span></div>
+              <div class="mline"><span class="n">glm-5.2</span><span class="b"><i style="width:52%;background:linear-gradient(90deg,#8b5cd6,#b896ee)"></i></span><span class="t">324.1M</span><span class="p">25%</span></div>
+              <div class="mline"><span class="n">deepseek-v4</span><span class="b"><i style="width:38%;background:linear-gradient(90deg,#22a06b,#5fd6a2)"></i></span><span class="t">236.7M</span><span class="p">18%</span></div>
+              <div class="mline"><span class="n">kimi-k2</span><span class="b"><i style="width:22%;background:linear-gradient(90deg,#d9a214,#f0cd6a)"></i></span><span class="t">137.9M</span><span class="p">11%</span></div>
+              <div class="mline"><span class="n">claude-sonnet-4.5</span><span class="b"><i style="width:12%;background:linear-gradient(90deg,#e05252,#f0a0a0)"></i></span><span class="t">74.6M</span><span class="p">6%</span></div>
+              <h4 style="margin-top:14px"><i class="bar-i" style="background:#3b6fe0"></i>每日用量分布</h4>
+              <div class="chart" style="height:96px"><i style="height:38%"></i><i style="height:52%"></i><i style="height:44%"></i><i style="height:61%"></i><i style="height:49%"></i><i style="height:72%"></i><i style="height:58%"></i><i style="height:66%"></i><i style="height:83%"></i><i style="height:61%"></i><i style="height:74%"></i><i style="height:55%"></i><i style="height:69%"></i><i style="height:88%"></i><i style="height:64%"></i></div>
+            </div>
+            <div class="pane"><h4><i class="bar-i" style="background:#22a06b"></i>活跃热力（可拖动看更早月份）</h4>
+              <div class="heat" id="hC" style="flex-wrap:wrap;gap:6px"></div>
+            </div>
+          </div>
+        </div>
+      </div></div>
+    </section>
+
+  </div>
+
+  <div class="cmp">
+    <table>
+      <tr><th style="width:110px">方案</th><th style="width:210px">做法</th><th>优点</th><th>取舍</th></tr>
+      <tr>
+        <td><span class="tag">A</span> 主次分层</td>
+        <td class="v">合计 Token 做成主指标（超大数字 + 涨幅 + 趋势线），其余三项降为右侧竖排小行</td>
+        <td class="v">层级最强，一眼知道"核心数字是谁"；省下的横向空间让主数字能更大</td>
+        <td class="v">次要三项字号变小，扫读速度略降</td>
+      </tr>
+      <tr>
+        <td><span class="tag">B</span> 四列+趋势</td>
+        <td class="v">保留四等分，每张加 14 天迷你趋势线 + 环比 chip</td>
+        <td class="v">信息密度最高；四项都有"走势"，横向四列仍整齐对齐</td>
+        <td class="v">元素最多，毛玻璃的克制感会减弱一点</td>
+      </tr>
+      <tr>
+        <td><span class="tag">C</span> 单排指标带</td>
+        <td class="v">去掉分区块，四组"标签在上/数字在下"，只用竖细线分隔</td>
+        <td class="v">最克制、最省垂直空间，下面的图表和热力图能更高</td>
+        <td class="v">四项完全平级，没有主次（想强调总量时不突出）</td>
+      </tr>
+    </table>
+  </div>
+</div>
+
+<script>
+(function(){
+  var pages = Array.prototype.slice.call(document.querySelectorAll('.page'));
+  var tabs  = Array.prototype.slice.call(document.querySelectorAll('#tabs button'));
+  var i = 0;
+  function show(n){
+    i = (n + pages.length) % pages.length;
+    pages.forEach(function(p, k){ p.classList.toggle('on', k === i); });
+    tabs.forEach(function(b, k){ b.classList.toggle('on', k === i); });
+  }
+  tabs.forEach(function(b){ b.addEventListener('click', function(){ show(+b.dataset.i); }); });
+  document.addEventListener('keydown', function(e){
+    if (e.key === 'ArrowRight'){ show(i + 1); }
+    if (e.key === 'ArrowLeft'){ show(i - 1); }
+  });
+
+  // 热力图占位格子（纯装饰，示例性质）
+  function cells(id, n, seed){
+    var box = document.getElementById(id); if (!box) return;
+    var lvl = ['rgba(255,255,255,.07)','#0e4429','#006d32','#26a641','#39d353'];
+    var s = seed, rnd = function(){ s = (s * 9301 + 49297) % 233280; return s / 233280; };
+    for (var c = 0; c < Math.ceil(n / 5); c++){
+      var col = document.createElement('div'); col.className = 'col';
+      for (var r = 0; r < 5 && c * 5 + r < n; r++){
+        var i2 = document.createElement('i');
+        var v = rnd();
+        i2.style.background = lvl[v > .82 ? 4 : v > .62 ? 3 : v > .38 ? 2 : v > .16 ? 1 : 0];
+        col.appendChild(i2);
+      }
+      box.appendChild(col);
+    }
+  }
+  cells('hA', 60, 7); cells('hB', 60, 21); cells('hC', 120, 33);
+})();
+</script>
+</body>
+</html>

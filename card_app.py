@@ -5949,50 +5949,60 @@ class CardWindow(QWidget):
 
         side_lay.addStretch(1)
 
-        self.btn_refresh = QPushButton("⟳  刷新数据")
+        # ---- 第95轮(浅猫定稿): 侧栏底部统一为四层, 按钮高度统一 ----
+        #   ① 明暗切换 + 刷新   (同一行, 位于主题按钮**之上**)
+        #   ② 主题行: 毛玻璃 | 液态 | 静态  —— **没有"默认"按钮, 都不选即默认**
+        #   ③ ⚙️ 设置
+        #   ④ 版本号(左对齐)
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(6)
+        self.btn_theme_toggle = QPushButton("🌙 暗色" if not theme_state["dark"] else "☀️ 亮色")
+        self.btn_theme_toggle.setCursor(Qt.PointingHandCursor)
+        self.btn_theme_toggle.clicked.connect(lambda: self.set_dark(not theme_state["dark"]))
+        top_row.addWidget(self.btn_theme_toggle, 1)
+
+        self.btn_refresh = QPushButton("⟳  刷新")
         self.btn_refresh.setCursor(Qt.PointingHandCursor)
         self.btn_refresh.clicked.connect(lambda: self.refresh(force=True))
-        side_lay.addWidget(self.btn_refresh)
+        top_row.addWidget(self.btn_refresh, 1)
+        side_lay.addLayout(top_row)
 
-        # 2026-09-25 (第63轮): 材质按钮组 —— 「液态玻璃 | 毛玻璃」并列同一行, 三态语义:
-        #   · 点未选中的 → 切到该材质(另一方自动熄灭);
-        #   · **点已选中的 → 取消, 回到默认(无玻璃)**  ← 浅猫指出此前漏做;
-        # 用 toggled 而非 clicked: 可 checkable 按钮在点击后 Qt 已翻转勾选态,
-        # toggled(False) 即"用户想取消", toggled(True) 即"用户想启用"。
+        # 主题行(三态): 点已选中的 → 取消 → 回到默认(无玻璃)。用 toggled 语义。
         mat_row = QHBoxLayout()
         mat_row.setSpacing(6)
 
-        self.btn_glass_toggle = QPushButton("液态玻璃")
+        self.btn_frost = QPushButton("毛玻璃")
+        self.btn_frost.setCheckable(True)
+        self.btn_frost.setChecked(bool(theme_state.get("frost")) and not theme_state.get("frost_static"))
+        self.btn_frost.setCursor(Qt.PointingHandCursor)
+        self.btn_frost.toggled.connect(self._on_frost_btn)
+        mat_row.addWidget(self.btn_frost, 1)
+
+        self.btn_glass_toggle = QPushButton("液态")
         self.btn_glass_toggle.setCheckable(True)
         self.btn_glass_toggle.setChecked(bool(theme_state["glass"]))
         self.btn_glass_toggle.setCursor(Qt.PointingHandCursor)
         self.btn_glass_toggle.toggled.connect(self._on_glass_btn)
         mat_row.addWidget(self.btn_glass_toggle, 1)
 
-        self.btn_frost = QPushButton("毛玻璃")
-        self.btn_frost.setCheckable(True)
-        self.btn_frost.setChecked(bool(theme_state.get("frost")))
-        self.btn_frost.setCursor(Qt.PointingHandCursor)
-        self.btn_frost.toggled.connect(self._on_frost_btn)
-        mat_row.addWidget(self.btn_frost, 1)
-        side_lay.addLayout(mat_row)
-
-        # 明暗切换 + 静态背景 **同一行** (第76轮按浅猫要求)
-        opt_row = QHBoxLayout()
-        opt_row.setSpacing(6)
-        self.btn_theme_toggle = QPushButton("🌙 暗色" if not theme_state["dark"] else "☀️ 亮色")
-        self.btn_theme_toggle.setCursor(Qt.PointingHandCursor)
-        self.btn_theme_toggle.clicked.connect(lambda: self.set_dark(not theme_state["dark"]))
-        opt_row.addWidget(self.btn_theme_toggle, 1)
-
-        # 静态背景: 毛玻璃模式下改用静态底纹(内置/自定义图)代替 DWM 实时模糊
-        self.btn_static_bg = QPushButton("静态背景")
+        self.btn_static_bg = QPushButton("静态")
         self.btn_static_bg.setCheckable(True)
         self.btn_static_bg.setChecked(bool(theme_state.get("frost_static")))
         self.btn_static_bg.setCursor(Qt.PointingHandCursor)
         self.btn_static_bg.toggled.connect(self._on_static_btn)
-        opt_row.addWidget(self.btn_static_bg, 1)
-        side_lay.addLayout(opt_row)
+        mat_row.addWidget(self.btn_static_bg, 1)
+        side_lay.addLayout(mat_row)
+
+        self.btn_settings = QPushButton("⚙️  设置")
+        self.btn_settings.setCheckable(True)
+        self.btn_settings.setCursor(Qt.PointingHandCursor)
+        self.btn_settings.toggled.connect(self._on_settings_btn)
+        side_lay.addWidget(self.btn_settings)
+
+        self.lbl_ver = QLabel(APP_BUILD)
+        self.lbl_ver.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        side_lay.addWidget(self.lbl_ver)
 
         main_layout.addWidget(self.sidebar)
 
@@ -6000,6 +6010,7 @@ class CardWindow(QWidget):
         self.workspace = QWidget()
         self.workspace.setObjectName("workspace")
         work_lay = QVBoxLayout(self.workspace)
+        self.work_lay = work_lay       # 第95轮: 设置页要在这一层做"显示/隐藏"切换
         work_lay.setContentsMargins(18, 14, 18, 14)
         work_lay.setSpacing(10)
 
@@ -6188,8 +6199,9 @@ class CardWindow(QWidget):
         # 第77轮: 静态背景与明暗切换同一行 → 一起纳入同高同字号, 否则两者盒高不一致
         _opt_h = m["refresh_h"]
         _opt_ft = QFont("Microsoft YaHei UI", m["nav_btn_pt"])
+        # 第95轮: 侧栏底部**全部**按钮同高同字号(含新增的「设置」)
         for _b in (self.btn_theme_toggle, self.btn_glass_toggle, self.btn_frost,
-                   getattr(self, "btn_static_bg", None)):
+                   getattr(self, "btn_static_bg", None), getattr(self, "btn_settings", None)):
             if _b is None:
                 continue
             _b.setFixedHeight(_opt_h)
@@ -7308,6 +7320,43 @@ class CardWindow(QWidget):
         elif chosen == act_quit:
             os._exit(0)
 
+    def _set_always_top(self, on):
+        """第95轮: 窗口置顶开关(设置页用)。改 flags 会让窗口被隐藏, 需重新 show。"""
+        try:
+            on = bool(on)
+            self._always_top = on
+            flags = self.windowFlags()
+            flags = (flags | Qt.WindowStaysOnTopHint) if on else (flags & ~Qt.WindowStaysOnTopHint)
+            was = self.isVisible()
+            self.setWindowFlags(flags)
+            fw = getattr(self, "_frost_win", None)
+            if fw is not None:
+                ff = fw.windowFlags()
+                ff = (ff | Qt.WindowStaysOnTopHint) if on else (ff & ~Qt.WindowStaysOnTopHint)
+                fw.setWindowFlags(ff)
+                if ACRYLIC["on"]:
+                    fw.show()
+                    fw.lower()
+                    self.raise_()
+            if was:
+                self.show()
+        except Exception:
+            pass
+    def _on_settings_btn(self, on):
+        """第95轮: 侧栏「设置」按钮 —— 切到设置页 / 返回统计面板。"""
+        if getattr(self, "page_settings", None) is None:
+            self.page_settings = SettingsPage(self)
+            self.work_lay.addWidget(self.page_settings)
+        lay = self.work_lay
+        for i in range(lay.count()):
+            wgt = lay.itemAt(i).widget()
+            if wgt is not None and wgt is not self.page_settings:
+                wgt.setVisible(not on)
+        self.page_settings.setVisible(on)
+        if on:
+            self.page_settings.refresh()
+
+
 
 # ============================================================ 开机自启 (双轨保险)
 VBS_PATH = os.path.join(os.environ.get("APPDATA", ""),
@@ -7958,6 +8007,242 @@ class BallWindow(QWidget):
             _restart_app()
         elif chosen == a_quit:
             os._exit(0)
+
+
+class SettingsPage(QWidget):
+    """第95轮: 设置页面 —— 方案 A「分组卡片流」, 与程序同语言。
+
+    风格统一要点:
+      · 卡片用 `GlassPodFrame(radius=_PANEL_RADIUS, frame=True)`(与底部内容卡片同一套);
+      · 行与行之间用 1px 细线分区(不铺斑马纹);
+      · 控件沿用现有 `material_btn_qss("seg"/"mat"/"opt")` 按钮样式;
+      · 滚动条走 `style_scroll_area()` 的自绘细样式(与统计区一致);
+      · 不重复"数据源"卡片(侧栏顶部已有来源切换)。
+    """
+
+    def __init__(self, win):
+        super().__init__()
+        self.win = win
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self.area = QScrollArea()
+        self.area.setWidgetResizable(True)
+        style_scroll_area(self.area)
+        host = QWidget()
+        self.v = QVBoxLayout(host)
+        self.v.setContentsMargins(2, 2, 8, 2)
+        self.v.setSpacing(10)
+        self.area.setWidget(host)
+        outer.addWidget(self.area)
+
+        self._rows = []
+        self._build()
+
+    # ---------- 构件 ----------
+    def _card(self, title, hint=""):
+        f = GlassPodFrame(radius=_PANEL_RADIUS, rule=False, frame=True)
+        lay = QVBoxLayout(f)
+        lay.setContentsMargins(14, 10, 14, 10)
+        lay.setSpacing(0)
+        h = CardHeader(title, BLUE)
+        lay.addWidget(h)
+        if hint:
+            lb = QLabel(hint)
+            lb.setStyleSheet("color:%s; font-size:11px;" % qname(TEXT3))
+            lb.setContentsMargins(2, 0, 0, 6)
+            lay.addWidget(lb)
+        self.v.addWidget(f)
+        return f, lay
+
+    def _row(self, lay, title, sub="", widget=None):
+        row = QWidget()
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(2, 8, 2, 8)
+        rl.setSpacing(10)
+        box = QWidget()
+        bl = QVBoxLayout(box)
+        bl.setContentsMargins(0, 0, 0, 0)
+        bl.setSpacing(0)
+        t = QLabel(title)
+        t.setStyleSheet("font-size:12.5px; font-weight:600; color:%s;" % qname(TEXT))
+        bl.addWidget(t)
+        if sub:
+            s = QLabel(sub)
+            s.setStyleSheet("color:%s; font-size:11px;" % qname(TEXT3))
+            bl.addWidget(s)
+        rl.addWidget(box, 1)
+        if widget is not None:
+            rl.addWidget(widget, 0)
+        lay.addWidget(row)
+        self._rows.append(row)
+        return row
+
+    @staticmethod
+    def _sep(lay):
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setFixedHeight(1)
+        line.setStyleSheet("background:%s; border:none;" % qname(BORDER))
+        lay.addWidget(line)
+
+    def _seg(self, items, cur, on_pick, width=None):
+        """紧凑分段按钮组(与日期区间同一语言)。"""
+        w = QWidget()
+        hl = QHBoxLayout(w)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(4)
+        btns = {}
+        for key, label in items:
+            b = QPushButton(label)
+            b.setCheckable(True)
+            b.setChecked(key == cur)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setStyleSheet(material_btn_qss("seg", theme_state["dark"],
+                                             theme_state["glass"], theme_state["frost"]))
+            b.clicked.connect(lambda _c, k=key: on_pick(k))
+            hl.addWidget(b)
+            btns[key] = b
+        if width:
+            w.setFixedWidth(width)
+        return w, btns
+
+    def _toggle(self, on, on_pick, label):
+        b = QPushButton(label)
+        b.setCheckable(True)
+        b.setChecked(on)
+        b.setCursor(Qt.PointingHandCursor)
+        b.setStyleSheet(material_btn_qss("opt", theme_state["dark"],
+                                         theme_state["glass"], theme_state["frost"]))
+        b.toggled.connect(on_pick)
+        b.setFixedWidth(92)
+        return b
+
+    def _pill(self, label, cb):
+        b = QPushButton(label)
+        b.setCursor(Qt.PointingHandCursor)
+        b.setStyleSheet(material_btn_qss("opt", theme_state["dark"],
+                                         theme_state["glass"], theme_state["frost"]))
+        b.clicked.connect(cb)
+        return b
+
+    # ---------- 内容 ----------
+    def _build(self):
+        w = self.win
+        dark = theme_state["dark"]
+
+        # ① 外观
+        c, lay = self._card("外观", "材质三选一；再点已选中的即取消，回到默认")
+        self._row(lay, "深色模式", "夜间更护眼（与侧栏底部开关同步）",
+                  self._toggle(dark, lambda v: w.set_dark(v), "深色" if dark else "浅色"))
+        self._sep(lay)
+        cur_mat = ("static" if theme_state["frost_static"] else
+                   ("frost" if theme_state["frost"] else ("glass" if theme_state["glass"] else "")))
+        seg, _ = self._seg([("frost", "毛玻璃"), ("glass", "液态"), ("static", "静态")],
+                           cur_mat, lambda k: w._set_material(k))
+        self._row(lay, "窗口材质", "当前：%s" % {"frost": "毛玻璃（系统实时模糊）",
+                                                "glass": "液态玻璃", "static": "静态背景"}.get(cur_mat, "默认"),
+                  seg)
+        self._sep(lay)
+        cur_tr = theme_state.get("glass_transparency", "balanced")
+        seg2, _ = self._seg([("crystal", "💎 晶透"), ("balanced", "💧 标准"), ("frosted", "🌫️ 柔和")],
+                            cur_tr, lambda k: w.set_glass_transparency(k))
+        self._row(lay, "液态玻璃透明度", "仅液态玻璃生效", seg2)
+        self._sep(lay)
+        box = QWidget()
+        bl = QHBoxLayout(box)
+        bl.setContentsMargins(0, 0, 0, 0)
+        bl.setSpacing(6)
+        bl.addWidget(self._pill("选择图片…", w.choose_frost_image))
+        bl.addWidget(self._pill("♻️ 恢复默认", w.reset_frost_image))
+        self._row(lay, "毛玻璃底纹",
+                  "当前：%s" % ("自定义图片" if theme_state.get("frost_custom") else "内置默认底纹"), box)
+
+        # ② 窗口与启动
+        c2, lay2 = self._card("窗口与启动", "切换后立即生效并被记住")
+        cur_sz = theme_state.get("window_size", "default")
+        seg3, _ = self._seg([("default", "标准 990×610"), ("large", "舒适 1180×730")],
+                            cur_sz, lambda k: w.apply_size_mode(k))
+        self._row(lay2, "窗口尺寸", "", seg3)
+        self._sep(lay2)
+        self._row(lay2, "开机自启动", "跟随当前用户登录启动",
+                  self._toggle(autostart_enabled(), lambda v: set_autostart(v),
+                               "开" if autostart_enabled() else "关"))
+        self._sep(lay2)
+        self._row(lay2, "窗口置顶", "始终显示在最前",
+                  self._toggle(bool(getattr(w, "_always_top", True)),
+                               lambda v: w._set_always_top(v), "开"))
+
+        # ③ 桌宠
+        c3, lay3 = self._card("桌宠", "顶 1/3 抚摸，底 2/3 点击；双击打开统计面板")
+        self._row(lay3, "显示桌宠", "关闭时托盘图标仍在",
+                  self._toggle(bool(theme_state.get("pet")), lambda v: w.set_pet(v),
+                               "开" if theme_state.get("pet") else "关"))
+        self._sep(lay3)
+        pet_row = QWidget()
+        pl = QVBoxLayout(pet_row)
+        pl.setContentsMargins(0, 0, 0, 0)
+        pl.setSpacing(6)
+        cur_pet = theme_state.get("pet_theme", "v3")
+        line1, line2 = QWidget(), QWidget()
+        l1, l2 = QHBoxLayout(line1), QHBoxLayout(line2)
+        l1.setContentsMargins(0, 0, 0, 0)
+        l2.setContentsMargins(0, 0, 0, 0)
+        l1.setSpacing(6)
+        l2.setSpacing(6)
+        for key in ("v4", "v3"):
+            b = QPushButton(PET_THEMES.get(key, {}).get("name", key))
+            b.setCheckable(True)
+            b.setChecked(cur_pet == key)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setStyleSheet(material_btn_qss("mat", theme_state["dark"],
+                                             theme_state["glass"], theme_state["frost"]))
+            b.clicked.connect(lambda _c, k=key: w.set_pet_theme(k))
+            l1.addWidget(b, 1)
+        for key in ("v2", "v1"):
+            b = QPushButton(PET_THEMES.get(key, {}).get("name", key))
+            b.setCheckable(True)
+            b.setChecked(cur_pet == key)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setStyleSheet(material_btn_qss("mat", theme_state["dark"],
+                                             theme_state["glass"], theme_state["frost"]))
+            b.clicked.connect(lambda _c, k=key: w.set_pet_theme(k))
+            l2.addWidget(b, 1)
+        pl.addWidget(line1)
+        pl.addWidget(line2)
+        self._row(lay3, "桌宠主题", "当前：%s" % PET_THEMES.get(cur_pet, {}).get("name", cur_pet), pet_row)
+        self._sep(lay3)
+        self._row(lay3, "双击桌宠打开面板", "",
+                  self._toggle(True, lambda v: None, "开"))
+
+        # ④ 关于
+        c4, lay4 = self._card("关于", "")
+        box4 = QWidget()
+        b4 = QHBoxLayout(box4)
+        b4.setContentsMargins(0, 0, 0, 0)
+        b4.setSpacing(6)
+        b4.addWidget(self._pill("🔄 一键重启", _restart_app))
+        b4.addWidget(self._pill("🔃 立即刷新", lambda: w.refresh(force=True)))
+        self._row(lay4, "版本", APP_BUILD + " · 双层窗口毛玻璃架构", box4)
+
+        self.v.addStretch(1)
+
+    def refresh(self):
+        """主题/材质变化后重建设置页内容(按钮 QSS 与配色需要重算)。"""
+        try:
+            while self.v.count():
+                it = self.v.takeAt(0)
+                wgt = it.widget()
+                if wgt is not None:
+                    wgt.setParent(None)
+                    wgt.deleteLater()
+        except Exception:
+            pass
+        self._rows = []
+        self._build()
+        for r in self._rows:
+            r.setStyleSheet("")
 
 
 def _restart_app():
