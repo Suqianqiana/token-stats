@@ -1489,10 +1489,11 @@ def dlg_prompt(parent, title, message, default="", label="", placeholder=""):
 
 # ============================================================ 头部组件
 class CardHeader(QWidget):
-    def __init__(self, text, accent=BLUE, parent=None):
+    def __init__(self, text, accent=BLUE, parent=None, bold=True):
         super().__init__(parent)
         self.text = text
         self.accent = accent
+        self.bold = bold
         self.setFixedHeight(22)
 
     def paintEvent(self, ev):
@@ -1504,7 +1505,7 @@ class CardHeader(QWidget):
         p.setPen(TEXT)
         m = curr_metric()
         f = QFont("Microsoft YaHei UI", m["row_head_pt"])
-        f.setBold(True)
+        f.setBold(bool(self.bold))     # 第97轮后半: 浅猫要求图表类卡片标题不用粗体
         p.setFont(f)
         p.drawText(QRectF(22, 0, self.width() - 24, self.height()),
                    Qt.AlignLeft | Qt.AlignVCenter, self.text)
@@ -6151,7 +6152,8 @@ class CardWindow(QWidget):
         cv = QVBoxLayout(self.chart_card)
         cv.setContentsMargins(10, 6, 8, 6)
         cv.setSpacing(0)
-        cv.addWidget(CardHeader("每日用量分布 (滚轮缩放/拖动平移)", BLUE))
+        # 第97轮后半(浅猫): 去掉标题里的"(滚轮缩放/拖动平移)"提示, 标题改常规字重
+        cv.addWidget(CardHeader("每日用量分布", BLUE, bold=False))
         self.chart = StackedBarChart()
         cv.addWidget(self.chart)
         charts_col.addWidget(self.chart_card, 56)
@@ -6161,7 +6163,7 @@ class CardWindow(QWidget):
         hv = QVBoxLayout(self.heat_card)
         hv.setContentsMargins(10, 6, 8, 6)
         hv.setSpacing(0)
-        hv.addWidget(CardHeader("近期活跃热力", GREEN))
+        hv.addWidget(CardHeader("近期活跃热力", GREEN, bold=False))
         self.heat = HeatMap()
         hv.addWidget(self.heat)
         charts_col.addWidget(self.heat_card, 44)
@@ -8253,7 +8255,7 @@ class SettingsPage(QWidget):
             # 左侧 22px 与 CardHeader 的标题文字左缘对齐(CardHeader 从 x=22 起画字)
             h.setStyleSheet("color:%s; font-size:11px; padding:2px 0 4px 22px;" % qname(TEXT3))
             h.setWordWrap(True)
-            self._reg(h, "label", TEXT3)
+            self._reg(h, "label", "TEXT3")
             lay.addWidget(h)
         self.v.addWidget(f)
         return lay
@@ -8270,7 +8272,7 @@ class SettingsPage(QWidget):
         bl.setSpacing(1)
         t = QLabel(title)
         t.setStyleSheet("font-size:12.5px; font-weight:600; color:%s;" % qname(TEXT))
-        self._reg(t, "label", TEXT)
+        self._reg(t, "label", "TEXT")
         bl.addWidget(t)
         if sub:
             s = QLabel(sub)
@@ -8278,7 +8280,7 @@ class SettingsPage(QWidget):
             # 副标题可能很长(例如"当前：毛玻璃（系统实时模糊）"): 允许被压窄, 不撑破行
             s.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
             s.setMinimumWidth(0)
-            self._reg(s, "label", TEXT3)
+            self._reg(s, "label", "TEXT3")
             if isinstance(sub_out, list):
                 sub_out.append(s)
             bl.addWidget(s)
@@ -8408,7 +8410,14 @@ class SettingsPage(QWidget):
 
     # ---------------- 局部刷新(第97轮: 不再全量重建) ----------------
     def _retheme(self):
-        """只重设已登记控件的**配色** —— 不增删控件, 所以不会弹一下。"""
+        """只重设已登记控件的**配色** —— 不增删控件, 所以不会弹一下。
+
+        ⚠️ 第97轮后半修(浅猫: "设置页内字体未适配浅色模式"):
+        原来登记时存的是**当前主题的 QColor 对象**, 而 `refresh_palette()` 是
+        `globals().update(TEXT=QColor(...))` —— 会建**新对象**, 登记表里仍持着旧对象
+        → 切到浅色后 label 还是深色主题的字色。现在登记的是**颜色变量名**,
+        每次都在 `globals()` 里现取, 永远跟着当前主题走。
+        """
         d = bool(theme_state["dark"])
         g = bool(theme_state["glass"])
         f = bool(theme_state["frost"])
@@ -8421,9 +8430,10 @@ class SettingsPage(QWidget):
                 elif kind == "segbox":
                     w.setStyleSheet(seg_box_qss(d, g, f))
                 elif kind == "line":
-                    w.setStyleSheet("background:%s; border:none;" % qname(BORDER))
+                    w.setStyleSheet("background:%s; border:none;" % qname(globals()["BORDER"]))
                 elif kind == "label":
-                    w.setStyleSheet("color:%s;" % qname(param))
+                    col = globals().get(param, param) if isinstance(param, str) else param
+                    w.setStyleSheet("color:%s;" % qname(col))
             except Exception:
                 pass
 
@@ -8491,14 +8501,19 @@ class SettingsPage(QWidget):
           · 滚动位置**天然保持**(控件没被销毁), 不需要再保存/还原。
         """
         if not getattr(self, "_built", False):
-            self._build()
-            self._built = True
+            self._build()          # _build() 内部会置 _built = True
             return
         self._retheme()
         self._resync()
 
     # ---------------- 内容 ----------------
     def _build(self):
+        # ⚠️ 第97轮后半修(浅猫: "设置页卡片重复, 从头到尾有两套完整的设置卡片"):
+        #    `_built` 原来在 refresh() 里置位, 而 __init__ 是**直接调 _build()** →
+        #    _built 永远是 False → 之后每次 `_show_settings(True)` 里的 refresh()
+        #    都会再 _build() 一遍, 于是页面上摞了两套卡片。
+        #    现在把标志位挪进 _build() 本身, 谁调用都一样。
+        self._built = True
         w = self.win
         ts = theme_state
         ball = PET_BALL.get("w")
@@ -8583,13 +8598,13 @@ class SettingsPage(QWidget):
         lbl.setSpacing(1)
         t = QLabel("桌宠主题")
         t.setStyleSheet("font-size:12.5px; font-weight:600; color:%s;" % qname(TEXT))
-        self._reg(t, "label", TEXT)
+        self._reg(t, "label", "TEXT")
         lbl.addWidget(t)
         s = QLabel("当前：" + PET_THEMES.get(cur_pet, {}).get("name", cur_pet))
         s.setStyleSheet("color:%s; font-size:11px;" % qname(TEXT3))
         s.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         s.setMinimumWidth(0)
-        self._reg(s, "label", TEXT3)
+        self._reg(s, "label", "TEXT3")
         self._lbl_pet = s
         lbl.addWidget(s)
         rl.addWidget(lb, 1)
