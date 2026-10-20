@@ -356,6 +356,37 @@ def _normalize_wb(stats):
     }
 
 
+def _dsh_model_key(model):
+    """把 DSH 账本模型键归一成规范键 "provider/model"(与 card_app._dsh_model_key 同语义)。
+
+    ⚠️ 第87轮(浅猫纠正): 不要剥 provider —— 不同 provider 的同名模型是不同来源,
+    应保持分开。这里只做**规范化**: 统一分隔符(':'/历史 '/' → '/')、统一大小写、
+    修正已知 provider 拼写别名(sencenova → sensenova), 让"同一来源同一模型"合并成一行。
+    本机与别机快照都用同一套归一 → 两边键一致, 合并时不再各算一行。
+    """
+    m = str(model or "").strip()
+    if ":" in m:
+        prov, mdl = m.split(":", 1)
+        prov, mdl = prov.strip().lower(), mdl.strip()
+    elif "/" in m:
+        prov, mdl = m.split("/", 1)
+        prov, mdl = prov.strip().lower(), mdl.strip()
+    else:
+        return m
+    prov = _DSH_PROVIDER_ALIASES.get(prov, prov)
+    return "%s/%s" % (prov, mdl) if prov else mdl
+
+
+_DSH_PROVIDER_ALIASES = {
+    "sencenova": "sensenova", "sensenova": "sensenova",
+    "workbuddy": "workbuddy", "aliyun": "aliyun",
+    "deepseek-official": "deepseek-official", "deepseek": "deepseek-official",
+    "openrouter": "openrouter", "opencode1": "opencode1",
+    "opencode2dsh": "opencode2dsh", "dots": "dots", "dots-vision": "dots-vision",
+    "xiaomi": "xiaomi", "mollycloud": "mollycloud", "bai": "bai",
+}
+
+
 def _normalize_dsh(stats):
     """DSH 结果本身已同构，补齐 models（load_dsh_stats 只给 daily，需要现算）。"""
     if not isinstance(stats, dict) or "error" in stats:
@@ -366,7 +397,7 @@ def _normalize_dsh(stats):
             continue
         tgt = daily.setdefault(d, {})
         for m, a in mm.items():
-            _add_model(tgt.setdefault(m, _empty_model_agg()), a)
+            _add_model(tgt.setdefault(_dsh_model_key(m), _empty_model_agg()), a)
     models = {}
     for mm in daily.values():
         for m, a in mm.items():

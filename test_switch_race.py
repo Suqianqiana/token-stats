@@ -1948,7 +1948,83 @@ check("布局: 材质按钮有独立样式(选中实心/未选描边)",
       "mat_style" in _src62 and "material_btn_qss" in _src62)   # 第64轮: 样式改为按材质分档生成
 
 # 17.4 版本号
-check("版本号升级到 v9.3-frost", ca.APP_BUILD == "v9.3-frost", ca.APP_BUILD)
+check("版本号升级到 v9.4-frost", ca.APP_BUILD == "v9.4-frost", ca.APP_BUILD)
+
+# ========== 17.5 三菜单统一 + emoji + DSH 模型归一 (2026-10-21 第87轮) ==========
+print("== 17.5 菜单同步 / emoji / DSH 归一 ==")
+
+# a) 悬浮球菜单包含「静态背景」(与面板一致)
+_src87 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "card_app.py"),
+              encoding="utf-8").read()
+_n_static = _src87.count("静态背景 (静态底纹)")
+check("菜单同步: 悬浮球/面板都提供「静态背景」", _n_static >= 2, f"count={_n_static}")
+check("菜单同步: 悬浮球菜单项处理静态背景分支",
+      "_card.set_static_bg(not theme_state.get(\"frost_static\"))" in _src87
+      or "self.card.set_static_bg(not theme_state.get(\"frost_static\"))" in _src87)
+check("菜单同步: 悬浮球菜单提供『毛玻璃』", _src87.count("毛玻璃 (系统实时模糊)") >= 2)
+
+# b) 三个右键菜单的简陋线条 emoji 已替换
+for _bad, _good in (("⌫  隐藏窗口", "🙈  隐藏窗口"),
+                    ("⟳  立即刷新数据", "🔃  立即刷新数据"),
+                    ("↺  恢复默认底纹", "♻️  恢复默认底纹"),
+                    ("✕  退出程序", "🚪  退出程序"),
+                    ("✕  退出", "🚪  退出"),
+                    ("▢ 默认 (无玻璃)", "⬜ 默认 (无玻璃)")):
+    check(f"emoji: {_bad!r} → {_good!r}",
+          _bad not in _src87 and _good in _src87)
+
+# c) DSH 模型键规范化(第87轮, 浅猫纠正): 保留 provider, 只统一分隔符/大小写/拼写别名
+#    → 「同一来源同一模型」合并成一行; 「不同来源同名模型」仍分开
+_k1 = ca._dsh_model_key("sensenova:deepseek-v4-flash")
+_k2 = ca._dsh_model_key("sensenova/deepseek-v4-flash")     # 旧式分隔符 → 同键
+check("DSH 归一: 同来源 冒号/斜杠 同键",
+      _k1 == _k2 == "sensenova/deepseek-v4-flash", f"{_k1} vs {_k2}")
+_k3 = ca._dsh_model_key("sencenova:deepseek-v4-pro")        # 拼写别名 → 融合
+check("DSH 归一: provider 拼写别名归一(sencenova→sensenova)",
+      _k3 == "sensenova/deepseek-v4-pro", _k3)
+check("DSH 归一: 不同 provider 同名模型**保持分开**",
+      ca._dsh_model_key("deepseek-official:deepseek-v4-flash") == "deepseek-official/deepseek-v4-flash"
+      and ca._dsh_model_key("sensenova:deepseek-v4-flash") != ca._dsh_model_key("deepseek-official:deepseek-v4-flash"))
+check("DSH 归一: 模型内斜杠不被误剥",
+      ca._dsh_model_key("openrouter:stealth/ox-alpha") == "openrouter/stealth/ox-alpha")
+check("DSH 归一: peer_store 别机快照同样规范化",
+      ps._dsh_model_key("sencenova:sensenova-6.8-flash-lite") == "sensenova/sensenova-6.8-flash-lite"
+      and ps._dsh_model_key("sensenova/deepseek-v4-pro") == "sensenova/deepseek-v4-pro")
+# 端到端: 同一来源同一模型(拼写/分隔符变体)合并一行; 不同来源仍两行
+_tmp87 = {"days": {"2026-10-21": {"byProviderModel": {
+    "sensenova:deepseek-v4-flash": {"input": 1000, "output": 100, "cacheRead": 0,
+                                    "cacheWrite": 0, "calls": 5, "cost": 0.1},
+    "sencenova/deepseek-v4-flash": {"input": 2000, "output": 200, "cacheRead": 0,
+                                    "cacheWrite": 0, "calls": 3, "cost": 0.2},
+    "deepseek-official:deepseek-v4-flash": {"input": 500, "output": 50, "cacheRead": 0,
+                                            "cacheWrite": 0, "calls": 1, "cost": 0.05},
+    "openrouter:stealth/ox-alpha": {"input": 300, "output": 30, "cacheRead": 0,
+                                    "cacheWrite": 0, "calls": 2, "cost": 0.03},
+}}}}
+_tmp_path87 = os.path.join(tempfile.mkdtemp(prefix="dsh87_"), "ledger.json")
+_old_ledger_path87 = ca.dsh_ledger_path
+ca.dsh_ledger_path = lambda: _tmp_path87
+import io as _io87, contextlib as _ctx87
+try:
+    with open(_tmp_path87, "w", encoding="utf-8") as _f87:
+        json.dump(_tmp87, _f87)
+    with _ctx87.redirect_stdout(_io87.StringIO()):
+        pass
+    _s87 = ca.load_dsh_stats()
+    _mdl87 = _s87["daily"]["2026-10-21"]
+    check("DSH 端到端: 同来源(sensenova)合并成一行",
+          _mdl87["sensenova/deepseek-v4-flash"]["input"] == 3000
+          and _mdl87["sensenova/deepseek-v4-flash"]["requests"] == 8,
+          str(sorted(_mdl87)))
+    check("DSH 端到端: 不同来源(deepseek-official)仍分开",
+          "deepseek-official/deepseek-v4-flash" in _mdl87
+          and _mdl87["deepseek-official/deepseek-v4-flash"]["requests"] == 1)
+    check("DSH 端到端: 含斜杠模型名保留",
+          "openrouter/stealth/ox-alpha" in _mdl87
+          and _mdl87["openrouter/stealth/ox-alpha"]["requests"] == 2)
+finally:
+    ca.dsh_ledger_path = _old_ledger_path87
+    __import__("shutil").rmtree(os.path.dirname(_tmp_path87), ignore_errors=True)
 
 # ========== 18. 底纹真高斯 + 按钮材质适配 + 每日分布不再记忆 (2026-09-25 第64轮) ==========
 print("== 18. 底纹模糊 / 按钮材质适配 / 每日分布记忆移除 ==")

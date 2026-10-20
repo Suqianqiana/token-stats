@@ -1,6 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-Token 统计卡片 V9.3 - 静态磨砂毛玻璃 + iOS 27 液态玻璃 + 精致双尺寸仪表盘
+Token 统计卡片 V9.4 - 三套右键菜单统一 + 毛玻璃/静态材质 + 精致双尺寸仪表盘
+
+V9.4 highlights (Unified Menus & DSH Model Merge):
+  - All three right-click menus (panel, floating ball / pet, tray) now share the same
+    material controls: Frost, Static Background, pick / reset the frosted texture image.
+  - Right-click menu emojis upgraded - the plain line-glyphs (hide-window, autostart,
+    refresh, reset-texture, quit) were swapped for friendlier colour emoji.
+  - DSH page merges the same model across provider prefixes (e.g. sensenova:deepseek-v4-flash
+    and deepseek-official:deepseek-v4-flash now count as one "deepseek-v4-flash" row instead
+    of two split rows), so a single model never shows duplicated usage split by source.
 
 V9.3 highlights (Baked Frosted Glass):
   The frosted-glass mode uses a baked-in texture (assets/frost_bg.png - a wallpaper shipped
@@ -2352,6 +2361,63 @@ def dsh_ledger_path():
     return os.path.join(base, "storages", "cost-meter", "ledger.json")
 
 
+DSH_PROVIDER_ALIASES = {
+    # ⭐ 第87轮(浅猫): 别机快照/历史数据里 provider 名可能拼写不一致
+    # (实测办公室快照是 "sencenova:..." 而本机是 "sensenova:..."), 导致同一个
+    # 来源同一个模型被拆成两行。这里把已知别名归一成规范名。
+    # 注意: **不要剥掉 provider** —— 不同 provider 的同名模型(sensenova vs
+    # deepseek-official 的 deepseek-v4-flash)是不同来源, 应保持分开。
+    "sencenova": "sensenova",
+    "sensenova": "sensenova",
+    "workbuddy": "workbuddy",
+    "aliyun": "aliyun",
+    "deepseek-official": "deepseek-official",
+    "deepseek": "deepseek-official",
+    "openrouter": "openrouter",
+    "opencode1": "opencode1",
+    "opencode2dsh": "opencode2dsh",
+    "dots": "dots",
+    "dots-vision": "dots-vision",
+    "xiaomi": "xiaomi",
+    "mollycloud": "mollycloud",
+    "bai": "bai",
+}
+
+
+def _dsh_provider(model):
+    """取键的 provider 段(冒号前 / 首段斜杠前), 未识别前缀返回 None。"""
+    m = str(model or "")
+    if ":" in m:
+        return m.split(":", 1)[0].strip().lower() or None
+    if "/" in m:
+        return m.split("/", 1)[0].strip().lower() or None
+    return None
+
+
+def _dsh_model_key(model):
+    """把账本里的模型键归一成规范键 "provider/model"。
+
+    ⚠️ 第87轮修正(浅猫纠正): 之前误把 provider 剥掉、把不同来源的同名模型合并成一行
+    (sensenova:deepseek-v4-flash + deepseek-official:deepseek-v4-flash → 一行),
+    这会丢掉「走的是哪个通道」的信息。正确做法是 **保留 provider**:
+      · 统一大小写/分隔符("provider:model" 与 "provider/model" 都归一为 provider/model)
+      · 修正已知 provider 拼写别名(sencenova → sensenova)
+      · 这样「同一来源同一模型」合并,「不同来源同名模型」仍分开。
+    """
+    m = (model or "").strip()
+    prov = _dsh_provider(m)
+    mdl = m
+    if ":" in m:
+        mdl = m.split(":", 1)[1].strip()
+    elif "/" in m:
+        mdl = m.split("/", 1)[1].strip()
+    mdl = mdl.strip()
+    if prov:
+        prov = DSH_PROVIDER_ALIASES.get(prov, prov)
+        return "%s/%s" % (prov, mdl)
+    return mdl
+
+
 def load_dsh_stats():
     path = dsh_ledger_path()
     if not os.path.exists(path):
@@ -2379,7 +2445,11 @@ def load_dsh_stats():
         session_ids |= day_sids
         daily_sessions[date] = len(day_sids)
         for model, b in day.get("byProviderModel", {}).items():
-            mk = model.replace(":", "/")
+            # 第87轮: 同源同模型(拼写/分隔符变体)归一到同一键后**必须累加**,
+            # 否则后一条会覆盖前一条(实测 input 1000+2000 → 2000 而非 3000)。
+            # 注意保留 provider: 不同 provider 的同名模型(sensenova vs deepseek-official)是
+            # 不同来源, 保持分开。
+            mk = _dsh_model_key(model)
             mi = b.get("input", 0)
             mo = b.get("output", 0)
             mcr = b.get("cacheRead", 0)
@@ -2387,9 +2457,17 @@ def load_dsh_stats():
             mt = mi + mo + mcr + mcw
             if mt <= 0 and b.get("calls", 0) <= 0:
                 continue
-            dm[mk] = {"requests": b.get("calls", 0),
-                      "input": mi + mcr + mcw, "output": mo,
-                      "cached": mcr, "cacheWrite": mcw, "total": mt}
+            agg = dm.get(mk)
+            if agg is None:
+                agg = {"requests": 0, "input": 0, "output": 0,
+                       "cached": 0, "cacheWrite": 0, "total": 0}
+                dm[mk] = agg
+            agg["requests"] += b.get("calls", 0)
+            agg["input"] += mi + mcr + mcw
+            agg["output"] += mo
+            agg["cached"] += mcr
+            agg["cacheWrite"] += mcw
+            agg["total"] += mt
         total_cost += day.get("cost", 0.0)
 
     today = time.strftime("%Y-%m-%d")
@@ -7083,7 +7161,15 @@ class CardWindow(QWidget):
 
         self.model_lay.addWidget(TableHeader("调用" if s.get("dsh") else "请求"))
         rows = sorted(agg.items(), key=lambda kv: -kv[1]["total"])
-        max_total = rows[0][1]["total"] if rows else 1
+        # ⚠️ max_total 不能为 0: 真实数据里会出现"今日仅一条 total=0 的调用"
+        # (requests=1 但 input/output 全空), rows 非空但首行 total=0 → 除零崩溃。
+        # 取前若干非 0 的最大值兜底。
+        _max_total = 0
+        for _m, _a in rows:
+            if _a.get("total", 0) > 0:
+                _max_total = _a["total"]
+                break
+        max_total = _max_total or 1
         for i, (m, a) in enumerate(rows):
             hit = a["cached"] / a["input"] * 100 if a["input"] else 0
             row = ModelRow(m, MODEL_COLORS[i % len(MODEL_COLORS)],
@@ -7147,7 +7233,7 @@ class CardWindow(QWidget):
 
     def contextMenuEvent(self, ev):
         menu = make_menu(self)
-        act_hide = menu.addAction("⌫  隐藏窗口 (Esc)")
+        act_hide = menu.addAction("🙈  隐藏窗口 (Esc)")
         act_dark = menu.addAction(("◉ " if theme_state["dark"] else "○ ") + "深色模式")
 
         # 2026-09-25 (第63轮): 三种材质统一为一个"单选组", 与侧栏按钮语义一致 ——
@@ -7156,7 +7242,7 @@ class CardWindow(QWidget):
         _cur_frost = bool(theme_state.get("frost"))
         mat_menu = menu.addMenu("🪟  窗口材质")
         act_mat_none = mat_menu.addAction(
-            ("◉ " if not (_cur_glass or _cur_frost) else "○ ") + "▢ 默认 (无玻璃)")
+            ("◉ " if not (_cur_glass or _cur_frost) else "○ ") + "⬜ 默认 (无玻璃)")
         act_blur = mat_menu.addAction(
             ("◉ " if _cur_glass else "○ ") + "💎 液态玻璃 (iOS 27)")
         act_frost = mat_menu.addAction(
@@ -7169,7 +7255,7 @@ class CardWindow(QWidget):
         _fc = bool(theme_state.get("frost_custom"))
         act_frost_pick = mat_menu.addAction(
             ("● " if _fc else "○ ") + "🖼  选择底纹图片…")
-        act_frost_reset = mat_menu.addAction("↺  恢复默认底纹")
+        act_frost_reset = mat_menu.addAction("♻️  恢复默认底纹")
 
         # 玻璃通透度调节菜单
         tr_menu = menu.addMenu("🔮  玻璃通透度")
@@ -7184,9 +7270,9 @@ class CardWindow(QWidget):
         act_sz_def = sz_menu.addAction(("● " if cur_sz != "large" else "○ ") + "标准尺寸 (990×610)")
         act_sz_lg = sz_menu.addAction(("● " if cur_sz == "large" else "○ ") + "舒适大窗口 (1180×730)")
 
-        act_auto = menu.addAction(("◉ " if autostart_enabled() else "○ ") + "开机自启动")
+        act_auto = menu.addAction(("◉ " if autostart_enabled() else "○ ") + "🚀  开机自启动")
         menu.addSeparator()
-        act_quit = menu.addAction("✕  退出程序")
+        act_quit = menu.addAction("🚪  退出程序")
 
         chosen = menu.exec(ev.globalPos())
         if chosen == act_hide:
@@ -7384,7 +7470,7 @@ PET_MS = {"idle": 240, "sleep": 1500, "wake": 700, "drag": 140,
 # 2026-09-17 浅浅猫的想法: 桌宠"顶部 1/3"点= 摸摸头, 其余(底部 2/3)= 普通点击互动;
 # 任意位置双击 = 打开面板。判据用**实际绘制区域**的高度比例, 不是窗口高度(见 _pet_click_region)。
 PET_PAT_TOP_RATIO = 1.0 / 3.0
-APP_BUILD = "v9.3-frost"         # update 2026-09-24 (第62轮): 版本号升级 v9.3,
+APP_BUILD = "v9.4-frost"         # update 2026-10-21 (第87轮): 三菜单统一+emoji+v9.4; 上: v9.3-frost(第62轮)
                                  # 代号 frost = 真·实时高斯模糊毛玻璃材质为主线特性;
                                  # 历史: v9.2-multi(第59轮) 多机同步 / v8.8-auto-sync 商汤真自动
 
@@ -7762,7 +7848,7 @@ class BallWindow(QWidget):
         a_ver.setEnabled(False)
         menu.addSeparator()
         a1 = menu.addAction("📊  打开统计面板" + (" (双击桌宠也可以)" if self.pet else ""))
-        a2 = menu.addAction("⟳  立即刷新数据")
+        a2 = menu.addAction("🔃  立即刷新数据")
         a_restart = menu.addAction("🔄  一键重启")
         menu.addSeparator()
 
@@ -7771,17 +7857,20 @@ class BallWindow(QWidget):
         _cur_frost = bool(theme_state.get("frost"))
         mat_menu = menu.addMenu("🪟  窗口材质")
         a_mat_none = mat_menu.addAction(
-            ("◉ " if not (_cur_glass or _cur_frost) else "○ ") + "▢ 默认 (无玻璃)")
+            ("◉ " if not (_cur_glass or _cur_frost) else "○ ") + "⬜ 默认 (无玻璃)")
         a_glass = mat_menu.addAction(
             ("◉ " if _cur_glass else "○ ") + "💎 液态玻璃 (iOS 27)")
         a_frost = mat_menu.addAction(
-            ("◉ " if _cur_frost else "○ ") + "🫧 毛玻璃 (磨砂质感)")
+            ("◉ " if _cur_frost else "○ ") + "🫧 毛玻璃 (系统实时模糊)")
+        # 第87轮(浅猫): 悬浮球菜单补齐「静态背景」与面板一致
+        a_static = mat_menu.addAction(
+            ("◉ " if bool(theme_state.get("frost_static")) else "○ ") + "🖼  静态背景 (静态底纹)")
         # 2026-09-25 (第63轮): 毛玻璃底纹入口 (与面板菜单一致)
         mat_menu.addSeparator()
         _fc = bool(theme_state.get("frost_custom"))
         a_frost_pick = mat_menu.addAction(
             ("● " if _fc else "○ ") + "🖼  选择底纹图片…")
-        a_frost_reset = mat_menu.addAction("↺  恢复默认底纹")
+        a_frost_reset = mat_menu.addAction("♻️  恢复默认底纹")
         menu.addSeparator()
 
         # 悬浮球右键调节通透度
@@ -7815,7 +7904,7 @@ class BallWindow(QWidget):
                     act.setData(key)
                 a_head = menu.addAction("🤗  摸摸头")
         menu.addSeparator()
-        a_quit = menu.addAction("✕  退出")
+        a_quit = menu.addAction("🚪  退出")
 
         chosen = menu.exec(ev.globalPos())
         if chosen is not None and chosen.data() in PET_THEMES:
@@ -7837,6 +7926,9 @@ class BallWindow(QWidget):
             if self.card:
                 self.card._set_material(
                     None if theme_state.get("frost") else "frost")  # 可取消
+        elif chosen == a_static:
+            if self.card:
+                self.card.set_static_bg(not theme_state.get("frost_static"))
         elif chosen == a_frost_pick:
             if self.card:
                 self.card.choose_frost_image()
@@ -7952,7 +8044,7 @@ class TrayIcon(QObject):
                                          #   局部变量被子菜单只在 rebuild 期间有效, 会被 GC 回收
         a_open = m.addAction("📊  打开统计面板")
         a_open.triggered.connect(self.card.show_from_tray)
-        a_refresh = m.addAction("⟳  立即刷新数据")
+        a_refresh = m.addAction("🔃  立即刷新数据")
         a_refresh.triggered.connect(self._refresh)
         m.addSeparator()
 
@@ -7978,7 +8070,7 @@ class TrayIcon(QObject):
 
         a_restart = m.addAction("🔄  一键重启")
         a_restart.triggered.connect(_restart_app)
-        a_quit = m.addAction("✕  退出")
+        a_quit = m.addAction("🚪  退出")
         a_quit.triggered.connect(self._quit)
 
     def _refresh(self):
