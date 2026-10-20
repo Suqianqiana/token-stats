@@ -49,7 +49,7 @@ def shot(tag):
 
 
 # 切到设置页
-w.btn_settings.setChecked(True)
+w.btn_nav_set.click()
 QTest.qWait(400)
 
 shot("dark_frost")
@@ -59,4 +59,12 @@ w._set_material("glass")
 shot("light_glass")
 w.set_dark(True)
 shot("dark_glass")
+
+# 第97轮: 桌宠卡片(2x2 主题网格)的单独验证 —— 打开桌宠再滚到底
+ca.theme_state["pet"] = True
+w.page_settings._set_pet(True)
+w._set_material("frost")
+w.page_settings.area.verticalScrollBar().setValue(200)
+QTest.qWait(400)
+shot("dark_frost_pet")
 print("DONE")

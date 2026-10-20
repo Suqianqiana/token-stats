@@ -340,12 +340,103 @@ def _norm_date(ts):
     return m.group(1) if m else "unknown"
 
 
+def _norm_model(name):
+    """模型名归一化 —— 剥掉自定义本地 provider 的前缀(第97轮)。
+
+    实测 WorkBuddy 对 `http://127.0.0.1:8788/v1` 这类自定义来源会写两种 key:
+      · providerData.model          = "step-5-preview"
+      · providerData.requestModelId = "custom-local:step-5-preview"
+    而 model 为空的记录会退到 requestModelId → 统计表里同一个模型被**拆成两组**
+    ("step-5-preview" 与 "custom-local:step-5-preview"), 观感就是"用量对不上/统计不上"。
+    """
+    s = str(name or "").strip()
+    for pre in ("custom-local:", "custom:", "local:"):
+        if s.startswith(pre):
+            return s[len(pre):]
+    return s
+
+
+def _usage_from_raw(raw):
+    """从 OpenAI 风格的 `rawUsage`(snake_case) 取用量(第97轮)。
+
+    ⚠️ 为什么要它 —— 浅猫反馈"自定义来源(step-5-preview / hy-4, 接口 127.0.0.1:8788/v1)
+    统计不上用量"。实测今日该来源 93 条记录的 `providerData.usage` **全是 0**
+    (input/output/total 皆 0), 而**同一条记录**的 `providerData.rawUsage` 有完整真实值 ——
+    WorkBuddy 对自定义来源只落了原始响应、没折算成 camelCase 的 usage。
+    → usage 不可用(缺失或全 0)时必须回退 rawUsage, 否则这些用量就凭空消失了。
+
+    **泛化**(浅猫: "其它来源也规避这个问题"): 这里刻意做成"多字段名候选"的通用实现,
+    不绑定任何具体来源 —— 任何 provider 只要在 `providerData` 下留下了
+    OpenAI 风格的原始响应(不论叫 rawUsage / raw_usage / usageRaw / raw), 都能被捞回来。
+
+    字段兼容多个来源的命名差异:
+      input  = prompt_tokens / input_tokens / inputTokens
+      output = completion_tokens / output_tokens / outputTokens
+      total  = total_tokens / totalTokens
+      cached = cached_tokens / prompt_cache_hit_tokens / cache_read_input_tokens
+               / prompt_tokens_details.cached_tokens
+      reasoning = reasoning_tokens / completion_thinking_tokens
+               / completion_tokens_details.reasoning_tokens
+    返回 None 表示"rawUsage 也没有可用数值"。
+    """
+    if not isinstance(raw, dict):
+        return None
+
+    def g(*keys):
+        for k in keys:
+            v = raw.get(k)
+            if isinstance(v, (int, float)) and v:
+                return int(v)
+        return 0
+
+    inp = g("prompt_tokens", "input_tokens", "inputTokens")
+    otp = g("completion_tokens", "output_tokens", "outputTokens")
+    tot = g("total_tokens", "totalTokens") or (inp + otp)
+    if not (inp or otp or tot):
+        return None
+
+    cached = g("cached_tokens", "prompt_cache_hit_tokens", "cache_read_input_tokens")
+    if not cached:
+        pt = raw.get("prompt_tokens_details")
+        if isinstance(pt, dict):
+            v = pt.get("cached_tokens")
+            if isinstance(v, (int, float)):
+                cached = int(v)
+
+    reasoning = g("reasoning_tokens", "completion_thinking_tokens")
+    if not reasoning:
+        ct = raw.get("completion_tokens_details")
+        if isinstance(ct, dict):
+            v = ct.get("reasoning_tokens")
+            if isinstance(v, (int, float)):
+                reasoning = int(v)
+
+    return inp, otp, tot, cached, reasoning
+
+
+def _raw_usage_of(pd):
+    """从 providerData 里找"原始响应"容器 —— 多候选名, 泛化用(第97轮)。"""
+    if not isinstance(pd, dict):
+        return None
+    for k in ("rawUsage", "raw_usage", "usageRaw", "raw", "rawResponse", "raw_response"):
+        v = pd.get(k)
+        if isinstance(v, dict):
+            return v
+    return None
+
+
 def _extract_usage_from_line(line):
     """
     从一行 JSON 提取 usage 条目列表。
     权威来源: providerData.usage (camelCase)。一行可能含多个 assistant 消息块,
     但实际 WorkBuddy 会话文件里通常一行一条消息; 若一行是消息数组也兼容。
     返回 list[dict]: {ts, model, input, output, total, cached, reasoning}
+
+    第97轮(浅猫: "自定义来源统计不上用量") + 第97轮后半(浅猫: "泛化, 其它来源也规避"):
+    · 自定义来源的 `usage` 可能**全 0** 甚至**整个缺失** —— 此时回退解析
+      `providerData` 下的原始响应容器(见 `_raw_usage_of` / `_usage_from_raw`);
+    · 顶层 `obj.usage` 也作为兜底来源(某些来源把 usage 放在消息对象上而不是 providerData 里);
+    · 模型名过 `_norm_model` 归一化, 避免 custom-local: 前缀把同一个模型拆成两组。
     """
     out = []
     try:
@@ -358,27 +449,41 @@ def _extract_usage_from_line(line):
     pd = obj.get("providerData")
     if not isinstance(pd, dict):
         return out
+
+    # usage 容器: 优先 providerData.usage, 兜底顶层 obj.usage(泛化: 有些来源放在消息对象上)
     usage = pd.get("usage")
     if not isinstance(usage, dict):
+        usage = obj.get("usage") if isinstance(obj.get("usage"), dict) else None
+    if usage is None:
+        # 两层都没有 usage 容器 → 这不是一条"模型响应"记录(工具结果/思考/系统消息), 不计入。
+        # ⚠️ 不能为了"把用量捞回来"就连这些一起算 —— 实测今日单文件就有 192 条无 usage
+        #    的非响应记录, 全算进 requests 会让请求数虚高几倍。
         return out
 
+    inp = otp = tot = cached = reasoning = 0
     inp = _safe_int(usage.get("inputTokens"))
     otp = _safe_int(usage.get("outputTokens"))
     tot = _safe_int(usage.get("totalTokens")) or (inp + otp)
-    cached = 0
     itd = usage.get("inputTokensDetails")
     if isinstance(itd, list):
         for d in itd:
             if isinstance(d, dict):
                 cached += _safe_int(d.get("cached_tokens"))
-    reasoning = 0
     otd = usage.get("outputTokensDetails")
     if isinstance(otd, list):
         for d in otd:
             if isinstance(d, dict):
                 reasoning += _safe_int(d.get("reasoning_tokens"))
 
-    model = (
+    # ---- 第97轮: usage 存在但全 0 → 回退"原始响应"容器(泛化, 覆盖其它来源) ----
+    # 这种情况是"记录在、值没落"(自定义来源只落了原始响应), 必须捞回来;
+    # 连原始响应也没有时才认输(保留 requests 计数, 让用户看得到这个来源在被使用)。
+    if not (inp or otp or tot):
+        alt = _usage_from_raw(_raw_usage_of(pd))
+        if alt is not None:
+            inp, otp, tot, cached, reasoning = alt
+
+    model = _norm_model(
         pd.get("model")
         or pd.get("requestModelId")
         or pd.get("requestModelName")

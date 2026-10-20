@@ -26,7 +26,7 @@ _WIN = (sys.platform == "win32")
 if _WIN:
     from ctypes import (POINTER, Structure, byref, c_bool, c_int,
                         pointer, sizeof, WinDLL)
-    from ctypes.wintypes import DWORD, LONG, LPCVOID, ULONG
+    from ctypes.wintypes import DWORD, LONG, LPCVOID, ULONG, HWND, UINT
 
     class ACCENT_STATE:
         ACCENT_DISABLED = 0
@@ -88,14 +88,21 @@ class WindowsWindowEffect:
         self._set_attr = self.user32.SetWindowCompositionAttribute
         self._dwm_set = self.dwmapi.DwmSetWindowAttribute
         self._extend = self.dwmapi.DwmExtendFrameIntoClientArea
+        self._set_pos = self.user32.SetWindowPos
 
         self._set_attr.restype = c_bool
         self._dwm_set.restype = LONG
         self._extend.restype = LONG
+        self._set_pos.restype = c_bool
 
         self._set_attr.argtypes = [c_int, POINTER(WINDOWCOMPOSITIONATTRIBDATA)]
         self._dwm_set.argtypes = [c_int, DWORD, LPCVOID, DWORD]
         self._extend.argtypes = [c_int, POINTER(MARGINS)]
+        # ⚠️⚠️ 第97轮后半的坑: SetWindowPos **必须**设 argtypes, 否则 64 位下 ctypes 按
+        # 32 位 int 传 HWND → 句柄被截断 → 调用打到错误窗口/直接失败, 表现为
+        # "开关置顶还是闪一下"(set_topmost 返回 False, 调用方回退到 setWindowFlags 老路)。
+        # 这是上一轮修没生效的真凶, 不是 Qt 的问题。
+        self._set_pos.argtypes = [HWND, HWND, c_int, c_int, c_int, c_int, UINT]
 
         self._policy = ACCENT_POLICY()
         self._data = WINDOWCOMPOSITIONATTRIBDATA()
@@ -337,5 +344,36 @@ def disable_shadow(hwnd):
         v = _c(1)                      # DWMNCRP_DISABLED
         fx._dwm_set(int(hwnd), 2, byref(v), 4)   # DWMWA_NCRENDERING_POLICY = 2
         return True
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------- 置顶(不重显)
+# SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE = 0x0013
+_SWP_NOACT_NOMOVE_NOSIZE = 0x0013
+_HWND_TOPMOST = -1
+_HWND_NOTOPMOST = -2
+
+
+def set_topmost(hwnd, on):
+    """用 Win32 SetWindowPos 改置顶态 —— **不重设 Qt flags、不重显窗口**。
+
+    第97轮后半(浅猫: "开关窗口置顶还是闪一下, 没修好")补两个关键修正:
+      ① **SetWindowPos 必须设 argtypes**(见 WindowsWindowEffect.__init__ 的 ⚠️)——
+         64 位下 ctypes 默认按 32 位 int 传 HWND, 句柄被截断 → 调用失败 →
+         上一版 set_topmost 返回 False, 调用方回退到 setWindowFlags 老路, 所以照样闪。
+      ② 双窗口(主窗 + frost 背板)必须**先背板后主窗**依次调用:
+         HWND_TOPMOST/NOTOPMOST 都会把目标移到同层顶部, 顺序反了会把背板提到主窗前面,
+         玻璃板盖住面板(另一种"闪一下")。
+
+    ⚠️ 只对**已显示**的窗口有效; 窗口还没 show 时改 Z 序没有意义(也没害处)。
+    """
+    fx = effect()
+    if fx is None or not hwnd:
+        return False
+    try:
+        hwnd = HWND(int(hwnd))
+        after = HWND(_HWND_TOPMOST if on else _HWND_NOTOPMOST)
+        return bool(fx._set_pos(hwnd, after, 0, 0, 0, 0, _SWP_NOACT_NOMOVE_NOSIZE))
     except Exception:
         return False

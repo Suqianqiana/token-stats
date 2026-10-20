@@ -924,7 +924,8 @@ check("旧代次结果被丢弃", w4._scanning is True and w4.subtitle.text() ==
       and w4._sn_cache is None, f"scanning={w4._scanning}")
 ca.CardWindow._on_scan_done(w4, "sn", SN_POOLS, 7)
 check("当前代次结果被采纳", w4._scanning is False and w4._sn_cache is SN_POOLS)
-check("刷新按钮恢复文案", w4.btn_refresh.isEnabled() and "刷新数据" in w4.btn_refresh.text(),
+# 第97轮后半: 浅猫第96轮要求按钮文案从「刷新数据」改为「刷新」, 断言同步更新
+check("刷新按钮恢复文案", w4.btn_refresh.isEnabled() and w4.btn_refresh.text() == "刷新",
       w4.btn_refresh.text())
 w4._scanning = True
 ca.CardWindow._on_scan_done(w4, "sn", {"error": "模拟崩溃"}, 7)
@@ -1229,8 +1230,11 @@ _ap_code = "\n".join(ln for ln in _ap_body.splitlines()
                      if not ln.strip().startswith("#"))
 check("_apply_page 为纯视图方法 (无 self.refresh 调用)",
       "self.refresh" not in _ap_code and "_render_multi_page" not in _ap_code)
-check("_apply_page 只做 setCurrentIndex / setVisible",
-      "setCurrentIndex" in _ap_code and "setVisible" in _ap_code)
+# 第97轮: 顶栏显隐统一收敛到 `_sync_top_bar()`(区间条泄漏 bug 的根治), 所以这里不再
+# 直接出现 setVisible —— 判据改成"要么自己 setVisible, 要么委托给 _sync_top_bar"。
+check("_apply_page 只做切页 / 委托 _sync_top_bar",
+      "setCurrentIndex" in _ap_code and
+      ("setVisible" in _ap_code or "_sync_top_bar" in _ap_code))
 
 # ============================================================ 13. 导入/更新语义 (第52轮)
 print("== 13. 导入/更新别机数据: 新机器导入 vs 同名覆盖更新 ==")
@@ -1938,8 +1942,18 @@ check("布局: 液态玻璃与毛玻璃在同一行(同一 layout)",
 check("布局: 明暗切换在主题按钮之前(顶部一行)",
       _src62.index("self.btn_theme_toggle = QPushButton") <
       _src62.index("self.btn_glass_toggle = QPushButton"))
-check("布局: 侧栏底部有「设置」按钮且带 toggled",
-      'self.btn_settings.toggled.connect(self._on_settings_btn)' in _src62)
+# 第96轮: 「设置」从"侧栏底部独立按钮"改为"与数据源并列的侧栏第 5 个 NavButton"
+# (浅猫: "设置按钮应该是和数据源那几个按钮的并列的关系"), 由 _show_settings 维护单选互斥。
+check("布局: 「设置」是与数据源并列的 NavButton",
+      'self.btn_nav_set = NavButton("设置", "⚙️")' in _src62)
+check("布局: 数据源循环里包含设置按钮(互斥单选)",
+      "self.btn_nav_wb, self.btn_nav_dsh, self.btn_nav_sn, "
+      "self.btn_nav_multi, self.btn_nav_set" in _src62)
+check("布局: 设置页切换走 _show_settings",
+      "def _show_settings(self, on):" in _src62)
+# 第97轮: 顶栏显隐统一出口(区间条泄漏 bug 根治)
+check("布局: 顶栏显隐收敛到 _sync_top_bar",
+      "def _sync_top_bar(self):" in _src62 and "self._sync_top_bar()" in _src62)
 # 第77轮: 改成循环统一赋值(新增"静态背景"按钮, 与明暗切换同一行)
 check("布局: 明暗/材质/静态背景按钮统一与刷新按钮同高(refresh_h)",
       '_opt_h = m["refresh_h"]' in _src62
