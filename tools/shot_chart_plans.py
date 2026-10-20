@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""把方案 HTML 里的 SVG 抽出来, 用 QSvgRenderer 真实渲染成 PNG(供肉眼核验)。"""
+"""把方案 HTML(v1/v2)里的 SVG 抽出来, 用 QSvgRenderer 真实渲染成 PNG(供肉眼核验)。
+
+用法: python -B tools/shot_chart_plans.py [v1|v2]
+"""
 import os, re, sys
 sys.dont_write_bytecode = True
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -8,22 +11,22 @@ from PySide6.QtGui import QGuiApplication, QImage, QPainter
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtCore import QByteArray
 
-HTML = os.path.join(ROOT, "docs", "每日用量分布-三套方案.html")
+ver = sys.argv[1] if len(sys.argv) > 1 else "v2"
+HTML = os.path.join(ROOT, "docs",
+                    "每日用量分布-三套方案.html" if ver == "v1"
+                    else "每日用量分布-三套方案-v2.html")
 OUTDIR = os.path.join(ROOT, "docs", "screenshots")
 os.makedirs(OUTDIR, exist_ok=True)
 
 h = open(HTML, encoding="utf-8").read()
 svgs = re.findall(r'(<svg class="card".*?</svg>)', h, re.S)
-print("找到 svg:", len(svgs))
-names = ["planA_chart", "planB_chart", "planC_chart", "planA_chart_light"]
+print("找到 svg:", len(svgs), "（每窗口 2 个: chart + heat）")
+prefix = {"v1": ["A", "B", "C", "A_light"], "v2": ["D", "E", "F", "D_light"]}[ver]
+names = ["chartplan_%s_%s.png" % (ver, n) for n in prefix]
 
 app = QGuiApplication(sys.argv)
 SCALE = 2
 for nm, s in zip(names, svgs[::2]):
-    doc = ('<?xml version="1.0" encoding="UTF-8"?>'
-           '<svg xmlns="http://www.w3.org/2000/svg"' + s[s.index(' viewBox') - 0:].replace(
-               '<svg class="card"', '', 1) if False else s)
-    # 直接补 xmlns
     doc = s.replace('<svg ', '<svg xmlns="http://www.w3.org/2000/svg" ', 1)
     m = re.search(r'viewBox="0 0 (\d+) (\d+)"', doc)
     vw, vh = int(m.group(1)), int(m.group(2))

@@ -8408,6 +8408,37 @@ class SettingsPage(QWidget):
             pass
         self.refresh()
 
+    def _cur_mat(self):
+        """实时读出当前材质 key —— 与 _resync() 同一套判据。"""
+        ts = theme_state
+        return ("static" if ts.get("frost_static") else
+                ("frost" if ts.get("frost") else ("glass" if ts.get("glass") else "")))
+
+    def _act(self, fn):
+        """执行一个设置动作, 并让设置页即时跟上(选中态 / "当前：xxx" 文案)。
+
+        第97轮后半4: 材质/透明度/尺寸这些走主窗口方法的动作, 原来**没有**回调设置页,
+        点完按钮选中态不更新(看着像"没生效")。统一在这里补一次局部刷新。
+        """
+        try:
+            fn()
+        except Exception:
+            pass
+        self._after()
+
+    def _pick_material(self, k):
+        """点材质按钮: 命中当前项 = 取消回默认; 否则切到该项。
+
+        ⚠️ 第97轮后半4(浅猫: "点毛玻璃不生效, 液态/静态下点毛玻璃会切到默认"):
+        原来这里的判据是 `_build()` 时算好的 `cur_mat`, 由 lambda 闭包捕获 ——
+        改成局部刷新后 `_build()` 只跑一次, 这个**旧值就再也不更新**了。
+        于是: 启动时是毛玻璃(cur_mat="frost") → 切液态 → 再点毛玻璃, 仍被判成
+        "点的是已选中项" → 传 None → 掉回默认。
+        修法: 判据改成**点击当时实时读** `self._cur_mat()`, 不再依赖任何缓存。
+        """
+        self.win._set_material(None if k == self._cur_mat() else k)
+        self._after()
+
     # ---------------- 局部刷新(第97轮: 不再全量重建) ----------------
     def _retheme(self):
         """只重设已登记控件的**配色** —— 不增删控件, 所以不会弹一下。
@@ -8538,14 +8569,14 @@ class SettingsPage(QWidget):
         self._row(l, "深色模式", "夜间更护眼（与侧栏底部开关同步）",
                   self._seg([("dark", "深色"), ("light", "浅色")],
                             "dark" if ts["dark"] else "light",
-                            lambda k: w.set_dark(k == "dark"), min_w=62,
-                            sink=self._dark_btns))
+                            lambda k: self._act(lambda: w.set_dark(k == "dark")),
+                            min_w=62, sink=self._dark_btns))
         self._line(l)
         self._row(l, "窗口材质", "当前：" + mat_name,
                   self._seg([("", "默认"), ("frost", "毛玻璃"),
                              ("glass", "液态"), ("static", "静态")],
-                            # 示意图 hint 的"再点已选中可取消回默认": 命中当前项 → 传 None
-                            cur_mat, lambda k: w._set_material(None if k == cur_mat else k),
+                            # ⚠️ 走 _pick_material: 判据实时读, 不再用闭包里的旧 cur_mat
+                            cur_mat, self._pick_material,
                             min_w=58, sink=self._mat_btns),
                   sub_out=None)
         # 副标题 label 要能在 _resync 里改文案: 从 layout 里取回来
@@ -8555,8 +8586,8 @@ class SettingsPage(QWidget):
                   self._seg([("crystal", "💎 晶透"), ("balanced", "💧 标准"),
                              ("frosted", "🌫️ 柔和")],
                             ts.get("glass_transparency", "balanced"),
-                            lambda k: w.set_glass_transparency(k), min_w=66,
-                            sink=self._tr_btns))
+                            lambda k: self._act(lambda: w.set_glass_transparency(k)),
+                            min_w=66, sink=self._tr_btns))
         self._lbl_tr = self._sub_of(l, -1)
         self._line(l)
         self._row(l, "毛玻璃底纹",
@@ -8570,8 +8601,8 @@ class SettingsPage(QWidget):
         self._row(l2, "窗口尺寸", "标准 990×610 / 舒适 1180×730",
                   self._seg([("default", "标准 990×610"), ("large", "舒适 1180×730")],
                             ts.get("window_size", "default"),
-                            lambda k: w.apply_size_mode(k), min_w=118,
-                            sink=self._size_btns))
+                            lambda k: self._act(lambda: w.apply_size_mode(k)),
+                            min_w=118, sink=self._size_btns))
         self._line(l2)
         self._row(l2, "开机自启动", "跟随当前用户登录启动",
                   self._switch(autostart_enabled(), lambda v: self._set_autostart(v),
@@ -8579,7 +8610,8 @@ class SettingsPage(QWidget):
         self._line(l2)
         self._row(l2, "窗口置顶", "始终显示在最前",
                   self._switch(bool(getattr(w, "_always_top", True)),
-                               lambda v: w._set_always_top(v), sink=self._sw_top))
+                               lambda v: self._act(lambda: w._set_always_top(v)),
+                               sink=self._sw_top))
 
         # ③ 桌宠 —— 主题行**常驻**, 靠显隐切换(不再重建, 见 _resync)
         l3 = self._card("桌宠", "顶 1/3 抚摸，底 2/3 点击；双击打开统计面板", PURPLE)
