@@ -2045,7 +2045,87 @@ class ModelRow(QWidget):
         right_text(f"{self.requests:,}", req_w, x1 + pct_w + hit_w + req_w, TEXT2)
 
 
-# ============================================================ 柱状图组件 (支持滚轮缩放 & 拖动平移)
+# ============================================================ 每日用量分布 (支持滚轮缩放 & 拖动平移)
+# 第97轮后半6: 浅猫要"三套方案都实际做出来, 用同源卡片可切换对比"。
+# 三套绘制**共用同一份数据、同一套配色、同一组几何与交互**(滚轮缩放/拖动/悬浮提示),
+# 只有 paintEvent 的画法不同 —— 这样对比才是有意义的(demo 与实际完全同源)。
+#   · "stack_area" 堆叠平滑面积 + 逐层渐变   (ECharts area-stack-gradient 风格)
+#   · "glass_bar"  渐变立体柱 + 光影         (垂直渐变模拟顶光 + 柱顶小圆角 + 左侧高光)
+#   · "dual"       双视图(上趋势面积 + 下构成带)
+CHART_MODES = ("stack_area", "glass_bar", "dual")
+CHART_MODE_DEFAULT = "glass_bar"      # 定案前保持接近现状的柱状, 不擅自改默认外观
+
+# ---------------------------------------------------------------- 平滑曲线
+def _smooth_path(pts):
+    """把点列变成平滑的 QPainterPath —— 与 ECharts 的 smooth:true 观感一致。"""
+    path = QPainterPath()
+    if not pts:
+        return path
+    path.moveTo(pts[0][0], pts[0][1])
+    n = len(pts)
+    if n == 1:
+        return path
+    for i in range(n - 1):
+        p0 = pts[i - 1] if i > 0 else pts[i]
+        p1, p2 = pts[i], pts[i + 1]
+        p3 = pts[i + 2] if i + 2 < n else p2
+        c1 = (p1[0] + (p2[0] - p0[0]) / 6.0, p1[1] + (p2[1] - p0[1]) / 6.0)
+        c2 = (p2[0] - (p3[0] - p1[0]) / 6.0, p2[1] - (p3[1] - p1[1]) / 6.0)
+        path.cubicTo(c1[0], c1[1], c2[0], c2[1], p2[0], p2[1])
+    return path
+
+
+def _monotone_path(pts):
+    """单调三次插值(PCHIP / Fritsch-Carlson) —— **曲线永不过冲出数据范围**。
+
+    ⚠️ 第97轮后半6实测教训: Catmull-Rom 在"骤升骤降"的数据上会**过冲**(冲出相邻数据点
+    的范围), 而堆叠面积的上下边界一过冲就会**互相穿越**, 带状路径自交后 OddEven 填充
+    直接乱掉(浅色下表现为"一大片斜坡")。ECharts/D3 的 smooth 曲线用的正是单调插值
+    (curveMonotoneX / PCHIP 同源), 保证:
+      · 极值处切线为 0(不过冲);
+      · 每段曲线的值都介于两端点之间 —— 于是堆叠带的**上边界恒在下边界之上**(屏幕),
+        路径永不自交。观感与 Catmull-Rom 接近, 但"稳"。
+    """
+    path = QPainterPath()
+    n = len(pts)
+    if n == 0:
+        return path
+    path.moveTo(pts[0][0], pts[0][1])
+    if n < 3:
+        for pt in pts[1:]:
+            path.lineTo(pt[0], pt[1])
+        return path
+    xs = [pt[0] for pt in pts]
+    ys = [pt[1] for pt in pts]
+    dx = [xs[i + 1] - xs[i] for i in range(n - 1)]
+    dy = [ys[i + 1] - ys[i] for i in range(n - 1)]
+    slope = [(dy[i] / dx[i]) if dx[i] else 0.0 for i in range(n - 1)]
+    # 节点切线(Fritsch-Carlson): 变号处置 0, 其余取加权调和平均
+    m = [0.0] * n
+    m[0] = slope[0]
+    m[-1] = slope[-1]
+    for i in range(1, n - 1):
+        if slope[i - 1] * slope[i] <= 0:
+            m[i] = 0.0
+        else:
+            w1 = 2.0 * dx[i] + dx[i - 1]
+            w2 = dx[i] + 2.0 * dx[i - 1]
+            den = w1 / slope[i - 1] + w2 / slope[i]
+            m[i] = (w1 + w2) / den if den else 0.0
+    # Hermite → 三次贝塞尔
+    for i in range(n - 1):
+        h = dx[i]
+        if h == 0:
+            path.lineTo(xs[i + 1], ys[i + 1])
+            continue
+        c1x = xs[i] + h / 3.0
+        c1y = ys[i] + m[i] * h / 3.0
+        c2x = xs[i + 1] - h / 3.0
+        c2y = ys[i + 1] - m[i + 1] * h / 3.0
+        path.cubicTo(c1x, c1y, c2x, c2y, xs[i + 1], ys[i + 1])
+    return path
+
+
 class StackedBarChart(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2056,8 +2136,16 @@ class StackedBarChart(QWidget):
         self.view_count = 35.0
         self._drag_start_x = None
         self._drag_start_view = 0.0
+        # 第97轮后半6: 画法可切换(见 CHART_MODES), 默认保持现状
+        self.mode = CHART_MODE_DEFAULT
         self.setMouseTracking(True)
         self.apply_size()
+
+    def set_mode(self, mode):
+        """切换画法(仅影响绘制, 数据与交互完全共用)。"""
+        if mode in CHART_MODES and mode != self.mode:
+            self.mode = mode
+            self.update()
 
     def apply_size(self):
         m = curr_metric()
@@ -2138,6 +2226,7 @@ class StackedBarChart(QWidget):
         ChartTip.instance().hide_tip()
         ev.accept()
 
+    # ---------------- 第97轮后半6: 三套画法(共用数据与交互) ----------------
     def paintEvent(self, ev):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
@@ -2149,36 +2238,241 @@ class StackedBarChart(QWidget):
             p.drawText(self.rect(), Qt.AlignCenter, "暂无数据")
             return
 
-        is_lg = theme_state.get("window_size") == "large"
-        maxV = max((sum(v for _, _, v in d["parts"]) for d in self.data), default=1) or 1
-        p.setFont(QFont("Consolas", 8.0 if is_lg else 7.5))
-        for k in range(3):
-            y = padT + ih - ih * k / 2
-            p.setPen(QPen(BORDER, 1))
-            p.drawLine(int(padL), int(y), int(w - padR), int(y))
-            p.setPen(TEXT3)
-            v = maxV * k / 2
-            label = f"{v/1e8:.1f}亿" if v >= 1e8 else (f"{v/1e4:.0f}万" if v >= 1e4 else f"{v:.0f}")
-            p.drawText(QRectF(0, y - 8, padL - 4, 16), Qt.AlignRight | Qt.AlignVCenter, label)
+        try:
+            if self.mode == "stack_area":
+                self._paint_stack_area(p, w, h, padL, padR, padT, padB, iw, ih)
+            elif self.mode == "dual":
+                self._paint_dual(p, w, h, padL, padR, padT, padB, iw, ih)
+            else:
+                self._paint_glass_bar(p, w, h, padL, padR, padT, padB, iw, ih)
+        except Exception:
+            # 任何画法出错都退回朴素柱状, 保证界面永远有图可看
+            try:
+                self._paint_glass_bar(p, w, h, padL, padR, padT, padB, iw, ih)
+            except Exception:
+                pass
 
-        n = len(self.data)
-        slot = iw / n
-        bw = max(3.0, min(16.0, slot * 0.6))
+    # ---- 公共小件 ----
+    def _axis_labels(self, p, padT, padB, ih, maxV):
+        """极简 Y 轴: 只标顶值与 0(三套共用)。"""
+        is_lg = theme_state.get("window_size") == "large"
+        p.setFont(QFont("Consolas", 8.0 if is_lg else 7.5))
+        p.setPen(TEXT3)
+        p.drawText(QRectF(0, padT - 6, self._geom()[2] - 4, 16),
+                   Qt.AlignRight | Qt.AlignVCenter, fmt_compact(maxV))
+        p.drawText(QRectF(0, padT + ih - 6, self._geom()[2] - 4, 16),
+                   Qt.AlignRight | Qt.AlignVCenter, "0")
+
+    def _grid(self, p, w, padL, padR, padT, ih, k=3, alpha=0.5):
+        """极淡水平网格(三套共用)。"""
+        is_lg = theme_state.get("window_size") == "large"
+        col = QColor(BORDER)
+        col.setAlphaF(col.alphaF() * alpha)
+        pen = QPen(col, 1)
+        p.setPen(pen)
+        for j in range(k):
+            y = padT + ih - ih * j / (k - 1) if k > 1 else padT + ih
+            p.drawLine(int(padL), int(y), int(w - padR), int(y))
+
+    def _dates(self, p, padL, iw, h, padB, items, ys=None):
+        """底部日期: 首 / 中 / 尾(三套共用)。"""
+        is_lg = theme_state.get("window_size") == "large"
         p.setFont(QFont("Consolas", 7.8 if is_lg else 7.0))
-        step = max(1, n // 7)
+        p.setPen(TEXT3)
+        n = len(items)
+        ys = ys or [h - padB + 1] * n
+        for i in (0, n // 2, n - 1):
+            if i >= n:
+                continue
+            cx = padL + iw * i / max(1, n - 1)
+            p.drawText(QRectF(cx - 24, ys[i], 48, 14), Qt.AlignCenter,
+                       items[i]["date"][5:].replace("-", "/"))
+
+    def _peak_index(self):
+        return max(range(len(self.data)),
+                   key=lambda i: sum(v for _, _, v in self.data[i]["parts"]))
+
+    # ---- 方案 D: 堆叠平滑面积 + 逐层渐变 ----
+    def _paint_stack_area(self, p, w, h, padL, padR, padT, padB, iw, ih):
+        n = len(self.data)
+        if n < 2:
+            self._paint_glass_bar(p, w, h, padL, padR, padT, padB, iw, ih)
+            return
+        # 累计层(从下往上), 与 ECharts stack 同义
+        order = list(self.colors)          # set_data 里按 models_rank 顺序写入
+        cum = [0.0] * n
+        layers = []
+        for m in order:
+            for i, d in enumerate(self.data):
+                cum[i] += sum(v for mm, _, v in d["parts"] if mm == m)
+            layers.append((m, list(cum)))
+        maxV = max(cum) or 1
+
+        xs = [padL + iw * i / (n - 1) for i in range(n)]
+        base = [(x, padT + ih) for x in xs]
+
+        self._grid(p, w, padL, padR, padT, ih, k=3, alpha=0.45)
+        self._axis_labels(p, padT, padB, ih, maxV)
+
+        # ⚠️⚠️ 覆盖法(从最上层往最下层画完整区域, 后画覆盖先画):
+        # PySide6 的 QPainterPath.subtracted() **是坏的**(实测: 矩形差集的 bbox
+        # 仍等于原区域, 布尔运算没有生效) —— 差集法会让最后画的层盖掉前面所有层,
+        # 整张图变成最后那个模型的颜色(实测整片橙)。
+        # 覆盖法是 ECharts/D3 内部的标准做法: 每层画"自己的累计曲线到底部"的完整
+        # 区域, 从上往下依次覆盖; 每层可见的部分正好是它与上一层之间的带。
+        # 渐变用**不透明**的双色(顶亮→底本色) —— 半透明会在覆盖中互相叠脏。
+        dark = bool(theme_state.get("dark"))
+        for m, vals in reversed(layers):
+            col = self.colors.get(m, BLUE)
+            cur = [(xs[j], padT + ih - v / maxV * ih) for j, v in enumerate(vals)]
+            reg = _monotone_path(cur)
+            reg.lineTo(xs[-1], padT + ih)
+            reg.lineTo(xs[0], padT + ih)
+            reg.closeSubpath()
+            band_top = min(y for _, y in cur)
+            g = QLinearGradient(0, band_top, 0, padT + ih)
+            g.setColorAt(0, col.lighter(126))
+            g.setColorAt(0.55, col)
+            g.setColorAt(1, col.darker(112))
+            p.setPen(Qt.NoPen)
+            p.setBrush(g)
+            p.drawPath(reg)
+            # 层与层之间的极细高光线(贴着本层曲线)
+            pen = QPen(QColor(col.lighter(150)), 0.9)
+            pen.setCosmetic(True)
+            p.setPen(pen)
+            p.drawPath(_monotone_path(cur))
+
+        # 峰值: 垂直虚线 + 顶点圆(ECharts axisPointer cross 风格)
+        pi = self._peak_index()
+        px_ = xs[pi]
+        dash = QPen(TEXT2, 1)
+        dash.setStyle(Qt.DashLine)
+        p.setPen(dash)
+        p.drawLine(int(px_), int(padT), int(px_), int(padT + ih))
+        p.setPen(Qt.NoPen)
+        p.setBrush(CARD)
+        p.drawEllipse(QPointF(px_, padT + ih - cum[pi] / maxV * ih), 2.6, 2.6)
+        self._dates(p, padL, iw, h, padB, self.data)
+
+    # ---- 方案 E: 渐变立体柱 + 光影 ----
+    def _paint_glass_bar(self, p, w, h, padL, padR, padT, padB, iw, ih):
+        n = len(self.data)
+        maxV = max((sum(v for _, _, v in d["parts"]) for d in self.data), default=1) or 1
+        slot = iw / n
+        bw = max(3.0, min(16.0, slot * 0.62))
+        pi = self._peak_index()
+
+        self._grid(p, w, padL, padR, padT, ih, k=3, alpha=0.5)
+        self._axis_labels(p, padT, padB, ih, maxV)
+
         for i, d in enumerate(self.data):
             cx = padL + slot * i + slot / 2
             y_cur = padT + ih
-            for _m, color, v in d["parts"]:
+            segs = d["parts"]
+            for j, (_m, color, v) in enumerate(segs):
                 hh = v / maxV * ih
+                top = y_cur - hh
+                x0 = cx - bw / 2
+                g = QLinearGradient(0, top, 0, y_cur)
+                g.setColorAt(0, color.lighter(126))
+                g.setColorAt(0.55, color)
+                g.setColorAt(1, color.darker(116))
                 p.setPen(Qt.NoPen)
-                p.setBrush(color)
-                p.drawRect(QRectF(cx - bw / 2, y_cur - hh, bw, hh))
-                y_cur -= hh
-            if i % step == 0 or i == n - 1:
-                p.setPen(TEXT3)
-                p.drawText(QRectF(cx - 24, h - padB + 1, 48, 14),
-                           Qt.AlignCenter, d["date"][5:].replace("-", "/"))
+                p.setBrush(g)
+                if j == 0 and hh > 2:
+                    # 顶部小圆角(与卡片语言一致, 不是卡通胶囊)
+                    r = min(2.0, bw / 2)
+                    path = QPainterPath()
+                    path.moveTo(x0, y_cur)
+                    path.lineTo(x0, top + r)
+                    path.quadTo(x0, top, x0 + r, top)
+                    path.lineTo(x0 + bw - r, top)
+                    path.quadTo(x0 + bw, top, x0 + bw, top + r)
+                    path.lineTo(x0 + bw, y_cur)
+                    path.closeSubpath()
+                    p.drawPath(path)
+                else:
+                    p.drawRect(QRectF(x0, top, bw, hh))
+                # 左侧 1px 高光: 模拟来自左上方的光, 让扁柱有轻微立体感
+                if hh > 3:
+                    hl = QColor(255, 255, 255, 42)
+                    p.setBrush(hl)
+                    p.drawRect(QRectF(x0, top + 1, 1, hh - 2))
+                y_cur = top
+            if i == pi and hh > 0:
+                p.setPen(Qt.NoPen)
+                p.setBrush(TEXT2)
+                p.drawEllipse(QPointF(cx, padT + ih - sum(v for _, _, v in d["parts"])
+                                      / maxV * ih - 5), 1.8, 1.8)
+        self._dates(p, padL, iw, h, padB, self.data)
+
+    # ---- 方案 F: 双视图(上趋势面积 + 下构成带) ----
+    def _paint_dual(self, p, w, h, padL, padR, padT, padB, iw, ih):
+        n = len(self.data)
+        if n < 2:
+            self._paint_glass_bar(p, w, h, padL, padR, padT, padB, iw, ih)
+            return
+        band_h = min(26.0, ih * 0.34)
+        gap = 6.0
+        area_ih = ih - band_h - gap
+        totals = [sum(v for _, _, v in d["parts"]) for d in self.data]
+        maxV = max(totals) or 1
+        xs = [padL + iw * i / (n - 1) for i in range(n)]
+
+        self._grid(p, w, padL, padR, padT, area_ih, k=3, alpha=0.4)
+        self._axis_labels(p, padT, padB, area_ih, maxV)
+
+        # 上: 总量平滑面积(单色渐变)
+        pts = [(xs[i], padT + area_ih - totals[i] / maxV * area_ih) for i in range(n)]
+        line = _monotone_path(pts)
+        area = QPainterPath(line)
+        area.lineTo(xs[-1], padT + area_ih)
+        area.lineTo(xs[0], padT + area_ih)
+        area.closeSubpath()
+        g = QLinearGradient(0, padT, 0, padT + area_ih)
+        a0 = QColor(BLUE); a0.setAlphaF(a0.alphaF() * 0.34)
+        a1 = QColor(BLUE); a1.setAlphaF(a1.alphaF() * 0.02)
+        g.setColorAt(0, a0)
+        g.setColorAt(1, a1)
+        p.setPen(Qt.NoPen)
+        p.setBrush(g)
+        p.drawPath(area)
+        pen = QPen(BLUE, 1.5)
+        pen.setCosmetic(True)
+        p.setPen(pen)
+        p.drawPath(line)
+
+        # 峰值点
+        pi = self._peak_index()
+        p.setPen(Qt.NoPen)
+        p.setBrush(BLUE)
+        p.drawEllipse(QPointF(xs[pi], pts[pi][1]), 2.4, 2.4)
+
+        # 中间细分隔
+        sep_y = padT + area_ih + gap / 2
+        sc = QColor(BORDER)
+        sc.setAlphaF(sc.alphaF() * 0.7)
+        p.setPen(QPen(sc, 1))
+        p.drawLine(int(padL), int(sep_y), int(w - padR), int(sep_y))
+
+        # 下: 迷你构成带(无间隙堆叠柱)
+        by = padT + area_ih + gap
+        slot = iw / n
+        bw = max(2.0, min(10.0, slot * 0.72))
+        for i, d in enumerate(self.data):
+            cx = padL + slot * i + slot / 2
+            yc = by + band_h
+            for _m, color, v in d["parts"]:
+                hh = v / maxV * band_h
+                if hh <= 0:
+                    continue
+                c = QColor(color); c.setAlphaF(c.alphaF() * 0.82)
+                p.setBrush(c)
+                p.drawRect(QRectF(cx - bw / 2, yc - hh, bw, hh))
+                yc -= hh
+        self._dates(p, padL, iw, h, padB, self.data,
+                    ys=[by + band_h] * n)
 
     def mousePressEvent(self, ev):
         if ev.button() in (Qt.LeftButton, Qt.RightButton):
