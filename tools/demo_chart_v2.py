@@ -161,35 +161,26 @@ def main():
 
     if "--shot" in sys.argv:
         from PySide6.QtTest import QTest
-        scr = QGuiApplication.primaryScreen()
         out = os.path.join(ROOT, "docs", "screenshots")
         os.makedirs(out, exist_ok=True)
         QTest.qWait(700)
         ca.ChartTip.instance().hide_tip()      # 防止截图时鼠标恰好停在图上带出悬浮框
-        for m in ca.CHART_MODES:
+        # 用 w.grab() 抓窗口本身 —— 不受桌面遮挡/多屏/其它窗口影响(抓屏+裁剪会抓到挡在前面的窗口)
+        for m in ("glass_bar", "dual"):
             w.set_mode(m)
             QTest.qWait(500)
-            img = scr.grabWindow(0).toImage()
-            r = img.width() / float(scr.geometry().width())
-            g = w.geometry()
-            pad = 6
-            crop = img.copy(int((g.x() - pad) * r), int((g.y() - pad) * r),
-                            int((g.width() + pad * 2) * r), int((g.height() + pad * 2) * r))
+            pix = w.grab()
             p = os.path.join(out, "demo_chart_%s.png" % m)
-            crop.save(p)
-            print("saved", p, crop.width(), "x", crop.height(), flush=True)
-        # 浅色版(D 方案)
-        w.set_mode("stack_area")
+            pix.save(p)
+            print("saved", p, pix.width(), "x", pix.height(), flush=True)
+        # 浅色版(E 方案)
+        w.set_mode("glass_bar")
         w.dark = False
         w.apply_theme()
         QTest.qWait(500)
-        img = scr.grabWindow(0).toImage()
-        r = img.width() / float(scr.geometry().width())
-        g = w.geometry()
-        crop = img.copy(int((g.x() - 6) * r), int((g.y() - 6) * r),
-                        int((g.width() + 12) * r), int((g.height() + 12) * r))
-        p = os.path.join(out, "demo_chart_stack_area_light.png")
-        crop.save(p)
+        pix = w.grab()
+        p = os.path.join(out, "demo_chart_glass_bar_light.png")
+        pix.save(p)
         print("saved", p, flush=True)
         w.dark = True
         w.apply_theme()

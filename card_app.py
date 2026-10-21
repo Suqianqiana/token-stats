@@ -2355,13 +2355,25 @@ class StackedBarChart(QWidget):
         p.drawEllipse(QPointF(px_, padT + ih - cum[pi] / maxV * ih), 2.6, 2.6)
         self._dates(p, padL, iw, h, padB, self.data)
 
-    # ---- 方案 E: 渐变立体柱 + 光影 ----
+    # ---- 方案 E: 清爽渐变柱(第97轮后半7 重做) ----
     def _paint_glass_bar(self, p, w, h, padL, padR, padT, padB, iw, ih):
+        """浅猫定调: 不要立体感、要清爽。
+
+        每根柱一个**整根柱范围**的渐变, 顶实底虚、无高光条; 柱顶小圆角保留。
+          · 暗色: 本色 → 本色混白 40%(往下变淡、向白色渐变 —— 第97轮后半10 浅猫要求);
+          · 浅色: 本色 → 同色淡出(245→110, 保持不变)。
+        """
         n = len(self.data)
         maxV = max((sum(v for _, _, v in d["parts"]) for d in self.data), default=1) or 1
         slot = iw / n
-        bw = max(3.0, min(16.0, slot * 0.62))
-        pi = self._peak_index()
+        bw = max(3.0, min(16.0, slot * 0.66))
+        dark = bool(theme_state.get("dark"))
+        # 第97轮后半10(浅猫: "暗色版本改成往下慢慢变淡但是取白色渐变"):
+        #  暗色卡片上"同色变淡"= 往深底融, 反差小看不出来 → 改成**向白色渐变**
+        #  (本色 → 本色混白 40%), 柱子像被顶部光源照亮、向下渐渐化开;
+        #  浅色版**保持不变**: 同色淡出(245→110), 浅底上已经很清晰。
+        #  渐变范围仍是**整根柱**(柱顶→柱底), 保证整根柱方向统一、段间无透明度断层。
+        WHITE_K = 0.40
 
         self._grid(p, w, padL, padR, padT, ih, k=3, alpha=0.5)
         self._axis_labels(p, padT, padB, ih, maxV)
@@ -2369,15 +2381,25 @@ class StackedBarChart(QWidget):
         for i, d in enumerate(self.data):
             cx = padL + slot * i + slot / 2
             y_cur = padT + ih
-            segs = d["parts"]
-            for j, (_m, color, v) in enumerate(segs):
+            total = sum(v for _, _, v in d["parts"])
+            col_top = padT + ih - total / maxV * ih      # 整根柱的柱顶
+            for j, (_m, color, v) in enumerate(d["parts"]):
                 hh = v / maxV * ih
                 top = y_cur - hh
                 x0 = cx - bw / 2
-                g = QLinearGradient(0, top, 0, y_cur)
-                g.setColorAt(0, color.lighter(126))
-                g.setColorAt(0.55, color)
-                g.setColorAt(1, color.darker(116))
+                # 渐变范围 = 整根柱(各段在自己高度区间内取渐变的一部分)
+                g = QLinearGradient(0, col_top, 0, padT + ih)
+                if dark:
+                    # 暗色: 本色 → 本色混白(往下变淡、向白色渐变)
+                    g.setColorAt(0.0, QColor(color.red(), color.green(), color.blue(), 255))
+                    g.setColorAt(1.0, QColor(
+                        int(color.red() + (255 - color.red()) * WHITE_K),
+                        int(color.green() + (255 - color.green()) * WHITE_K),
+                        int(color.blue() + (255 - color.blue()) * WHITE_K), 255))
+                else:
+                    # 浅色: 同色淡出(保持原样)
+                    g.setColorAt(0.0, QColor(color.red(), color.green(), color.blue(), 245))
+                    g.setColorAt(1.0, QColor(color.red(), color.green(), color.blue(), 110))
                 p.setPen(Qt.NoPen)
                 p.setBrush(g)
                 if j == 0 and hh > 2:
@@ -2394,17 +2416,7 @@ class StackedBarChart(QWidget):
                     p.drawPath(path)
                 else:
                     p.drawRect(QRectF(x0, top, bw, hh))
-                # 左侧 1px 高光: 模拟来自左上方的光, 让扁柱有轻微立体感
-                if hh > 3:
-                    hl = QColor(255, 255, 255, 42)
-                    p.setBrush(hl)
-                    p.drawRect(QRectF(x0, top + 1, 1, hh - 2))
                 y_cur = top
-            if i == pi and hh > 0:
-                p.setPen(Qt.NoPen)
-                p.setBrush(TEXT2)
-                p.drawEllipse(QPointF(cx, padT + ih - sum(v for _, _, v in d["parts"])
-                                      / maxV * ih - 5), 1.8, 1.8)
         self._dates(p, padL, iw, h, padB, self.data)
 
     # ---- 方案 F: 双视图(上趋势面积 + 下构成带) ----
@@ -2423,20 +2435,22 @@ class StackedBarChart(QWidget):
         self._grid(p, w, padL, padR, padT, area_ih, k=3, alpha=0.4)
         self._axis_labels(p, padT, padB, area_ih, maxV)
 
-        # 上: 总量平滑面积(单色渐变)
+        # 上: 总量平滑面积 —— 第97轮后半8(浅猫: "渐变遮罩加回来, 遮罩范围扩大一点")
+        # ⭐ 直接沿用**顶部指标区那条迷你趋势线**的做法(第72轮, 她认可的效果):
+        #   · 渐变用 QColor(r,g,b,alpha) 显式构造, 顶端 alpha 82 → 底端 0;
+        #   · **遮罩范围是整个绘图区 ih**(不只是上区 area_ih) —— 范围一大,
+        #     深浅过渡就被"拉平"了, 斜向分界的对比度大幅降低(这正是她要的观感)。
         pts = [(xs[i], padT + area_ih - totals[i] / maxV * area_ih) for i in range(n)]
         line = _monotone_path(pts)
         area = QPainterPath(line)
         area.lineTo(xs[-1], padT + area_ih)
         area.lineTo(xs[0], padT + area_ih)
         area.closeSubpath()
-        g = QLinearGradient(0, padT, 0, padT + area_ih)
-        a0 = QColor(BLUE); a0.setAlphaF(a0.alphaF() * 0.34)
-        a1 = QColor(BLUE); a1.setAlphaF(a1.alphaF() * 0.02)
-        g.setColorAt(0, a0)
-        g.setColorAt(1, a1)
+        fade = QLinearGradient(0, padT, 0, padT + ih)
+        fade.setColorAt(0.0, QColor(BLUE.red(), BLUE.green(), BLUE.blue(), 82))
+        fade.setColorAt(1.0, QColor(BLUE.red(), BLUE.green(), BLUE.blue(), 0))
         p.setPen(Qt.NoPen)
-        p.setBrush(g)
+        p.setBrush(QBrush(fade))
         p.drawPath(area)
         pen = QPen(BLUE, 1.5)
         pen.setCosmetic(True)
