@@ -7035,6 +7035,15 @@ class CardWindow(QWidget):
             except Exception:
                 pass
         self._update_all()
+        # 第97轮后半14 修(浅猫: "静态主题配的却是毛玻璃的图"): _set_material 原先
+        # **没有同步 DWM 材质状态** —— 程序启动时 ACRYLIC["on"] 已为 True(实时模糊),
+        # 之后切到「静态」没人去撤它, 于是 paint_frost_fill 里 `if ACRYLIC["on"]: return`
+        # 直接跳过静态纹理 → 界面上仍是实况毛玻璃, 静态背景等于失效(重启后才正常)。
+        # set_dark 一直有这一步(见其末尾), 材质切换同样需要。
+        try:
+            self._sync_acrylic(force=True)
+        except Exception:
+            pass
         # 第82轮(浅猫: 切回其它模式会**先完全变透一下**): DWM 材质必须**最后**撤。
         # 之前 _apply_window_backdrop() 在样式重刷之前就调 _sync_acrylic() → AccentPolicy 先消失,
         # 窗口变纯透明, 屏幕上就闪一下"全透", 之后才画上液态玻璃/静态背景。改到此处: 先刷完样式

@@ -110,8 +110,9 @@ THEME = {"dark": True, "glass": False, "frost": True, "frost_static": False,
 with open(os.path.join(DATA, "settings.json"), "w", encoding="utf-8") as f:
     json.dump(THEME, f, ensure_ascii=False)
 
+from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QGuiApplication, QPixmap, QPainter, QColor
 from PySide6.QtTest import QTest
 import card_app as ca
 
@@ -129,8 +130,19 @@ ca.theme_state.update(THEME)
 ca.refresh_palette()
 
 
-def new_win():
-    """新开一个窗口: 数据来自合成 stats.json(隔离目录), 主题来自合成 settings.json。"""
+def new_win(frost_static=False):
+    """新开一个窗口: 数据来自合成 stats.json(隔离目录), 主题来自合成 settings.json。
+
+    frost_static=True: 让窗口**以静态底纹模式启动** —— 静态的两张截图走这条路:
+    若从毛玻璃现场切到静态, DWM 撤销是异步的, 抓屏会抓到还没切换完的旧帧
+    (第97轮实测: 等 1.7s 也仍是透出的); 而"启动即静态"的窗口从头就不挂
+    ACRYLIC, 抓屏直接就是静态纹理, 且与其它截图同一抓取方式。
+    """
+    _th = dict(THEME)
+    _th["frost_static"] = bool(frost_static)
+    with open(os.path.join(DATA, "settings.json"), "w", encoding="utf-8") as f:
+        json.dump(_th, f, ensure_ascii=False)
+    ca.theme_state.update(_th)
     w = ca.CardWindow()
     w.apply_styles()
     w.apply_size_mode("default", save=False)
@@ -152,8 +164,11 @@ def new_win():
     return w
 
 
-def shot(w, name):
-    """真实屏幕抓屏(合成 DWM 毛玻璃材质) + 按窗口几何裁剪。
+def shot(w, name, use_grab=False):
+    """默认: 真实屏幕抓屏(合成 DWM 毛玻璃材质) + 按窗口几何裁剪。
+    use_grab=True: 直接抓控件自绘 —— 用于**静态底纹**等"内容不透明"的场景:
+    半透明窗口的桌面合成不可靠(第97轮实测: 撤销 Acrylic 后抓屏仍是透出的旧帧,
+    等 1.7s 也一样; 而 w.grab() 完全正确)。抓完补一圈深色边, 与抓屏版观感一致。
 
     ⚠️ 必须先等 `_scanning` 结束: 后台扫描的回调(bridge.done)有时比固定等待
     晚到几秒, 不等就拍会拍到"正在扫描…"的空态(第97轮实测踩过)。
@@ -162,16 +177,52 @@ def shot(w, name):
         if not getattr(w, "_scanning", False):
             break
         QTest.qWait(100)
-    QTest.qWait(300)
+    # DWM 合成延迟: 撤销 Acrylic 后, 桌面合成器要几帧才把窗口从"实时模糊"切到
+    # "正常 alpha 合成" —— 抓太早会抓到旧帧(第97轮实测: 静态主题截图全是毛玻璃)。
+    QTest.qWait(1400)
     ca.ChartTip.instance().hide_tip()
-    QTest.qWait(150)
+    QTest.qWait(300)
+    p = os.path.join(OUT, name)
+    if use_grab:
+        # 等指标区缓存率就绪再抓(合成数据偶发中间态, 抓到会显示 "/%")
+        for _ in range(60):
+            try:
+                if getattr(w.metrics, "rate", 0) > 0:
+                    break
+            except Exception:
+                pass
+            QTest.qWait(100)
+        # ⚠️ 记忆里的老坑: processEvents() 默认**不处理 DeferredDelete** ——
+        # render() 换下来的旧 ModelRow 还挂在原位绘制, 不显式发送就会抓到旧帧
+        # (第97轮实测: 静态两张表的缓存率列显示 "/%")。
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        # render() 重建控件后布局要重算, 否则缓存率列按旧 x 画、被新宽度裁掉
+        # (第97轮实测: "70%" 只剩 "/%")。
+        try:
+            w.layout().activate()
+            w.model_host.layout().activate()
+        except Exception:
+            pass
+        try:
+            w._update_all()
+        except Exception:
+            pass
+        QTest.qWait(450)
+        pad = 8
+        base = QPixmap(w.width() + pad * 2, w.height() + pad * 2)
+        base.fill(QColor(18, 20, 26))
+        gp = QPainter(base)
+        gp.drawPixmap(pad, pad, w.grab())
+        gp.end()
+        base.save(p)
+        print("saved(grab)", p, base.width(), "x", base.height(), flush=True)
+        return
     img = scr.grabWindow(0).toImage()
     r = img.width() / float(scr.geometry().width())
     g = w.geometry()
     pad = 8
     crop = img.copy(int((g.x() - pad) * r), int((g.y() - pad) * r),
                     int((g.width() + pad * 2) * r), int((g.height() + pad * 2) * r))
-    p = os.path.join(OUT, name)
     crop.save(p)
     print("saved", p, crop.width(), "x", crop.height(), flush=True)
 
@@ -199,8 +250,11 @@ w.set_dark(False)
 shot(w, "15-default-light.png")
 
 # 静态图片主题(用浅猫指定的底图, 已由 tools/set_frost_bg.py 写入 assets/frost_bg.png)
-w.set_dark(True)
-w._set_material("static")
+# ⚠️ 以静态模式**启动**一个新窗口, 而不是现场切过去: 现场切要撤 DWM Acrylic,
+# 撤销是异步的, 抓屏会抓到没切完的旧帧(实测等 1.7s 仍是透出); 启动即静态的
+# 窗口从头就不挂 ACRYLIC, 抓屏直接就是静态纹理, 且与其它截图同一抓取方式。
+w.close()
+w = new_win(frost_static=True)
 shot(w, "16-frost-static-dark.png")
 w.set_dark(False)
 shot(w, "17-frost-static-light.png")
