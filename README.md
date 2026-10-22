@@ -110,14 +110,6 @@
 
 ![液态浅色](docs/assets/previews/11-glass-wb-light.png)
 
-### 静态图片主题 · 深色（底图为内置图片经真高斯模糊 + 去饱和）
-
-![静态底纹深色](docs/assets/previews/16-frost-static-dark.png)
-
-### 静态图片主题 · 浅色
-
-![静态底纹浅色](docs/assets/previews/17-frost-static-light.png)
-
 ### 设置页面 · 深色
 
 ![设置页深色](docs/assets/previews/12-settings-dark.png)

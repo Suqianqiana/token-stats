@@ -130,19 +130,8 @@ ca.theme_state.update(THEME)
 ca.refresh_palette()
 
 
-def new_win(frost_static=False):
-    """新开一个窗口: 数据来自合成 stats.json(隔离目录), 主题来自合成 settings.json。
-
-    frost_static=True: 让窗口**以静态底纹模式启动** —— 静态的两张截图走这条路:
-    若从毛玻璃现场切到静态, DWM 撤销是异步的, 抓屏会抓到还没切换完的旧帧
-    (第97轮实测: 等 1.7s 也仍是透出的); 而"启动即静态"的窗口从头就不挂
-    ACRYLIC, 抓屏直接就是静态纹理, 且与其它截图同一抓取方式。
-    """
-    _th = dict(THEME)
-    _th["frost_static"] = bool(frost_static)
-    with open(os.path.join(DATA, "settings.json"), "w", encoding="utf-8") as f:
-        json.dump(_th, f, ensure_ascii=False)
-    ca.theme_state.update(_th)
+def new_win():
+    """新开一个窗口: 数据来自合成 stats.json(隔离目录), 主题来自合成 settings.json。"""
     w = ca.CardWindow()
     w.apply_styles()
     w.apply_size_mode("default", save=False)
@@ -249,16 +238,11 @@ shot(w, "14-default-dark.png")
 w.set_dark(False)
 shot(w, "15-default-light.png")
 
-# 静态图片主题(用浅猫指定的底图, 已由 tools/set_frost_bg.py 写入 assets/frost_bg.png)
-# ⚠️ 以静态模式**启动**一个新窗口, 而不是现场切过去: 现场切要撤 DWM Acrylic,
-# 撤销是异步的, 抓屏会抓到没切完的旧帧(实测等 1.7s 仍是透出); 启动即静态的
-# 窗口从头就不挂 ACRYLIC, 抓屏直接就是静态纹理, 且与其它截图同一抓取方式。
-w.close()
-w = new_win(frost_static=True)
-shot(w, "16-frost-static-dark.png")
-w.set_dark(False)
-shot(w, "17-frost-static-light.png")
-w.close()
+# ⚠️ 「静态图片主题」不在此脚本里拍: 现场从毛玻璃切到静态时, DWM 撤销 Acrylic 是
+# 异步的, 抓屏会抓到还没切换完的旧帧(实测等 1.7s 仍是透出的); 而"启动即静态"
+# 拍出来的图又丢了深色适配(浅猫: 程序是好的, 是我截图方式不对)。
+# 需要该图时, 正确做法是**在她机器上手动切到静态、等切换稳定后单独抓一次** ——
+# 不改程序、不用启动态 hack。README 用文字说明 + 设置页截图(含「静态」按钮)展示。
 
 # ---- ④ 设置页(第97轮重做后的新样式) ----
 w = new_win()
