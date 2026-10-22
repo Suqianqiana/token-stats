@@ -6038,6 +6038,23 @@ class MultiMachinePage(QWidget):
             self._skeleton_n = len(rows)
         self.stat_lay.addStretch(1)
 
+        # 第97轮后半16: 与 WorkBuddy 页同款的 QScrollArea 压扁防护 ——
+        # stat_area 同样是 setWidgetResizable(True), 重建行的瞬间 stat_host 的
+        # sizeHint 没重算会被压到 viewport 内(行距先小再正常)。把已渲染控件的
+        # 真实高度累加写进 minimumHeight, 并 activate 布局让 sizeHint 当帧正确。
+        _h = 0
+        for _i in range(self.stat_lay.count()):
+            _it = self.stat_lay.itemAt(_i)
+            _w = _it.widget() if _it is not None else None
+            if _w is not None:
+                _h += _w.height()
+        self.stat_host.setMinimumHeight(_h + 4)
+        try:
+            self.stat_lay.activate()
+            self.stat_host.updateGeometry()
+        except Exception:
+            pass
+
         if self._pending and not rows:
             self.stat_scope_lbl.setText("正在汇总…")
         else:
@@ -7622,6 +7639,28 @@ class CardWindow(QWidget):
                            cached_tok=a.get("cached", 0), zebra=(i % 2 == 1))
             self.model_lay.addWidget(row)
         self.model_lay.addStretch(1)
+
+        # 第97轮后半16 修(浅猫: "模型列表满时(选全部时间)切换页面, 模型卡片会闪,
+        # 行距先变很小再变正常"):
+        #   model_area 是 QScrollArea + setWidgetResizable(True) —— 重建 ModelRow 的
+        #   瞬间 model_host 的 sizeHint 还没重算, QScrollArea 会把整个内容**压到
+        #   viewport 内**(行被压扁), 下一帧 sizeHint 更新才弹回 → 就是"闪一下 +
+        #   行距先小再正常"。模型越多(全部时间口径)越明显。
+        #   修法: 渲染完把**已渲染控件的真实高度累加**写进 minimumHeight
+        #   (QScrollArea 便无法压扁它), 同时 activate 布局 + updateGeometry,
+        #   让 sizeHint 当帧就正确。用累加法而非公式, 是抗未来改动行高/增删行类型。
+        _h = 0
+        for _i in range(self.model_lay.count()):
+            _it = self.model_lay.itemAt(_i)
+            _w = _it.widget() if _it is not None else None
+            if _w is not None:
+                _h += _w.height()
+        self.model_host.setMinimumHeight(_h + 4)
+        try:
+            self.model_lay.activate()
+            self.model_host.updateGeometry()
+        except Exception:
+            pass
 
         self.chart.set_data(daily, rows)
         self.heat.set_data(self.stats.get("daily", {}))
