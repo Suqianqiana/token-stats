@@ -8349,9 +8349,15 @@ class BallWindow(QWidget):
     def mouseMoveEvent(self, ev):
         if ev.buttons() & Qt.LeftButton:
             moved_now = (ev.globalPosition().toPoint() - self._press_origin).manhattanLength() > 4
-            if not self._moved and moved_now and self.pet:
+            # 第97轮后半13 修(浅猫: "关闭桌宠模式时, 悬浮球无法拖动"):
+            #   `_moved` 的置位原来带了 `and self.pet` —— 关掉桌宠后它永远是 False,
+            #   `if self._moved: self.move(...)` 永不执行 → 悬浮球拖不动;
+            #   而且松手时 `not self._moved` 成立还会**误弹统计面板**(拖一下弹一下)。
+            #   拖动本身与桌宠形态无关, 只有"拖动时播 drag 动画"才该看 self.pet。
+            if not self._moved and moved_now:
                 self._moved = True
-                self._pet_state("drag")
+                if self.pet:
+                    self._pet_state("drag")
             if self._moved:
                 self.move(ev.globalPosition().toPoint() - self._drag)
 

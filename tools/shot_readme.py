@@ -190,6 +190,20 @@ shot(w, "05-dark-theme.png")                # 深色 + 液态玻璃
 w._set_material("frost")
 w.set_dark(False)
 shot(w, "11-glass-wb-light.png")            # 浅色 + 液态玻璃
+
+# 默认主题(无玻璃材质) —— 深色 / 浅色各一张
+w._set_material(None)
+w.set_dark(True)
+shot(w, "14-default-dark.png")
+w.set_dark(False)
+shot(w, "15-default-light.png")
+
+# 静态图片主题(用浅猫指定的底图, 已由 tools/set_frost_bg.py 写入 assets/frost_bg.png)
+w.set_dark(True)
+w._set_material("static")
+shot(w, "16-frost-static-dark.png")
+w.set_dark(False)
+shot(w, "17-frost-static-light.png")
 w.close()
 
 # ---- ④ 设置页(第97轮重做后的新样式) ----

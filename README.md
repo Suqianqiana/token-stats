@@ -18,14 +18,16 @@
 **Frost & Settings** — build `v9.4-frost`
 
 - **第二种材质：毛玻璃（Frost）。** 与液态玻璃并列、**互斥**，可与深浅色自由叠加。双层窗口架构：DWM 实时模糊挂在底层背板上，主窗口只画内容，面板外那圈露出真实桌面。
-- **静态底纹模式。** 底纹是一张**糊好的图**（内置壁纸经**真高斯模糊** + 去饱和），运行时零抓屏、零延迟、拖拽完全跟手；也可自选任意图片，自动做同样处理。
+- **静态底纹模式。** 底纹是一张**糊好的图**（内置壁纸经**真高斯模糊** + 去饱和），运行时零抓屏、零延迟、拖拽响应跟手；也可自选任意图片，自动做同样处理。
 - **毛玻璃下「去卡片化」。** 卡片不再铺底描边，只在顶部画 1px 细线；列表关掉斑马纹；浮层（弹窗 / 主板）保持实体，否则会"隐形"在玻璃上。
 - **设置页面（第95/97轮重做）。** 严格对齐设计稿：真·分段控件（与顶栏区间条同源）、桌宠主题 2×2 网格、底纹图片选择、开机自启 / 窗口置顶 / 尺寸切换，全部**即时生效并落盘记忆**。
 - **每日用量分布重绘。** 堆叠柱改为**整根柱统一渐变**：暗色为「本色 → 本色混白 40%」（往下变淡、向白色渐隐），浅色为同色淡出；去掉早期立体光影，观感更清爽。
 - **自定义来源用量不再丢失。** WorkBuddy 对自定义 provider（如本地 `127.0.0.1:8788/v1`）只落 `rawUsage`、折算后的 `usage` 全 0 —— 扫描器现在会回退解析原始响应，并归一化 `custom-local:` 前缀，用量统计不再缺一大块。
 - **窗口置顶开关不再闪屏。** 改用 Win32 `SetWindowPos` 只改 Z 序（此前 `setWindowFlags` 会销毁重建原生窗口），且置顶态落盘、重启后恢复。
 - **最小化到任务栏。** 右上角 `–` 现在真正缩到任务栏（此前误收进托盘）。
-- **一摞 bug 修复**：设置页刷新后顶部"复活"时间区间条、设置页卡片重复渲染两套、切主题时卡片弹跳、设置页浅色字体不跟随、材质按钮点毛玻璃掉回默认（陈旧闭包）。
+- **多项缺陷修复**：设置页刷新后顶部时间区间条异常复活、设置页卡片重复渲染、切换主题时卡片弹跳、设置页浅色模式文字不跟随、材质按钮切换逻辑失效（陈旧闭包）、悬浮球在关闭桌宠形态后无法拖动。
+- **悬浮球拖动修复。** 关闭桌宠形态后，悬浮球原先无法拖动（`_moved` 标志位的置位条件误挂了 `self.pet`），且拖动松手会误弹统计面板；现已修正，两种形态均可正常拖动。
+- **静态底纹可替换。** 内置底纹 `assets/frost_bg.png` 可由任意图片经同一处理链（真高斯 + 去饱和）重新生成，见 `tools/set_frost_bg.py`。
 
 ---
 
@@ -92,6 +94,14 @@
 
 ![深色液态](docs/assets/previews/05-dark-theme.png)
 
+### 默认主题（无玻璃材质）· 深色
+
+![默认深色](docs/assets/previews/14-default-dark.png)
+
+### 默认主题（无玻璃材质）· 浅色
+
+![默认浅色](docs/assets/previews/15-default-light.png)
+
 ### 浅色 + 毛玻璃（奶白磨砂）
 
 ![毛玻璃浅色](docs/assets/previews/10-frost-wb-light.png)
@@ -99,6 +109,14 @@
 ### 浅色 + 液态玻璃
 
 ![液态浅色](docs/assets/previews/11-glass-wb-light.png)
+
+### 静态图片主题 · 深色（底图为内置图片经真高斯模糊 + 去饱和）
+
+![静态底纹深色](docs/assets/previews/16-frost-static-dark.png)
+
+### 静态图片主题 · 浅色
+
+![静态底纹浅色](docs/assets/previews/17-frost-static-light.png)
 
 ### 设置页面 · 深色
 
@@ -108,9 +126,9 @@
 
 ![设置页浅色](docs/assets/previews/13-settings-light.png)
 
-### 桌宠形态（v3 素材）
+### 桌宠素材 · V3 全套动画（`pet_v3r`，212×347 高清 PNG）
 
-![桌宠形态](docs/assets/previews/pet_v3.png)
+![桌宠素材](docs/assets/previews/pet_v3_sheet.png)
 
 ---
 
@@ -176,8 +194,21 @@
 | `v3` | 最新素材（与原版合并） | `assets/pet_v3r` |
 | `v4` | deepseek娘V4Pro | `assets/pet_v4` |
 
-八组动画 `PET_ANIMS`：`idle` / `sleep` / `wake` / `drag` / `click` / `sidle` / `pat` / `special`。
-点击分区按**角色实际绘制区**（`_pet_draw_rect`）的 1/3 划分：**顶部 1/3 为摸摸头，底部 2/3 为点击**。
+**V3 素材（`pet_v3r`）共七组动画**，全部为 212×347 透明背景高清 PNG：
+
+| 动画键 | 帧数 | 触发 |
+|---|---|---|
+| `idle` 待机 | 8 | 默认常态 |
+| `sidle` 特殊待机 | 12 | 待机较久后随机 |
+| `sleep` 睡觉 | 3 | 待机超过 60s 入睡 |
+| `wake` 醒来 | 2 | 睡眠结束 |
+| `drag` 拖拽 | 4 | 按住拖动 |
+| `click` 点击互动 | 10 | 单击身体下部 |
+| `pat` 摸摸头 | 6 | 单击顶部 1/3 |
+
+点击分区按**角色实际绘制区**（`_pet_draw_rect`）的 1/3 划分：**顶部 1/3 为摸摸头，底部 2/3 为点击互动**。
+
+> `PET_ANIMS` 常量中另有 `special` 一项，是 V2 旧素材「摸摸头库」的目录名（`pet_v2/special/`）；V3 起该职能由 `pat` 目录承担，`special` 仅作为旧素材的加载回退名保留。
 
 ### 3.6 交互与主题
 
@@ -288,7 +319,7 @@ DSH 账本 ─────────► load_dsh_stats() ─────┤   
   "version": 1,
   "app": "Token 审计卡片",
   "exported_at": "2026-09-19T03:30:00",
-  "machine": "台式机",
+  "machine": "example-machine",
   "sources": {
     "wb":  { "...scanner.scan_full() 完整返回..." },
     "dsh": { "...load_dsh_stats() 完整返回..." }
@@ -426,7 +457,10 @@ QT_QPA_PLATFORM=offscreen \
 | `check_material_btn.py` | 设置页材质按钮回归（含连续切换路径） |
 | `check_settings97.py` / `check_settings97b.py` | 设置页交互 / 卡片唯一 / 浅色适配 |
 | `check_topmost97.py` | 置顶开关不重显窗口（判据：`winId()` 不变） |
+| `check_ball_drag.py` | 悬浮球拖动（桌宠开 / 关两种形态） |
 | `check_custom_source97.py` | 自定义来源用量回退 + 模型名归一化 |
+| `set_frost_bg.py` | 用任意图片重新生成毛玻璃静态底纹 |
+| `shot_pet_sheet.py` | 生成桌宠素材拼图 |
 | `metrics_regression.py` | 素材指标回归 |
 | `build_exe.py` / `build_launcher.py` / `make_app_icon.py` | 打包与图标 |
 
@@ -448,7 +482,7 @@ QT_QPA_PLATFORM=offscreen \
 
 ### 10.4 语法检查与杀软误报
 
-本项目的开发环境装有国产杀软，会把 `__pycache__/*.pyc` **误判为木马并连带结束进程**，症状是「命令退出码 0 但零输出」或"进程莫名消失"。因此：
+本项目的开发环境装有国产杀软，会把 `__pycache__/*.pyc` **误判为木马并连带结束进程**，典型症状为「命令退出码为 0 但无任何输出」或进程意外退出。因此：
 
 - 语法检查一律走 `tools/syntax_check.py`（内存 `compile()`，不落 `.pyc`），**不要用 `python -m py_compile`**；
 - 任何 `import card_app` 的脚本开头加 `sys.dont_write_bytecode = True`，或命令行加 `-B`；
@@ -523,14 +557,14 @@ token-stats/
 ## 十四、已知限制与注意事项
 
 1. **商汤「已用」是本地估算**，非官方口径；积分池上限为公测期观察值，官方调整后需同步改常量。
-2. **DSH 计费已按用户要求下线**（口径不准），但 `load_dsh_stats()` 的 `totalCost` / `daily.cost` 字段保留 —— `peer_store` 多机合并与导出格式在用，删了会破坏跨机格式。
+2. **DSH 计费展示已下线**（本地估算口径与官方不一致），但 `load_dsh_stats()` 的 `totalCost` / `daily.cost` 字段保留 —— `peer_store` 多机合并与导出格式在用，删了会破坏跨机格式。
 3. **自定义来源的 usage 依赖回退解析**：若 WorkBuddy 将来改为完全不留 `rawUsage`，则这部分用量仍会缺失（当前已覆盖 `rawUsage` / `raw_usage` / `usageRaw` / `raw` / `rawResponse` 等容器名）。
-4. **PySide6 的 `QPainterPath.subtracted()` 布尔运算不可用**（实测失效），堆叠图一律用覆盖法；后续若升级 PySide6 可复测。
+4. **PySide6 的 `QPainterPath.subtracted()` 布尔运算不可用**（实测确认），堆叠图一律用覆盖法；后续若升级 PySide6 可复测。
 5. **截图脚本会短暂显示窗口**（毛玻璃需真实屏幕抓取），且运行前必须清掉其它 card_app 实例（单实例互杀会让扫描线程死掉、界面停在"正在扫描"）。
 6. **合成数据最后一天必须是"真实今天"**，否则界面默认的「今日」口径全为 0。
 7. **Windows venv 的 `pythonw.exe` 是重定向 stub** → 1 个逻辑实例 = 2 个进程（用 `ExecutablePath` 判别）。
 8. **执行环境无 tty/GUI**：Git Credential Manager 弹不出登录窗；托管 Python 严禁进交互 REPL；系统级工具（`netstat` / `reg` / `sc` / `wmic`）被安全策略禁用。
-9. **火绒会杀 `__pycache__/*.pyc`**（误报 `Trojan/Python.ShellLoader.am`），症状是「命令 exit 0 但零输出」——见 §10.4。
+9. **部分杀软会查杀 `__pycache__/*.pyc`**（误报为木马并结束进程），典型症状为「命令退出码为 0 但无任何输出」或进程意外退出 —— 处置办法见 §10.4。
 
 ---
 
