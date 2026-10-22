@@ -13,25 +13,19 @@
 
 ---
 
-## What's New in v9.2
+## What's New in v9.4
 
-**Multi-Machine Sync** — build `v9.2-multi`
+**Frost & Settings** — build `v9.4-frost`
 
-- **Export → Import → Merge.** Export one machine's complete WorkBuddy + DSH usage as a
-  single JSON package, copy it over, and import it on any other machine.
-- **Non-destructive by design.** Importing never touches local data or other machines'
-  snapshots — every machine is stored separately under `peers/<machine>.json`.
-- **One button, two semantics.** A machine name never seen before is added as a new
-  machine; a name that already exists is treated as a newer snapshot of the same
-  machine and **overwrites** its old data instead of double-counting.
-- **Merged everywhere.** Once peers exist, the WorkBuddy / DSH pages include remote
-  usage too (the subtitle marks how many peer machines were merged in).
-- **Per-machine stats, redesigned.** Every machine is drawn as a two-column card: the
-  familiar rank bar on the left, and a **share ring** on the right showing its true
-  percentage of the total. A **Today / All-time** toggle re-ranks the whole list.
-- **SenseNova quota cards are always present.** Before credentials or data are ready the
-  two pool cards still render, using the official public-beta full quota as a
-  placeholder, so the page never collapses into a block of text.
+- **第二种材质：毛玻璃（Frost）。** 与液态玻璃并列、**互斥**，可与深浅色自由叠加。双层窗口架构：DWM 实时模糊挂在底层背板上，主窗口只画内容，面板外那圈露出真实桌面。
+- **静态底纹模式。** 底纹是一张**糊好的图**（内置壁纸经**真高斯模糊** + 去饱和），运行时零抓屏、零延迟、拖拽完全跟手；也可自选任意图片，自动做同样处理。
+- **毛玻璃下「去卡片化」。** 卡片不再铺底描边，只在顶部画 1px 细线；列表关掉斑马纹；浮层（弹窗 / 主板）保持实体，否则会"隐形"在玻璃上。
+- **设置页面（第95/97轮重做）。** 严格对齐设计稿：真·分段控件（与顶栏区间条同源）、桌宠主题 2×2 网格、底纹图片选择、开机自启 / 窗口置顶 / 尺寸切换，全部**即时生效并落盘记忆**。
+- **每日用量分布重绘。** 堆叠柱改为**整根柱统一渐变**：暗色为「本色 → 本色混白 40%」（往下变淡、向白色渐隐），浅色为同色淡出；去掉早期立体光影，观感更清爽。
+- **自定义来源用量不再丢失。** WorkBuddy 对自定义 provider（如本地 `127.0.0.1:8788/v1`）只落 `rawUsage`、折算后的 `usage` 全 0 —— 扫描器现在会回退解析原始响应，并归一化 `custom-local:` 前缀，用量统计不再缺一大块。
+- **窗口置顶开关不再闪屏。** 改用 Win32 `SetWindowPos` 只改 Z 序（此前 `setWindowFlags` 会销毁重建原生窗口），且置顶态落盘、重启后恢复。
+- **最小化到任务栏。** 右上角 `–` 现在真正缩到任务栏（此前误收进托盘）。
+- **一摞 bug 修复**：设置页刷新后顶部"复活"时间区间条、设置页卡片重复渲染两套、切主题时卡片弹跳、设置页浅色字体不跟随、材质按钮点毛玻璃掉回默认（陈旧闭包）。
 
 ---
 
@@ -59,9 +53,9 @@
 「Token 统计」由两块组成：
 
 - **悬浮球 / 桌宠**：常驻屏幕（置顶、可拖动、位置记忆），单击弹出统计卡片，右键打开菜单。
-- **卡片窗口**：无边框圆角、液态玻璃主题、可拖动；内置四个数据源页签，支持深浅色与三档玻璃通透度。
+- **卡片窗口**：无边框圆角、双材质主题（液态玻璃 / 毛玻璃）、可拖动；左侧为数据源导航 + 设置，右侧为内容区。
 
-四个数据源页签：
+四个数据源页签（侧栏导航，与「设置」并列）：
 
 | 页签 | 内容 |
 |---|---|
@@ -76,47 +70,43 @@
 
 ## 二、界面预览
 
-> 截图由 offscreen 渲染生成，使用**合成匿名数据**，不含任何真实用量与账号信息。
+> 截图由 `tools/shot_readme.py` 生成：隔离 HOME 到临时目录，灌入**合成匿名数据**（固定随机种子，可复现），再走**真实渲染链路**（扫描器扫合成 jsonl → 聚合 → 界面渲染），不含任何真实用量与账号信息。毛玻璃截图需在真实屏幕抓取（DWM 材质 offscreen 没有）。
 
-### WorkBuddy 页
+### WorkBuddy 页 · 深色 + 毛玻璃
 
 ![WorkBuddy 页](docs/assets/previews/01-workbuddy.png)
 
-### DSH 本地页
+### DSH 本地页 · 深色 + 毛玻璃
 
 ![DSH 页](docs/assets/previews/02-dsh.png)
 
-### 商汤额度页
+### 商汤额度页 · 深色 + 毛玻璃
 
 ![商汤额度页](docs/assets/previews/03-sensenova.png)
 
-### 多机合并页（按机统计：双栏 + 环形占比圈）
+### 多机合并页 · 深色 + 毛玻璃
 
 ![多机合并页](docs/assets/previews/04-multi-machine.png)
 
-### 多机合并页 · 切到「今日」口径
+### 深色 + 液态玻璃
 
-![多机合并页 · 今日](docs/assets/previews/06-multi-today.png)
+![深色液态](docs/assets/previews/05-dark-theme.png)
 
-### 深色主题（商汤页）
+### 浅色 + 毛玻璃（奶白磨砂）
 
-![深色主题](docs/assets/previews/05-dark-theme.png)
+![毛玻璃浅色](docs/assets/previews/10-frost-wb-light.png)
 
-### 毛玻璃模式 · WorkBuddy 页（深色）
+### 浅色 + 液态玻璃
 
-![毛玻璃 · WorkBuddy](docs/assets/previews/07-frost-wb-dark.png)
+![液态浅色](docs/assets/previews/11-glass-wb-light.png)
 
-### 毛玻璃模式 · 商汤额度页
+### 设置页面 · 深色
 
-![毛玻璃 · 商汤](docs/assets/previews/08-frost-sn-dark.png)
+![设置页深色](docs/assets/previews/12-settings-dark.png)
 
-### 毛玻璃模式 · 多机合并页
+### 设置页面 · 浅色
 
-![毛玻璃 · 多机](docs/assets/previews/09-frost-multi-dark.png)
-
-### 毛玻璃模式 · 浅色（奶白磨砂）
-
-![毛玻璃 · 浅色](docs/assets/previews/10-frost-wb-light.png)
+![设置页浅色](docs/assets/previews/13-settings-light.png)
 
 ### 桌宠形态（v3 素材）
 
@@ -128,21 +118,34 @@
 
 ### 3.1 用量页（WorkBuddy / DSH）
 
-- **四张汇总卡**：合计 Token、缓存命中（含命中率）、输入 / 输出、会话 / 请求。
-- **今日概况条**：请求 / 输入 / 输出 / 会话 / 缓存命中率；DSH 页额外显示今日花费。
+- **指标区（主次分层）**：左侧**合计 Token** 主指标（超大数字 + 量级 + 环比 chip + 近 30 天迷你趋势线），右侧三行紧凑小指标（缓存命中 / 输入输出 / 会话请求）。
+- **今日概况条**：请求 / 输入 / 输出 / 会话 / 缓存命中率。
 - **模型明细表**：按 Token 总量降序，含占比条、缓存命中率、请求数；DSH 页表头为「调用」。
-- **每日用量堆叠图**：按日按模型堆叠，支持**鼠标锚点滚轮缩放 + 拖动平移**（每次刷新回到默认视图，不记忆上次的缩放/平移）。
-- **活跃热力图**：GitHub 风格，按日着色。
-- **时间区间**：`今日` / `7天` / `30天` / `全部`（商汤页与多机页隐藏该切换）。
+- **每日用量分布**：按日按模型堆叠柱，**整根柱统一渐变**（暗色向白渐隐 / 浅色同色淡出），支持**鼠标锚点滚轮缩放 + 拖动平移**（每次刷新回到默认视图，不记忆上次的缩放/平移）。
+- **活跃热力图**：GitHub 风格，按日着色，支持**拖动平移 / 滚轮**翻看更早月份。
+- **时间区间**：`今日` / `7天` / `30天` / `全部`（设置页与商汤页隐藏该切换）。
 
-### 3.2 商汤额度页
+### 3.2 设置页（v9.4 新增，第95/97轮重做）
 
-- **两张积分池卡**：通用积分池（紫）、Flash-Lite 专属积分池（橙），各显示**周周期额度**与 **5h 窗口额度**（剩余 / 总额 + 百分比 + 重置时间）。
+四组卡片，控件全部走**真·分段控件**（与顶栏区间条同源：`seg_box_qss` 外框 + `role="seg"` 药丸）：
+
+| 卡片 | 内容 |
+|---|---|
+| **外观** | 深色模式、窗口材质四选一（默认 / 毛玻璃 / 液态 / 静态，**再点一次已选中即取消回默认**）、液态玻璃透明度三档、毛玻璃底纹（选择图片 / 恢复默认） |
+| **窗口与启动** | 窗口尺寸双档（标准 990×610 / 舒适 1180×730）、开机自启动、窗口置顶 |
+| **桌宠** | 显示开关 + 四套素材主题 2×2 网格（`v4` / `v3` / `v2` / `v1`） |
+| **关于** | 版本号、一键重启、立即刷新 |
+
+设置页顶栏左上角显示「设置」标题，右上角最小 / 关闭按钮原位保留；所有开关**即时生效并落盘**，重启后恢复。
+
+### 3.3 商汤额度页
+
+- **两张积分池卡**：通用积分池（蓝）、Flash-Lite 专属积分池（橙），各显示**周周期额度**与 **5h 窗口额度**（剩余 / 总额 + 百分比 + 重置时间）。
 - **活动固定积分卡**：总量余额 + 最近一次到期时间与到期额度。
-- **积分卡常驻**：数据或凭证尚未就绪时，卡片仍固定显示，数值取**官方公测期默认满额**（见 §14 变更记录）；底部状态提示行此时才会出现，数据到齐后自动隐藏。
+- **积分卡常驻**：数据或凭证尚未就绪时，卡片仍固定显示，数值取**官方公测期默认满额**；底部状态提示行此时才会出现，数据到齐后自动隐藏。
 - **同步面板**：账号密码（用于凭证过期自动重登）+ 手动 cURL 两段式，支持就地保存 / 清除。
 
-### 3.3 多机合并页
+### 3.4 多机合并页
 
 单列纵向三段：
 
@@ -150,8 +153,7 @@
 2. **按机统计** —— 每台机器一行**双栏卡片**（中间以细竖线分隔）：
    - **左栏**（沿用原有呈现）：名次徽标、机器名（本机带蓝点）、Token 总量、用量占比条（**相对最大机器**归一）、请求数与数据区间；
    - **右栏**：**环形占比圈** —— 弧长表示该机占**全部机器总量**的真实百分比，圆心写百分比数字；
-   - **口径切换**：面板头右侧的 **今日 / 总量** 分段按钮可整列重新排名（今日 = 当天用量；某台机器当天没同步过即显示 0，整列全 0 时给空态文案）；
-   - 顶部显示当期合计与机器数。
+   - **口径切换**：面板头右侧的 **今日 / 总量** 分段按钮可整列重新排名。
 3. **已导入的机器** —— 别机快照列表（来源徽标、导入时间），每行可 **覆盖更新** 或 **删除**。
 
 **导入语义（一个按钮覆盖两种情形）：**
@@ -163,7 +165,7 @@
 
 导入**绝不影响本机数据**，也不影响其他机器的快照。存在别机数据时，WorkBuddy / DSH 页也会把别机数据一并计入（副标题标注「含 N 台别机」）。
 
-### 3.4 桌宠形态
+### 3.5 桌宠形态
 
 双击悬浮球或右键菜单「打开面板」进入统计面板；右键菜单可在四个素材主题间切换：
 
@@ -177,26 +179,13 @@
 八组动画 `PET_ANIMS`：`idle` / `sleep` / `wake` / `drag` / `click` / `sidle` / `pat` / `special`。
 点击分区按**角色实际绘制区**（`_pet_draw_rect`）的 1/3 划分：**顶部 1/3 为摸摸头，底部 2/3 为点击**。
 
-### 3.5 交互与主题
+### 3.6 交互与主题
 
 - **双尺寸**：标准模式 `990×610` / 舒适大窗口 `1180×730`，字重与行高分别标定，不做粗暴放大。
 - **三档玻璃通透度**：`晶透水滴（高通透）` / `标准液态（推荐）` / `柔和微透（防眩光）`。
-- **深浅色**：全程序统一调色板，切换后所有自绘控件同步刷新。
-- **毛玻璃模式（Frost）**：第二种材质，与"液态玻璃"并列，可与深浅色自由叠加；两者**互斥**（再点一次已选中的按钮即回到默认）。
-  - **静态内置磨砂底纹**：底纹是一张**糊好的图**（`assets/frost_bg.png`，内置壁纸经**真高斯模糊**+去饱和），
-    运行时零抓屏、零延迟、拖拽完全跟手；也可自选任意图片（右键「窗口材质 → 选择底纹图片…」，自动做同样处理）。
-  - **为什么必须是"真高斯"**：早期用"缩到 1/45 再放大 45 倍"近似，放大是双线性插值 → 采样边界留下**周期性折痕**，
-    高分辨率底图会被看成一块一块的**色块**。现改用 `QGraphicsBlurEffect` 在同一尺度上卷积（半径按工作分辨率给定，
-    四周以镜像 padding 兜住边缘），既糊得干净又没有折痕。
-  - **卡片退化为细线分区**：页面里的"卡片"不再铺底、不再描边，只在顶部画 **1px 细线**；
-    横向并排的一组（四张指标卡、商汤两张积分池卡）不各画线。列表同时**关掉斑马纹**。
-  - **浮层仍然实体**：自绘弹窗与主板照旧铺磨砂底，否则会"隐形"在玻璃上。
-  - **控件跟着材质换语言**：侧栏按钮与标题栏 `–` `✕` 按材质分档 —— 默认＝实底芯片、液态玻璃＝半透明高光片＋亮描边、
-    毛玻璃＝近乎无底＋极淡细线（悬停只给一层薄雾），避免"透明玻璃上贴着实心色块"的突兀感。
-    按钮**选中态**在毛玻璃下**从底图取色**（取底图平均色的色相，饱和度/明度归一到可读区间），半透明填充＋同色描边；
-    左栏「来源」导航的选中态（填充/竖条/描边/文字）**同样取底图色**，于是毛玻璃下全窗只有一个色源；
-    液态玻璃与默认档仍用品牌蓝。两种材质**直切**（毛玻璃 ⇄ 液态玻璃）不会掉回默认模式。
-  - 入口：右键菜单「🪟 窗口材质」、悬浮球右键菜单，或侧栏「液态玻璃 | 毛玻璃」按钮；选择会**落盘记忆**。
+- **深浅色**：全程序统一调色板，切换后所有自绘控件同步刷新（含设置页内文字）。
+- **材质三态互斥**：液态玻璃 / 毛玻璃（含静态底纹）/ 默认，再点一次已选中即回默认；两种材质**直切**不会掉回默认。
+- **最小化到任务栏**（非托盘）：托盘图标仍可单击显示 / 收起面板。
 - **单一实例**：重复启动不会起第二个常驻实例。
 - **一键重启 / 开机自启**：见 §7。
 
@@ -214,7 +203,7 @@
 | 商汤数据 | `card_app` 商汤段 + `sn_login.py` / `sn_autologin_fetch.py` | 本地估算 + 控制台接口同步；JWT 解析与提前续期；cURL 零指纹字段探测 |
 | 界面 | `card_app.py` | 全部 UI（卡片 / 悬浮球 / 桌宠 / 弹窗 / 图表）、主题系统、线程与缓存调度 |
 | 启动 | `launcher.py` | 轻量启动器（不含 PySide6，8~10MB exe）：定位项目目录与 `pythonw.exe`，`DETACHED + CREATE_NO_WINDOW` 拉起主程序后立即退出 |
-| 回归 | `test_switch_race.py` | offscreen 回归测试，**当前 478 项断言**，需全绿 |
+| 回归 | `test_switch_race.py` | offscreen 回归测试，**当前 482 项断言**，需全绿 |
 
 ### 4.2 数据流
 
@@ -233,16 +222,21 @@ DSH 账本 ─────────► load_dsh_stats() ─────┤   
 
 关键约定：
 
-- **切页与渲染解耦**：`_apply_page()` 只做 `setCurrentIndex` / 可见性；`render()` 由数据回调触发。历史上 `setCurrentIndex` 只写在 `render()` 里，导致"同步过程中无法切页"。
+- **切页与渲染解耦**：`_apply_page()` 只做 `setCurrentIndex` / 可见性；`render()` 由数据回调触发。
 - **迟到结果丢弃**：长任务带代次/序号，看门狗超时后旧线程的返回不会覆盖新状态。
 - **首帧骨架**：多机页首帧画**同高骨架行**而非空态文案，避免数据到位后整列"唰一下长出来"。
 - **本机不落快照**：本机永远实时扫描；导出的只是一次性副本。
 
 ### 4.3 关键实现要点
 
-- **打包资源解析**：未打包时 `APP_DIR` = 脚本目录；已打包时优先取 **exe 同级 `assets/`**（把素材放 exe 旁边即可替换，无需重新打包），否则回退到包内（`sys._MEIPASS`）。
-- **spawn 子进程前剥离 `_PYI_*` 环境变量**：PyInstaller onefile 的子进程引导器会校验「父进程可执行文件是否与自己一致」，`exe → launcher → pythonw` 一路继承后会误判并拒启（`card_app._clean_spawn_env()` 与 `launcher.py` 两处都要清）。
-- **商汤事件缓存**：`sn_events_cache.json` 按 `size+mtime` 失效，把商汤页刷新从 ~14.4s 降到 ~0.16s（冷启动首次数秒）。
+- **自定义来源用量回退**：自定义 provider 只落 `providerData.rawUsage`（OpenAI snake_case）、折算后的 `usage` 全 0 —— 扫描器在 usage 缺失或全 0 时按多候选容器名（`rawUsage` / `raw_usage` / `usageRaw` / `raw` / …）回退解析；`_norm_model()` 归一化 `custom-local:` 前缀，避免同一模型被拆成两组。
+- **平滑曲线用单调三次插值（PCHIP）**：Catmull-Rom 在骤升骤降数据上会**过冲**，堆叠面积上下边界互相穿越导致填充错乱；PCHIP 保证不过冲、带子永不自交（与 ECharts/D3 `curveMonotoneX` 同源）。
+- **堆叠上色用覆盖法**：PySide6 的 `QPainterPath.subtracted()` 实测**布尔运算失效**（差集 bbox 仍等于原区域），故改为"从最上层往最下层画完整区域、后画覆盖先画"。
+- **置顶用 Win32 `SetWindowPos`**：Qt 的 `setWindowFlags()` 在 Windows 上会**销毁并重建原生窗口**（表现为整窗闪一下）；`SetWindowPos` 只改 Z 序。⚠️ ctypes 调 Win32 **必须给传句柄的函数设 `argtypes`**，否则 64 位下 HWND 被按 32 位截断、调用静默失败。
+- **毛玻璃双层窗口**：`paint_pod()` 是材质挂载的唯一出口（`GlassPodFrame` / `GlassDialog` 两处），`role="section"` 毛玻璃下退化为顶部细线、`role="panel"` 保持实体。
+- **打包资源解析**：未打包时 `APP_DIR` = 脚本目录；已打包时优先取 **exe 同级 `assets/`**，否则回退到包内（`sys._MEIPASS`）。
+- **spawn 子进程前剥离 `_PYI_*` 环境变量**：PyInstaller onefile 的子进程引导器会校验「父进程可执行文件是否与自己一致」，`exe → launcher → pythonw` 一路继承后会误判并拒启。
+- **商汤事件缓存**：`sn_events_cache.json` 按 `size+mtime` 失效，把商汤页刷新从 ~14.4s 降到 ~0.16s。
 
 ---
 
@@ -273,11 +267,14 @@ DSH 账本 ─────────► load_dsh_stats() ─────┤   
 {
   "dark": false,
   "glass": false,
+  "frost": false,
+  "frost_static": false,
   "source": "wb",
   "pet": false,
   "pet_theme": "v3",
   "window_size": "default",
-  "glass_transparency": "balanced"
+  "glass_transparency": "balanced",
+  "always_top": true
 }
 ```
 
@@ -340,7 +337,7 @@ DSH 账本 ─────────► load_dsh_stats() ─────┤   
 | `启动统计悬浮球.vbs` | **静默启动**，不弹控制台窗口（日常推荐） |
 | `TokenStats.exe` | 打包产物，双击即用（图标正式，便于放桌面） |
 
-启动后：出现悬浮球 → **单击**弹出卡片；标题栏可拖动；`–` 最小化、`✕` 隐藏（不退出）。
+启动后：出现悬浮球 → **单击**弹出卡片；标题栏可拖动；`–` 最小化到任务栏、`✕` 隐藏（不退出，托盘图标常驻）。
 
 ### 7.2 常用脚本
 
@@ -412,20 +409,30 @@ python tools/make_app_icon.py
 # 回归测试（必须在 offscreen 下运行）
 QT_QPA_PLATFORM=offscreen \
   ~/.workbuddy/binaries/python/envs/pyside6/Scripts/python.exe test_switch_race.py
+
+# 重新生成 README 的界面预览图（隔离 HOME + 合成匿名数据 + 真实渲染链路）
+~/.workbuddy/binaries/python/envs/pyside6/Scripts/python.exe tools/shot_readme.py
 ```
 
-`tools/` 其余脚本：
+`tools/` 脚本：
 
 | 脚本 | 作用 |
 |---|---|
 | `syntax_check.py` | 全项目语法检查（内存编译，不落 `.pyc`） |
 | `restart_app.py` | 重启卡片应用（改动生效） |
+| `shot_readme.py` | 生成 README 预览图（隔离数据 + 合成匿名数据） |
+| `shot_settings.py` | 真实渲染设置页四态截图 |
+| `demo_chart_v2.py` | 每日用量分布三套画法的同源可切换 demo |
+| `check_material_btn.py` | 设置页材质按钮回归（含连续切换路径） |
+| `check_settings97.py` / `check_settings97b.py` | 设置页交互 / 卡片唯一 / 浅色适配 |
+| `check_topmost97.py` | 置顶开关不重显窗口（判据：`winId()` 不变） |
+| `check_custom_source97.py` | 自定义来源用量回退 + 模型名归一化 |
 | `metrics_regression.py` | 素材指标回归 |
 | `build_exe.py` / `build_launcher.py` / `make_app_icon.py` | 打包与图标 |
 
 ### 10.2 回归测试覆盖
 
-切页 race 防护、同步数学、cURL 解析（bash / cmd）、指纹与零指纹探测、真实接口 fixture、单列渲染、窗口位置统一、代理 10061 直连重试、多机数据源（导出 / 导入 / 合并 / 覆盖 / 命名）、导入语义（新增 vs 覆盖）、视觉基座（按钮工厂 / 自绘弹窗 / 导航自绘 / 主题联动 / 排行条）、暗色输入框、内联改名、骨架占位行、商汤页池卡常驻与占位满额、按机统计双栏（环形占比口径 / 今日·总量切换 / `metric` 命名守门）、毛玻璃模式（材质互斥三态 / 纹理连续性 / 开关落盘）、底纹真高斯（均匀图不产生暗边 / 衰减曲线不是线性斜坡）、按钮材质分档（三档样式互异）、每日分布不再记忆缩放视图、按钮选中态底图取色（含左栏「来源」导航）、材质直切、副本去重：不丢文件，改为**按消息去重**（共享历史只计一次，各账号新用量都保留）（含防数据丢失守卫）、三右键菜单材质同步与 emoji 美化、DSH 同源同模型合并 —— **478 项断言，需全过**。
+切页 race 防护、同步数学、cURL 解析（bash / cmd）、指纹与零指纹探测、真实接口 fixture、单列渲染、窗口位置统一、代理 10061 直连重试、多机数据源（导出 / 导入 / 合并 / 覆盖 / 命名）、导入语义（新增 vs 覆盖）、视觉基座（按钮工厂 / 自绘弹窗 / 导航自绘 / 主题联动 / 排行条）、暗色输入框、内联改名、骨架占位行、商汤页池卡常驻与占位满额、按机统计双栏（环形占比口径 / 今日·总量切换 / `metric` 命名守门）、毛玻璃模式（材质互斥三态 / 纹理连续性 / 开关落盘）、底纹真高斯（均匀图不产生暗边 / 衰减曲线不是线性斜坡）、按钮材质分档（三档样式互异）、每日分布不再记忆缩放视图、按钮选中态底图取色（含左栏「来源」导航）、材质直切、副本去重（按消息去重，不丢文件）、三右键菜单材质同步、DSH 同源同模型合并、设置页（区间条不泄漏 / 局部刷新不重建控件 / 浅色字色跟随 / 卡片唯一）、置顶开关不重建窗口、自定义来源用量回退 —— **482 项断言，需全过**。
 
 > 测试开头备份、结尾还原用户真实配置；商汤 / settings / peers 全部隔离到临时目录，**不得写入真实数据目录**。
 
@@ -433,17 +440,11 @@ QT_QPA_PLATFORM=offscreen \
 
 1. Qt 找不到系统字体 → 手工 `QFontDatabase.addApplicationFont()` 注册 `C:\Windows\Fonts\msyh.ttc` 等，否则中文全是豆腐块。
 2. `render()` 里旧控件走 `deleteLater()`，而 `processEvents()` **默认不处理 DeferredDelete** → 旧控件从布局摘除后仍是子控件、留在原位继续绘制，会画成「表头与首行重叠」的假象。截图前需 `QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)`。
-3. 图表（`StackedBarChart`）每次 `set_data` 都会复位到默认视图（第64轮已移除"记住缩放/平移"的记忆），截图无需再手动复位。
+3. 图表（`StackedBarChart`）每次 `set_data` 都会复位到默认视图，截图无需再手动复位。
 4. `widget.grab()` 对透明窗口**保留 alpha**，可直接叠到自选背板上；若发现角落被合成成实色，先查 alpha 是否被覆盖。
-5. ⚠️ **不要用 Qt 虚函数名做实例属性名。** `QWidget` 继承自 `QPaintDevice`，而 `QPaintDevice::metric()` 是虚函数 ——
-   PySide6 会把它当"Python 覆写"去取 `self.metric` 调用。一旦写成 `self.metric = "total"`（字符串），
-   构造 `QPainter(self)` 时就会抛
-   `Error calling Python override of QWidget::metric(): 'str' object is not callable`，
-   并且**进程直接 abort（不是可捕获的普通异常）**。同类危险名字：`event` / `sizeHint` / `paintEvent` / `metric`。
-6. ⚠️ **Python 覆写里抛异常 = 硬崩溃。** 上一条的 abort 本质是"paintEvent 内抛了异常"。
-   排查手法：把被覆写的方法用 `try/except` 包一层并打印 traceback，异常就能现形；
-   另外 `faulthandler` 只会打出**当前 Python 栈**，若崩在纯 C++ 路径（如 `drawArc` 之类内部），
-   栈里不会出现我们的帧 —— 这时优先怀疑"某个被覆写方法抛了异常"。
+5. **毛玻璃截图必须抓真实屏幕**（`grabWindow(0)`）：DWM 材质 offscreen 没有，且毛玻璃模式下控件透明，控件自绘抓图会变成白底。
+6. ⚠️ **不要用 Qt 虚函数名做实例属性名。** `QWidget` 继承自 `QPaintDevice`，而 `QPaintDevice::metric()` 是虚函数 —— PySide6 会把它当"Python 覆写"去取 `self.metric` 调用。一旦写成 `self.metric = "total"`（字符串），构造 `QPainter(self)` 时就会抛 `Error calling Python override of QWidget::metric(): 'str' object is not callable`，并且**进程直接 abort（不是可捕获的普通异常）**。同类危险名字：`event` / `sizeHint` / `paintEvent` / `metric`。
+7. ⚠️ **Python 覆写里抛异常 = 硬崩溃。** 排查手法：把被覆写的方法用 `try/except` 包一层并打印 traceback；`faulthandler` 只会打出**当前 Python 栈**，若崩在纯 C++ 路径，栈里不会出现我们的帧 —— 这时优先怀疑"某个被覆写方法抛了异常"。
 
 ### 10.4 语法检查与杀软误报
 
@@ -463,78 +464,40 @@ QT_QPA_PLATFORM=offscreen \
 - 每轮先更新根目录 [`协作进度.md`](协作进度.md)（演进历程 + 协作者备注），提交紧随其后。
 - 版本标识：`card_app.py` 内 `APP_BUILD`（当前 `v9.4-frost`）。
 
-### 11.2 按钮：四档统一工厂
+### 11.2 按钮：统一工厂 + 材质分档
 
-所有按钮经 `make_btn(kind, text)` 创建、`style_btn(btn, ...)` 重刷：
+所有按钮经 `make_btn(kind, text)` 创建、`style_btn(btn, ...)` 重刷；外观由
+`material_btn_qss(role, dark, glass, frost)` 按**材质分档**生成：
 
-| kind | 用途 | 外观 |
+| role | 用途 | 外观 |
 |---|---|---|
 | `primary` | 面板主操作（导出 / 保存 / 删除确认） | 实心蓝底白字，hover 加深 |
 | `ghost` | 次要操作（改名 / 覆盖更新） | 透明底 + 描边，hover 转蓝 |
 | `danger` | 破坏性操作（删除） | 同 ghost，hover 转红 |
 | `icon` | 标题栏轻量开关 | 无边框，仅 hover 底色 |
+| `seg` | 分段控件项 | 未选中透明；选中 = **底图取色**的实色药丸 |
+| `pick` | 网格候选（桌宠主题） | 选中只换描边 / 淡底 / 文字色，不做实心块 |
+| `opt` | 操作胶囊（选择图片 / 恢复默认） | 独立描边胶囊 |
+| `mat` | 侧栏材质按钮 | 按材质三档互异 |
 
-改主题或字号后**必须重调 `style_btn`**，否则颜色不跟随。
+改主题或字号后**必须重刷样式**，否则颜色不跟随。
 
-### 11.3 弹窗：一律自绘
+### 11.3 弹窗与浮层：一律自绘
 
-`QMessageBox` / `QInputDialog` 已全部替换为 `GlassDialog`（**真正的 `QDialog` 子类**，玻璃底 + 菲涅尔描边 + 语义徽章 + 可拖拽标题区 + `Esc` 取消 / `Enter` 确认）。上层封装：
-
-- `dlg_confirm()` → bool
-- `dlg_notify()` → 单按钮通知
-- `dlg_prompt()` → (text, ok)
-
-> 基类必须是 `QDialog`：早期用 `QFrame` + 手写事件循环"假装"模态，实测 `isModal()` 为假、`adjustSize()` 算不出 `sizeHint`，**表现为弹窗根本看不见**。
-
-### 11.4 输入框：与商汤页同源
-
-输入类控件的视觉配方统一为 **`TRACK` 填充 + `BORDER` 细描边（圆角 6）+ focus 转蓝**。
-靠"填充与卡片底的明度差"读出输入框感，而不是靠粗 / 艳的描边——这是"边缘清晰"的关键。
-
-### 11.5 卡片、导航与主题联动
-
-- 卡片底板用 `GlassPodFrame(radius=12)`；面板头 = `BarIndicator` 小细条 + 加粗标题 + 说明胶囊。
-- `NavButton` 纯自绘（左侧 3px 选中竖条 + 22px 图标槽），新增数据源要把按钮加进 `apply_styles` 的**所有**循环。
-- `set_dark` / `set_glass` 只调 `update()` **不会重算 QSS**，子页面必须经 `_refresh_subpages_theme()` 显式重刷。
-- 局部 `setStyleSheet` 会**替换**该子树继承的全局 QSS（不是叠加）→ 滚动条样式必须打包重设（`style_scroll_area()`）。
-- 自绘控件颜色一律取全局调色板（`TEXT` / `TEXT2` / `TEXT3` / `BORDER` / `TRACK` / `HOVER` / `ZEBRA`），**不要缓存到实例属性**。
-- 列表重绘必须清空**全部** layout item（含 spacer）；`deleteLater()` 的旧控件不会立即消失。
-- **控件样式要跟着材质走**（第64轮）：`material_btn_qss(role, dark, glass, frost)` 按「默认 / 液态玻璃 / 毛玻璃」
-  三档生成按钮 QSS，`role` ∈ `primary`（主操作）/ `opt`（选项）/ `mat`（材质按钮）/ `icon`（标题栏）。
-  新增按钮请走这个工厂，别再写死一套实底样式 —— 否则在透明材质下就是"贴上去的色块"。
-  `NavButton` 是自绘控件，材质适配写在 `paintEvent` 里（hover 填充的 alpha 按材质给）。
+- `GlassDialog` 基类必须是**真 `QDialog`** —— 用 `QFrame` + 手写事件循环"假装"模态会导致 `isModal()=False`、`sizeHint` 算不出、**弹窗根本看不见**。
+- 自绘控件颜色取**全局调色板**，不要缓存到实例属性（主题切换后会拿到旧色）。
 
 ---
 
 ## 十二、GitHub 协作与跨机同步
 
-代码托管在 <https://github.com/Suqianqiana/token-stats>，默认分支 **`main`**。
-
-### 12.1 首次接入（另一台机器）
-
-```bash
-git clone https://github.com/Suqianqiana/token-stats.git
-cd token-stats
-git config user.email "318013379+Suqianqiana@users.noreply.github.com"   # 提交才能关联账号
-git config user.name  "浅浅猫"
-```
-
-推送 / 拉取需要 GitHub 凭据：双击 **`推送到GitHub.bat`**（走浏览器授权，凭据进 Windows 凭据管理器，只需一次）；或使用 Personal Access Token（fine-grained PAT 需开启 `Contents: Read and write`）。
-
-### 12.2 日常节奏
-
-**开工先 `git pull`，收工 `git push`**；只在 `main` 上协作。
-
-> **网络（本机已配好）**：`github.com` 直连会被重置（`Recv failure: Connection was reset`），
-> 因此本仓库的 `.git/config` 里设了 **仓库级** 代理 `http.proxy = http://127.0.0.1:7890`（指向本机 Clash）——
-> 只影响这个仓库，不动系统与全局配置。**推送前先让 Clash 跑起来**即可，`git push` / `推送到GitHub.bat` 都能直接用。
-> 换到没有该代理的机器时：`git config --unset http.proxy`（或改成那台机器自己的代理地址）。
-
-### 12.3 三条硬规矩
-
-1. **禁止 `rebase` / `amend` 已推送的提交** —— 一旦重写历史，另一台机器的 commit hash 全部对不上。
-2. **`_archive/` 永远不随 git 同步**（在 `.gitignore` 里）—— 换机器需要归档内容时得单独拷贝。
-3. **本机运行期数据不在仓库里**（`~/.workbuddy/plugins/data/token-usage-stats/`）—— 跨机共享用量走程序内「导出 / 导入别机数据」。
+- 远程 <https://github.com/Suqianqiana/token-stats>，分支 `main`。
+- **只在 main 上协作、禁 rebase/amend 已推送提交**（commit hash 是跨机同源基准）。
+- 推送通道：git 自带 `store` 凭据助手（`~/.git-credentials`，明文、在家目录、不进仓库）。
+- 仓库设有仓库级 `http.proxy`（指向本机 Clash）——代理没在跑时推送必然失败，绕开直连也常不通；推不上去时**提交留在本地**即可，不要反复硬试。
+- `git ls-remote origin` 成功 ≠ 凭据有效（仓库 public，匿名就能读）；验证凭据必须靠**需要写权限的操作**。
+- **先核同源再合并**：`git -C <peer> rev-parse <已知提交>` 比 hash；本机独有 0 个才能 `--ff-only`。
+- `_archive/` 与运行期数据**都不随 git 走**。
 
 ---
 
@@ -542,83 +505,33 @@ git config user.name  "浅浅猫"
 
 ```
 token-stats/
-├── card_app.py             # 主程序：UI + 主题系统 + 商汤同步 + 桌宠（当前 v9.4-frost）
-├── scanner.py              # WorkBuddy 增量扫描聚合（cache.json / stats.json）
-├── peer_store.py           # 多机数据源：导出 / 导入 / 覆盖 / 合并（纯标准库）
-├── launcher.py             # 轻量启动器源码（不含 PySide6）
-├── sn_login.py             # 商汤登录
-├── sn_autologin_fetch.py   # 商汤积分抓取
-├── test_switch_race.py     # offscreen 回归测试（478 项断言）
-├── 协作进度.md              # ★ 主协作文档：架构 / 演进历程 / Git 规范 / 协作者备注
-├── README.md               # 本文件
-├── .gitignore              # 版本库排除规则
-├── TokenStats.exe          # 打包产物（单文件）
-├── start_card.bat               # 启动器（规范名）
-├── 启动统计悬浮球.bat            # 启动器别名
-├── 启动统计悬浮球.vbs            # 静默启动（日常推荐）
-├── enable_autostart.bat         # 开机自启
-├── 桌面图标指向exe.bat           # 桌面快捷方式
-├── 商汤自动登录.bat              # 商汤登录入口
-├── 重新打包exe.bat               # 重新打包 exe
-├── 推送到GitHub.bat              # GitHub 首次授权 + 推送
-├── assets/                 # 现役素材
-│   ├── pet/                #   v1 经典素材
-│   ├── pet_v2/             #   v2 新版素材（高清）
-│   ├── pet_v3r/            #   v3 最新素材（与原版合并，含 _saturation.json 调色标记）
-│   ├── pet_v4/             #   v4 deepseek娘V4Pro
-│   ├── pet_alt/            #   退役帧存档（测试依赖，勿动）
-│   ├── pet_v3_add/         #   补充帧源（测试依赖，勿动）
-│   ├── app_icon.ico / .png
-│   └── *_qc.json / *_windows.json   # 各版本 QC 质检参考文件
-├── docs/
-│   ├── 素材饱和度优化.md
-│   ├── V3补充素材清单.md
-│   └── assets/previews/    #   界面预览图（README 引用）
-├── tools/                  # 现役脚本（6 个）
-│   ├── syntax_check.py
-│   ├── restart_app.py
-│   ├── build_exe.py
-│   ├── build_launcher.py
-│   ├── make_app_icon.py
-│   └── metrics_regression.py
-└── _archive/               # 归档区（不入版本库，见 _archive/README.md）
-    ├── assets-debug/           # 根级调试截图
-    ├── assets-pet-legacy/      # 桌宠历史版本
-    ├── docs-reviews/           # 历史审查页
-    ├── root-legacy/            # 根目录历史物
-    └── tools-once/             # 一次性诊断脚本
+├── card_app.py            # 主程序（全部 UI + 主题 + 调度）
+├── scanner.py             # WorkBuddy 用量扫描引擎（纯标准库）
+├── peer_store.py          # 多机快照导出 / 导入 / 合并
+├── sn_login.py            # 商汤登录与凭证管理
+├── sn_autologin_fetch.py  # 商汤控制台抓取
+├── launcher.py            # 轻量启动器
+├── test_switch_race.py    # offscreen 回归（482 项断言）
+├── tools/                 # 语法检查 / 打包 / 截图 / 专项回归
+├── assets/                # 桌宠素材、图标、毛玻璃底纹
+├── docs/                  # 设计稿、协作进度、界面预览图
+└── 协作进度.md             # 逐轮演进记录
 ```
-
-**归档约定**：历史备份、调试中间产物、一次性脚本、废弃审查页一律放进 `_archive/` 对应分类，**不进版本库**；项目内只保留「跑起来必需 + 当前在维护」的东西。清单与取回方法见 [`_archive/README.md`](_archive/README.md)。
 
 ---
 
 ## 十四、已知限制与注意事项
 
-1. **商汤无官方 API**：额度靠抓取控制台接口，控制台改版可能失效；凭证 3 小时过期，需账号密码或重新抓包。
-2. **Windows 专用启动脚本**：`.bat` / `.vbs` 仅 Windows 可用。
-3. **仓库当前为公开（public）**：仓库内含桌宠素材与预览图。如需私有，在仓库 **Settings → Danger Zone → Change visibility** 调整。
-4. **`_archive/` 与运行期数据不随 git 走**：换机器时归档内容需单独拷贝；用量数据走程序内导出 / 导入。
-5. **变更记录**：
-   - **2026-10-09 第71轮（紧急修复）**：第70轮引入的严重回归 —— 缓存条目没存消息 id/时间戳，导致消息级去重键退化成空串、全部条目撞车，**统计只剩 1 条**（entriesTotal 50549→1）。修复：拿不到消息 id 时返回 None（不去重，绝不许撞车），并在缓存里补存 mid/ts 后重建缓存；数据已恢复（49985 条 / 93.6 亿）。同时补了 5 条"防数据丢失"守卫断言。
-   - **2026-10-09 第70轮（口径修正）**：不再"丢文件"，改为**按消息去重** —— 两个账号轮换时（A 号额度用完→会话同步到 B 号续聊），两份共享前半段历史但各有后半段真实新用量；整份丢掉会把 B 号的真实用量也丢了（今日 hy4-preview 曾只显示 1998 万，正确为 5023 万）。现每个文件都扫、同一条消息只计一次（去重键用**消息 id**，不能用 sid）。
-   - **2026-10-05 第69轮（去重根治）**：判重从"外部特征"改为**消息内容本身** —— 前两轮按 sessionId / 文件大小判重，遇到"同一会话 3 份且 sid、大小都不同"就失效并复发；现取每个文件前 120 条消息 id 作指纹，用倒排索引找候选对 + **并查集传递闭包**合并同源副本（可合并 3 份以上），组内保留内容最全者。实测目标会话 3 份→1 份，全局残留重复 0。
-   - **2026-10-04 第68轮**：副本去重加**第二道内容级判据** —— 有种副本是"整体复制 + 连内部 sessionId 一起改成新 UUID"（同一现象复现时两份内部 sid 已不同，消息 id 交集 100%），按 sid 分组永远抓不到；现按"大小完全相同 + 前 300 条消息 id 集合 Jaccard ≥ 0.80"判定，459 个文件耗时 0.25s。
-   - **2026-10-01 第67轮**：修掉**副本去重失效**的 bug —— sid 缓存（`cache.json` 的 `__sids__`）原先"一次写入永不过期"，会话边写边改时首部抓错的 sessionId 会被永久记住，导致同会话的两份副本分进不同组、**token 翻倍**（实例：翼型优化·最新（09-28））。现缓存条目带**首部指纹**（前 8KB md5），旧格式自动判失效并自愈。
-   - **v9.4-frost（2026-10-21 第87轮）**：三个右键菜单（面板 / 悬浮球桌宠 / 托盘）材质选项统一 —— 桌宠菜单补齐「静态背景」；替换三处菜单里的简陋线条 emoji（⌫隐藏窗口→🙈、⟳刷新→🔃、↺恢复底纹→♻️、▢默认→⬜、✕退出→🚪、开机自启动→🚀）；DSH 统计修掉「同来源同模型被拆两行」—— 账本/别机快照里 provider 拼写与分隔符不一致（sencenova vs sensenova、冒号 vs 斜杠）导致同模型各算一行，现统一归一成 provider/model（保留不同来源分行、融合同来源书写变体），并修掉聚合覆盖应累加的 bug。
-   - **v9.3-frost（2026-09-25 第66轮）**：左栏「来源」`NavButton` 选中态在毛玻璃下**也从底图取色**（填充/描边/竖条/文字四处统一，默认与液态玻璃档仍是品牌蓝）；默认底纹换成新壁纸（`assets/frost_bg.png` 重新生成，粉调 → 毛玻璃选中态取色为 #d77a8a / #9e5a65）。
-   - **v9.3-frost（2026-09-25 第65轮）**：日期区间按钮**尺寸还原**（`range` 角色 `padding:3px 8px` + 1px 描边 ≡ 旧版 `4px 9px` 无描边）；按钮**选中态在毛玻璃下从底图取色**（`FrostTexture.accent()`：取底图平均色的色相 + 半透明填充 + 同色描边，比左栏「来源」选中态稍实），液态玻璃选中态一并更通透（0.92 → 0.62）；修掉**两个材质直切会掉回默认模式**的 bug（回写勾选态必须 `blockSignals`）。
-   - **v9.3-frost（2026-09-25 第64轮）**：底纹模糊改为**真高斯**（`QGraphicsBlurEffect` + 镜像 padding），修掉"高分辨率底图色块感"（旧"缩到 1/45 再放大"会留下周期性折痕）；默认底纹换成**内置壁纸** `assets/frost_bg.png`（不再依赖首次抓屏，用户自选底纹已被 `.gitignore` 排除）；侧栏与标题栏按钮**按材质分档**（默认 / 液态玻璃 / 毛玻璃三套语言）；移除每日用量分布图"记住缩放平移"的记忆。
-   - **2026-09-24 第62/63轮**：毛玻璃先改成实时抓屏真模糊（第62轮），随后定稿为**静态内置纹理**（第63轮，纹理由底板整块铺一次、卡片不画底色；彻底弃用 DWM System Backdrop —— 实测在 Qt 自绘透明窗口上只画不透明灰）。
-   - **2026-09-23 第61轮**：新增**毛玻璃模式（Frost）**——`theme_state["frost"]` + 磨砂材质；`paint_pod()` 加 `role`（分区不铺底 / 浮层仍实体）；列表关斑马纹；`GlassPodFrame(rule=)` 控制分组卡是否画分区线；右键菜单与侧栏新增开关。
-   - **v9.2（2026-09-20 第59轮）**：版本标识统一为 `v9.2-multi`（`card_app.py` 头部 docstring 原先停在 `V8.7`，本次一并对齐，并在 docstring 内补了英文特性说明）；多机页「按机统计」改为**双栏卡片**（左栏原有排行呈现 + 细竖线 + 右栏环形占比圈），新增 **今日 / 总量** 口径切换；数据层 `machine_summary()` 补 `today` 字段。
-   - **2026-09-20 第58轮**：商汤页两张积分池卡改为**常驻渲染**（未就绪时用官方公测期默认满额占位，原提示文字下移至页面底部）；多机页机器框与内联改名输入框的描边改为「`TRACK` 填充 + `BORDER` 细描边」，与商汤页输入框同源。
+1. **商汤「已用」是本地估算**，非官方口径；积分池上限为公测期观察值，官方调整后需同步改常量。
+2. **DSH 计费已按用户要求下线**（口径不准），但 `load_dsh_stats()` 的 `totalCost` / `daily.cost` 字段保留 —— `peer_store` 多机合并与导出格式在用，删了会破坏跨机格式。
+3. **自定义来源的 usage 依赖回退解析**：若 WorkBuddy 将来改为完全不留 `rawUsage`，则这部分用量仍会缺失（当前已覆盖 `rawUsage` / `raw_usage` / `usageRaw` / `raw` / `rawResponse` 等容器名）。
+4. **PySide6 的 `QPainterPath.subtracted()` 布尔运算不可用**（实测失效），堆叠图一律用覆盖法；后续若升级 PySide6 可复测。
+5. **截图脚本会短暂显示窗口**（毛玻璃需真实屏幕抓取），且运行前必须清掉其它 card_app 实例（单实例互杀会让扫描线程死掉、界面停在"正在扫描"）。
+6. **合成数据最后一天必须是"真实今天"**，否则界面默认的「今日」口径全为 0。
+7. **Windows venv 的 `pythonw.exe` 是重定向 stub** → 1 个逻辑实例 = 2 个进程（用 `ExecutablePath` 判别）。
+8. **执行环境无 tty/GUI**：Git Credential Manager 弹不出登录窗；托管 Python 严禁进交互 REPL；系统级工具（`netstat` / `reg` / `sc` / `wmic`）被安全策略禁用。
+9. **火绒会杀 `__pycache__/*.pyc`**（误报 `Trojan/Python.ShellLoader.am`），症状是「命令 exit 0 但零输出」——见 §10.4。
 
 ---
 
-## 附：相关文档
-
-- 主协作文档：[`协作进度.md`](协作进度.md) —— 完整演进历程、架构演进、Git 规范、协作者备注
-- 归档说明：[`_archive/README.md`](_archive/README.md)
-- 素材调色记录：[`docs/素材饱和度优化.md`](docs/素材饱和度优化.md)
-- 素材清单：[`docs/V3补充素材清单.md`](docs/V3补充素材清单.md)
+<sub>构建 `v9.4-frost` · 回归 482 项全绿 · 详见 [`协作进度.md`](协作进度.md)</sub>
