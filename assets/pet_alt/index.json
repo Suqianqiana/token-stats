@@ -17,6 +17,102 @@
    "was": "pet_v3r/click/click_04.png",
    "retired_at": "2026-09-17 06:01:56",
    "reason": "点击反馈效果不理想"
+  },
+  {
+   "scene": "wake",
+   "orig_name": "wake_01.png",
+   "file": "wake/old_v3_wake_01.png",
+   "was": "pet_v3r/wake/wake_01.png",
+   "retired_at": "2026-10-23 10:24:55",
+   "reason": "2026-10-23 旧 V3 睡醒素材(入库新帧时退役, 曾被同名覆盖, 已从备份恢复并改名)"
+  },
+  {
+   "scene": "wake",
+   "orig_name": "wake_02.png",
+   "file": "wake/old_v3_wake_02.png",
+   "was": "pet_v3r/wake/wake_02.png",
+   "retired_at": "2026-10-23 10:24:55",
+   "reason": "2026-10-23 旧 V3 睡醒素材(入库新帧时退役, 曾被同名覆盖, 已从备份恢复并改名)"
+  },
+  {
+   "scene": "idle",
+   "orig_name": "idle_05.png",
+   "file": "idle/old_idle_05.png",
+   "was": "pet_v3r/idle/idle_05.png",
+   "retired_at": "2026-10-23 10:42:34",
+   "reason": "2026-10-23 浅浅猫在 V3 清单页勾选退休"
+  },
+  {
+   "scene": "idle",
+   "orig_name": "idle_08.png",
+   "file": "idle/old_idle_08.png",
+   "was": "pet_v3r/idle/idle_08.png",
+   "retired_at": "2026-10-23 10:42:34",
+   "reason": "2026-10-23 浅浅猫在 V3 清单页勾选退休"
+  },
+  {
+   "scene": "sleep",
+   "orig_name": "sleep_03.png",
+   "file": "sleep/old_sleep_03.png",
+   "was": "pet_v3r/sleep/sleep_03.png",
+   "retired_at": "2026-10-23 10:42:34",
+   "reason": "2026-10-23 浅浅猫在 V3 清单页勾选退休"
+  },
+  {
+   "scene": "wake",
+   "orig_name": "wake_02.png",
+   "file": "wake/old_wake_02.png",
+   "was": "pet_v3r/wake/wake_02.png",
+   "retired_at": "2026-10-23 10:42:34",
+   "reason": "2026-10-23 浅浅猫在 V3 清单页勾选退休"
+  },
+  {
+   "scene": "wake",
+   "orig_name": "wake_01.png",
+   "file": "wake/old_wake_01.png",
+   "was": "pet_v3r/wake/wake_01.png",
+   "retired_at": "2026-10-23 10:42:34",
+   "reason": "2026-10-23 浅浅猫在 V3 清单页勾选退休"
+  },
+  {
+   "scene": "drag",
+   "orig_name": "drag_02.png",
+   "file": "drag/old_drag_02.png",
+   "was": "pet_v3r/drag/drag_02.png",
+   "retired_at": "2026-10-23 10:42:34",
+   "reason": "2026-10-23 浅浅猫在 V3 清单页勾选退休"
+  },
+  {
+   "scene": "drag",
+   "orig_name": "drag_03.png",
+   "file": "drag/old_drag_03.png",
+   "was": "pet_v3r/drag/drag_03.png",
+   "retired_at": "2026-10-23 10:42:34",
+   "reason": "2026-10-23 浅浅猫在 V3 清单页勾选退休"
+  },
+  {
+   "scene": "click",
+   "orig_name": "click_02.png",
+   "file": "click/old_click_02.png",
+   "was": "pet_v3r/click/click_02.png",
+   "retired_at": "2026-10-23 10:42:34",
+   "reason": "2026-10-23 浅浅猫在 V3 清单页勾选退休"
+  },
+  {
+   "scene": "pat",
+   "orig_name": "pat_01.png",
+   "file": "pat/old_pat_01.png",
+   "was": "pet_v3r/pat/pat_01.png",
+   "retired_at": "2026-10-23 10:42:34",
+   "reason": "2026-10-23 浅浅猫在 V3 清单页勾选退休"
+  },
+  {
+   "scene": "pat",
+   "orig_name": "pat_03.png",
+   "file": "pat/old_pat_03.png",
+   "was": "pet_v3r/pat/pat_03.png",
+   "retired_at": "2026-10-23 10:42:34",
+   "reason": "2026-10-23 浅浅猫在 V3 清单页勾选退休"
   }
  ]
 }

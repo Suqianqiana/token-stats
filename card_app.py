@@ -8044,7 +8044,8 @@ PET_W, PET_H = 118, 148
 PET_SLEEP_AFTER = 60            # 待机多久后入睡(秒)
 PET_SLEEP_DUR = (90, 240)       # 睡觉时长随机区间(秒) —— 浅浅猫要求"最少大于一分半"
 PET_OTHER_EVERY = (150, 420)    # 特殊待机动作触发间隔(秒)
-PET_SIDLE_DUR = (15, 60)        # 特殊待机动作持续时长(秒)
+# update 2026-10-23 (浅浅猫): 特殊待机持续 15~60s -> **30~60s** (触发间隔 150~420s 不变)
+PET_SIDLE_DUR = (30, 60)        # 特殊待机动作持续时长(秒)
 PET_MS = {"idle": 240, "sleep": 1500, "wake": 700, "drag": 140,
           "click": 300, "sidle": 600, "pat": 600}
 # 2026-09-17 浅浅猫的想法: 桌宠"顶部 1/3"点= 摸摸头, 其余(底部 2/3)= 普通点击互动;
@@ -8056,17 +8057,21 @@ APP_BUILD = "v9.4-frost"         # update 2026-10-21 (第87轮): 三菜单统一
 
 
 def _pet_idle_seq(n):
-    """普通待机序列 (浅浅猫 2026-09-14 修正):
-       第 0 帧(idle_01) = **默认待机, 停留 8~20 秒**;
-       其它待机帧只是"**随机偶尔**"插进来各停 2~3 秒, 然后回到默认待机。
+    """普通待机序列 (浅浅猫 2026-09-14 定调, 2026-10-23 改数值):
+       第 0 帧(idle_01) = **默认待机, 停留 10~20 秒** (旧: 8~20s);
+       其它待机帧只是"**随机偶尔**"插进来各停 **5 秒** (旧: 2~3s), 然后回到默认待机。
        —— 绝不能均匀轮播全部帧, 否则看起来就是个循环。
-       tick = PET_MS["idle"] = 240ms -> N 拍 ≈ N*0.24s。"""
+       tick = PET_MS["idle"] = 240ms -> N 拍 ≈ N*0.24s (21 拍 ≈ 5.0s, 42 拍 ≈ 10.1s)。"""
     n = max(1, int(n))
-    seq = [0] * random.randint(33, 84)              # 默认待机 ≈ 8~20s
+    # ⚠️ 结构要点: 每一段"连续默认帧"都必须完整落在 10~20s 内。
+    #   旧写法是 [默认8~20s] + [回默认2~4s] + [插帧2~3s] —— 两段 0 相邻会连成一段,
+    #   实测连续默认帧最长到 24s(超出浅浅猫要求的 20s)。现改为插帧后直接接**新的一段
+    #   完整 10~20s 默认**, 插帧本身只停 5s, 不再有"2~4s 的小段"。
+    seq = [0] * random.randint(42, 84)              # 默认待机 ≈ 10~20s
     for _ in range(random.randint(0, 2)):           # 偶尔(0~2 次)插入一个随机其它帧
-        seq += [0] * random.randint(8, 16)          # 先回默认待机 2~4s
         if n >= 2:
-            seq += [random.randrange(1, n)] * random.randint(8, 13)   # 该帧停 2~3s
+            seq += [random.randrange(1, n)] * 21    # 该帧停 5s
+        seq += [0] * random.randint(42, 84)         # 再回默认待机 ≈ 10~20s
     return seq
 
 
@@ -8181,10 +8186,12 @@ class BallWindow(QWidget):
             self._seq = [i] * 8
             self._sleep_until = time.time() + random.uniform(*PET_SLEEP_DUR)
         elif st == "wake":
-            # 睡醒: setB_09/setA_05 随机取一个, 停留约 2s 后自动回待机
+            # 睡醒 (浅浅猫 2026-10-23 改): ① 素材换成 2026-10-23 新入库的那批(旧 V3 睡醒帧已退役);
+            #   ② 时长加长 —— 旧 3 拍(700ms)≈2.1s -> 6 拍 ≈ 4.2s, 让伸懒腰/揉眼的动作看得完整;
+            #   ③ 播完**随机**接「继续睡觉」或「恢复到待机」(见 _pet_tick, 旧行为是固定回待机)。
             fr = self._frames_of("wake")
             i = random.randrange(len(fr)) if fr else 0
-            self._seq = [i] * 3
+            self._seq = [i] * 6
         elif st == "drag":
             fr = self._frames_of("drag")
             i = random.randrange(len(fr)) if fr else 0
@@ -8217,6 +8224,11 @@ class BallWindow(QWidget):
                 self._si = 0
             elif self._state in ("sleep", "drag"):
                 self._si = 0
+            elif self._state == "wake":
+                # 浅浅猫 2026-10-23: 睡醒之后**随机**接「继续睡觉」或「恢复到待机」
+                #   (旧行为: 睡醒播完必定回待机 —— 醒了就不再睡, 少了"赖床"的自然感)
+                self._pet_state("sleep" if random.random() < 0.4 else "idle")
+                return
             else:
                 self._pet_state("idle")
                 return

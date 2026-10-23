@@ -656,19 +656,22 @@ check("切回悬浮球形态", ball.pet is False and ball.width() == 54)
 # ---- 2026-09-17: V3 补充素材入库 + 点击分区（顶部 1/3 摸摸头 / 底部 2/3 点击互动）----
 from PySide6.QtCore import QRectF  # noqa: E402
 
-check("v3 各场景帧数（含 09-17 补充素材，click 已退役 2 帧）",
+# ---- 2026-10-23: 浅浅猫新增 95 帧 + 退休 12 帧(旧 wake 2 + 清单页勾 10) ----
+# 库: 45(原有) - 2(旧 wake 退役) + 95(新) - 10(清单页退休) = 128 帧
+#   idle10/sleep8/wake7/drag6/click23/sidle55/pat19
+check("v3 各场景帧数（2026-10-23 新增+退休后：128 帧）",
       fr3 and [len(fr3[k]) for k in ("idle", "sleep", "wake", "drag", "click", "sidle", "pat")]
-      == [8, 3, 2, 4, 10, 12, 6],
+      == [10, 8, 7, 6, 23, 55, 19],
       str({k: len(v) for k, v in fr3.items()}) if fr3 else "-")
-check("v3 待机序列 n=8 不越界且静止为主",
-      (lambda s: bool(s) and all(0 <= x < 8 for x in s)
-       and sum(1 for x in s if x != 0) <= len(s) * 0.4)(ca._pet_idle_seq(8)))
+check("v3 待机序列 n=10 不越界且静止为主",
+      (lambda s: bool(s) and all(0 <= x < 10 for x in s)
+       and sum(1 for x in s if x != 0) <= len(s) * 0.4)(ca._pet_idle_seq(10)))
 
 ca.theme_state["pet_theme"] = "v3"
 w6 = ca.BallWindow(None)
 w6.set_pet(True)
-check("v3 桌宠共加载 45 帧", w6.pet_frames is not None
-      and sum(len(v) for v in w6.pet_frames.values()) == 45,
+check("v3 桌宠共加载 128 帧（45 原有 − 12 退休 + 95 新入库）", w6.pet_frames is not None
+      and sum(len(v) for v in w6.pet_frames.values()) == 128,
       str(sum(len(v) for v in (w6.pet_frames or {}).values())))
 
 w6._pet_draw_rect = QRectF(0, 20, 118, 120)          # 模拟实际绘制区域 y=20..140

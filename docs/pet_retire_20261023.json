@@ -1,0 +1,15 @@
+{
+ "v": 1,
+ "tool": "pet_v3r_retire_20261023",
+ "created": "2026-10-23T02:35:38.089Z",
+ "stats": { "retiring": 10 },
+ "_note": "浅浅猫在 V3 清单页勾选退休的 10 帧 (2026-10-23)",
+ "retire": {
+  "idle": ["idle_05", "idle_08"],
+  "sleep": ["sleep_03"],
+  "wake": ["wake_02", "wake_01"],
+  "drag": ["drag_02", "drag_03"],
+  "click": ["click_02"],
+  "pat": ["pat_01", "pat_03"]
+ }
+}
