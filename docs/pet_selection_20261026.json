@@ -2,7 +2,8 @@
  "v": 1,
  "tool": "pet_picker_20261026",
  "created": "2026-10-26T07:31:00",
- "target_library": "pet_v3r",
+ "target_library": "pet_v5",
+ "_target_note": "2026-10-26 浅浅猫更正: 这批 H01~H16 素材全是**蓝发鲸鱼少女 = V5 主题**, 不是 V3。首次落地误用了 pet_v3r(HTML 模板默认值), 已从 v3r 撤回 140 帧、改落到 assets/pet_v5/。",
  "stats": {
   "total": 158,
   "selected": 140,

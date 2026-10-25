@@ -677,11 +677,11 @@ check("切回悬浮球形态", ball.pet is False and ball.width() == 54)
 from PySide6.QtCore import QRectF  # noqa: E402
 
 # ---- 2026-10-23: 浅浅猫新增 95 帧 + 退休 12 帧(旧 wake 2 + 清单页勾 10) = 128 帧
-# ---- 2026-10-26 (第101轮): 再入库浅浅猫勾选的 140 帧(H01~H16 批) = **268 帧**
-#   idle21/sleep28/wake21/drag11/click55/sidle103/pat29
-check("v3 各场景帧数（2026-10-26 落地 140 帧后：268 帧）",
+# ---- 2026-10-26: 那批 140 帧是**V5 主题**(蓝发鲸鱼少女), 浅浅猫更正后落在 pet_v5,
+#      v3r 保持 128 帧不变(曾误落 v3r 并已完整撤回 —— 见 docs/pet_selection_20261026.json)
+check("v3 各场景帧数（保持 128 帧, 未受 V5 批次影响）",
       fr3 and [len(fr3[k]) for k in ("idle", "sleep", "wake", "drag", "click", "sidle", "pat")]
-      == [21, 28, 21, 11, 55, 103, 29],
+      == [10, 8, 7, 6, 23, 55, 19],
       str({k: len(v) for k, v in fr3.items()}) if fr3 else "-")
 check("v3 待机序列 n=10 不越界且静止为主",
       (lambda s: bool(s) and all(0 <= x < 10 for x in s)
@@ -690,8 +690,8 @@ check("v3 待机序列 n=10 不越界且静止为主",
 ca.theme_state["pet_theme"] = "v3"
 w6 = ca.BallWindow(None)
 w6.set_pet(True)
-check("v3 桌宠共加载 268 帧（128 + 2026-10-26 新入库 140）", w6.pet_frames is not None
-      and sum(len(v) for v in w6.pet_frames.values()) == 268,
+check("v3 桌宠共加载 128 帧", w6.pet_frames is not None
+      and sum(len(v) for v in w6.pet_frames.values()) == 128,
       str(sum(len(v) for v in (w6.pet_frames or {}).values())))
 
 # ---- 2026-10-25 (第99轮): 睡觉「完整动作帧组」通用机制 + V5 主题 ----
@@ -707,7 +707,7 @@ check("睡觉动作帧组节拍取自 seq.json = 1000ms", _seq3["sleep"][0]["ms"
       str(_seq3["sleep"][0]["ms"]))
 check("睡觉动作帧组带 chance(单帧与动画按概率混播)", _seq3["sleep"][0]["chance"] == 0.5,
       str(_seq3["sleep"][0]["chance"]))
-check("动作帧组没混进 pet_frames(帧数统计仍 268)", "__seq__" not in (w6.pet_frames or {}),
+check("动作帧组没混进 pet_frames(帧数统计仍 128)", "__seq__" not in (w6.pet_frames or {}),
       str(sorted((w6.pet_frames or {}).keys())))
 
 # chance 决定"走动画还是走单帧" —— 显式置 1.0/0.0 测两条路, 避免 0.5 让断言 flaky
@@ -740,14 +740,19 @@ check("chance=0.5 → 两种睡觉形态都出现(400 次抽样)", 120 < _hits <
 check("PET_THEMES 含 v5 (鲸鱼少女)", "v5" in ca.PET_THEMES and len(ca.PET_THEMES) == 5,
       str(list(ca.PET_THEMES.keys())))
 _fr5 = ca.load_pet_frames("v5")
-check("V5 素材可加载: idle4 / click1 / sleep2",
-      _fr5 is not None and [len(_fr5.get(k, [])) for k in ("idle", "click", "sleep")] == [4, 1, 2],
+# 2026-10-26 (第101轮): V5 并入浅浅猫勾选的 140 帧 → idle15/click33/sleep22/
+#   drag6/wake15/**sidle48/pat10**(后两个是新建目录, 之前 V5 没有这两个场景)。
+check("V5 素材可加载: idle15 / click33 / sleep22 / drag6 / wake15 / sidle48 / pat10",
+      _fr5 is not None
+      and [len(_fr5.get(k, [])) for k in ("idle", "click", "sleep", "drag", "wake", "sidle", "pat")]
+      == [15, 33, 22, 6, 15, 48, 10],
       str({k: len(v) for k, v in (_fr5 or {}).items()}))
-check("V5 站姿组(idle/click/drag/wake)画布一致",
-      len({(im.width(), im.height()) for k in ("idle", "click", "drag", "wake")
-           for im in (_fr5 or {}).get(k, [])}) == 1)
-check("V5 躺姿组(sleep)画布一致",
-      len({(im.width(), im.height()) for im in (_fr5 or {}).get("sleep", [])}) == 1)
+# 第99轮要求是"同场景统一画布"; 混入 140 帧后宽度必然各异(角色胖瘦不同),
+# 但**帧高必须一致** —— paintEvent 逐帧算缩放比, 高度统一才不会大小跳动。
+_V5_KEYS = ("idle", "click", "sleep", "drag", "wake", "sidle", "pat")
+check("V5 全库帧高统一(播放不跳动)",
+      len({im.height() for k in _V5_KEYS for im in (_fr5 or {}).get(k, [])}) == 1,
+      str(sorted({im.height() for k in _V5_KEYS for im in (_fr5 or {}).get(k, [])})))
 check("V5 无动作帧组(seq 目录不存在)", ca.load_pet_seqs("v5") == {})
 w6.pet_theme = "v5"
 w6._loaded_pet_theme = None
@@ -755,8 +760,10 @@ w6.pet_frames = None
 _fr5b = w6._load_frames()
 check("BallWindow 可切到 V5", _fr5b is not None and w6._loaded_pet_theme == "v5",
       str(w6._loaded_pet_theme))
-check("V5 _has_anim(sidle) 为假(无 sidle/special 素材)",
-      w6._has_anim("sidle") is False)
+# 2026-10-26: V5 现在有 48 帧 sidle(第101轮入的), 语义反转 —— 会正常触发特殊待机
+#   (第99轮它没 sidle, 靠这条断言保证"不会定格 30~60s"; 现在有素材了, 断言改为真)
+check("V5 有 sidle48 → _has_anim(sidle) 为真(会触发特殊待机小剧场)",
+      w6._has_anim("sidle") is True and w6._has_anim("pat") is True)
 w6.pet_theme = "v3"
 w6._loaded_pet_theme = None
 w6.pet_frames = None
