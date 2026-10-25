@@ -8121,8 +8121,12 @@ def load_pet_seqs(theme=None):
       * 场景名必须属于 PET_ANIMS, 其它目录忽略(避免误读)。原始目录不存在则返回空 dict。
       * `seq.json` 的 `ms` 覆盖该场景的 PET_MS 节拍; 不给就沿用 PET_MS。
         组与组可以有不同节奏(例如睡觉慢、点击快)。
+      * `seq.json` 的 `chance`(0~1, 缺省 1.0) = **本次进入该场景时播这组的概率**。
+        给 sleep 这类"长时间状态"用: 剩下概率走普通帧库(随机一张定格),
+        于是"单帧素材"和"完整动作帧"能共存混播(浅浅猫 2026-10-25 的要求:
+        "另外几个只有单帧的睡觉素材加回来, 那几个就一直放单帧, 随机到八帧那套就循环播放")。
 
-    返回: {场景: [{"name": 组名, "frames": [QImage...], "ms": int}, ...]}
+    返回: {场景: [{"name": 组名, "frames": [QImage...], "ms": int, "chance": float}, ...]}
     """
     theme = theme or theme_state.get("pet_theme", "v3")
     if theme not in PET_THEMES:
@@ -8151,14 +8155,18 @@ def load_pet_seqs(theme=None):
                 if len(imgs) < 2:
                     continue
                 ms = PET_MS.get(scene, 240)
+                chance = 1.0
                 cfg = os.path.join(gd, "seq.json")
                 if os.path.isfile(cfg):
                     try:
                         with open(cfg, encoding="utf-8") as f:
-                            ms = int(json.load(f).get("ms", ms))
+                            _c = json.load(f)
+                        ms = int(_c.get("ms", ms))
+                        chance = min(1.0, max(0.0, float(_c.get("chance", 1.0))))
                     except Exception:
                         pass
-                groups.append({"name": g, "frames": imgs, "ms": max(60, int(ms))})
+                groups.append({"name": g, "frames": imgs, "ms": max(60, int(ms)),
+                               "chance": chance})
             if groups:
                 out[scene] = groups
     except OSError:
@@ -8278,10 +8286,13 @@ class BallWindow(QWidget):
         elif st == "idle":
             self._seq = _pet_idle_seq(len(self._frames_of("idle")))
         elif st == "sleep":
+            # update 2026-10-25 (浅浅猫): 单帧素材与完整动作帧**共存混播** ——
+            #   ① 有动作帧组且本轮 random() 命中它的 chance → 顺序循环播放(呼吸/眨眼);
+            #   ② 否则 → 从 sleep/ 单帧库随机取一张定格(旧行为, 那些"只有单帧"的
+            #      睡姿素材因此重新有机会出场)。
+            #   chance 由各组 seq.json 提供(缺省 1.0 = 有就播), 调概率不用改代码。
             grp = self._pick_seq("sleep")
-            if grp is not None:
-                # 有完整动作帧(第99轮 = A 套 8 帧循环)时顺序播放、循环到底,
-                # 睡姿会缓慢呼吸/眨眼, 比"一次睡觉只取一张静止帧"自然得多。
+            if grp is not None and random.random() < grp.get("chance", 1.0):
                 self._seq_frames = grp["frames"]
                 self._seq = list(range(len(grp["frames"])))
                 ms = ms or grp["ms"]

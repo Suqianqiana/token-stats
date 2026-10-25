@@ -57,6 +57,7 @@ g0 = grp_list[0]
 check("A 组 8 帧", len(g0["frames"]) == 8, str(len(g0["frames"])))
 check("组名 = A", g0["name"] == "A", g0["name"])
 check("节拍取自 seq.json = 1000ms", g0["ms"] == 1000, str(g0["ms"]))
+check("组带 chance 字段(单帧/动画混播)", g0.get("chance") == 0.5, str(g0.get("chance")))
 sizes = {(im.width(), im.height()) for im in g0["frames"]}
 check("8 帧画布完全一致(播放不抖动)", len(sizes) == 1, str(sizes))
 
@@ -86,10 +87,16 @@ ball.pet_frames = ball._load_frames()           # 必须真加载, 否则 pet_se
 check("BallWindow 载入了 sleep 动作帧组", "sleep" in (ball.pet_seqs or {}),
       str(list((ball.pet_seqs or {}).keys())))
 ball._pet_state("sleep")
-check("sleep 走动作帧组 (_seq_frames 非空)", ball._seq_frames is not None,
-      str(ball._seq_frames and len(ball._seq_frames)))
-check("_seq = 0..7 顺序播放", ball._seq == list(range(8)), str(ball._seq))
-check("定时器节拍 = 1000ms", ball._tm.interval() == 1000, str(ball._tm.interval()))
+check("chance=0.5 → 两种睡觉形态之一(单帧定格 或 8帧动画)",
+      ball._seq_frames is not None or (len(set(ball._seq)) == 1 and len(ball._seq) == 8),
+      f"seq_frames={ball._seq_frames is not None} seq={ball._seq[:4]}")
+# 显式置 1.0 / 0.0 测两条路(避免 0.5 让断言 flaky)
+_g = ball.pet_seqs["sleep"][0]
+_g["chance"] = 1.0
+ball._pet_state("sleep")
+check("chance=1 → 必走动作帧组", ball._seq_frames is not None
+      and ball._seq == list(range(8)) and ball._tm.interval() == 1000,
+      f"frames={ball._seq_frames is not None} ms={ball._tm.interval()}")
 for _ in range(8):
     ball._pet_tick()
 check("循环 8 拍后回到第 0 帧", ball._si == 0, str(ball._si))
@@ -97,6 +104,15 @@ ball._sleep_until = 0                                  # 假装睡够
 ball._pet_tick()
 check("睡够后转 wake 并清空动作帧组", ball._state == "wake" and ball._seq_frames is None,
       "%s / %s" % (ball._state, ball._seq_frames))
+_g["chance"] = 0.0
+ball._pet_state("sleep")
+check("chance=0 → 走单帧库(随机一张定格, 单帧素材能出场)",
+      ball._seq_frames is None and len(set(ball._seq)) == 1 and len(ball._seq) == 8,
+      f"seq_frames={ball._seq_frames} seq={set(ball._seq)}")
+_g["chance"] = 0.5
+_hits = sum(1 for _ in range(400)
+            if (ball._pet_state("sleep"), ball._seq_frames is not None)[1])
+check("chance=0.5 → 400 次抽样两种形态都出现", 120 < _hits < 280, f"动画 {_hits}/400")
 
 print("== 4. 没有动作帧组的主题保持旧行为 ==")
 ball.pet_theme = "v4"

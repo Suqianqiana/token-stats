@@ -685,11 +685,16 @@ check("睡觉动作帧组画布统一(播放不抖动)",
       str({(im.width(), im.height()) for im in _seq3["sleep"][0]["frames"]}))
 check("睡觉动作帧组节拍取自 seq.json = 1000ms", _seq3["sleep"][0]["ms"] == 1000,
       str(_seq3["sleep"][0]["ms"]))
+check("睡觉动作帧组带 chance(单帧与动画按概率混播)", _seq3["sleep"][0]["chance"] == 0.5,
+      str(_seq3["sleep"][0]["chance"]))
 check("动作帧组没混进 pet_frames(帧数统计仍 128)", "__seq__" not in (w6.pet_frames or {}),
       str(sorted((w6.pet_frames or {}).keys())))
 
+# chance 决定"走动画还是走单帧" —— 显式置 1.0/0.0 测两条路, 避免 0.5 让断言 flaky
+_sg = w6.pet_seqs["sleep"][0]
+_sg["chance"] = 1.0
 w6._pet_state("sleep")
-check("v3 睡觉改播动作帧组(顺序 0..7)", w6._seq_frames is not None
+check("chance=1 → v3 睡觉播动作帧组(顺序 0..7)", w6._seq_frames is not None
       and w6._seq == list(range(8)) and w6._tm.interval() == 1000,
       f"frames={w6._seq_frames is not None} seq={w6._seq[:4]}... ms={w6._tm.interval()}")
 for _ in range(8):
@@ -700,6 +705,16 @@ w6._pet_tick()
 check("睡够转 wake 且清空动作帧组", w6._state == "wake" and w6._seq_frames is None,
       f"{w6._state} / {w6._seq_frames}")
 w6._pet_state("idle")
+
+_sg["chance"] = 0.0
+w6._pet_state("sleep")
+check("chance=0 → 睡觉走单帧库(随机一张定格, 单帧素材能出场)",
+      w6._seq_frames is None and len(set(w6._seq)) == 1 and len(w6._seq) == 8,
+      f"seq_frames={w6._seq_frames} seq={set(w6._seq)} x{len(w6._seq)}")
+_sg["chance"] = 0.5
+_hits = sum(1 for _ in range(400)
+            if (w6._pet_state("sleep"), w6._seq_frames is not None)[1])
+check("chance=0.5 → 两种睡觉形态都出现(400 次抽样)", 120 < _hits < 280, f"动画 {_hits}/400")
 
 # V5 主题
 check("PET_THEMES 含 v5 (鲸鱼少女)", "v5" in ca.PET_THEMES and len(ca.PET_THEMES) == 5,
