@@ -8188,10 +8188,22 @@ def load_pet_seqs(theme=None):
 
 
 # ============================================================ 悬浮球 / 桌宠
+def ball_status_path():
+    """第101轮: 桌宠运行状态文件(给 tools/pet_status.py 与 restart_app.py 读)。
+
+    背景(浅浅猫指出的老毛病): 以前判断"桌宠有没有在跑、跑的是不是刚改完的代码"
+    全靠临时写 ctypes 枚举窗口 / 抓屏比对, 既慢又经常误判(把"火绒杀进程"
+    "孙进程逃逸""窗口被 WorkBuddy 遮挡"混在一起)。现在应用自己把状态落盘, 检测
+    变成"读一个 JSON + 校验进程是否存活", 结论确定。
+    """
+    return os.path.join(scanner.PLUGIN_DATA_DIR, "ball_status.json")
+
+
 class BallWindow(QWidget):
     def __init__(self, card):
         super().__init__()
         self.card = card
+        self._start_ts = time.time()
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
 
@@ -8242,6 +8254,43 @@ class BallWindow(QWidget):
         if self.pet_frames is not None and theme_state.get("pet"):
             self.pet = True
             self._pet_apply(True)
+        # 第101轮: 状态落盘 + 5s 心跳(给 pet_status.py 做确定性体检)
+        self._stat_timer = QTimer(self)
+        self._stat_timer.timeout.connect(self._write_status)
+        self._stat_timer.start(5000)
+        self._write_status()
+
+    def _write_status(self):
+        """把"我是谁、跑的哪份代码、现在什么状态"写进 ball_status.json。
+
+        ⭐ `app_mtime` 是关键: 拿它和磁盘上 card_app.py 的 mtime 一比,
+        就能确定"跑的是不是刚改完的那份代码", 不用再靠猜。
+        """
+        try:
+            src = os.path.abspath(__file__)
+            st = os.stat(src)
+            data = {
+                "pid": os.getpid(),
+                "launch": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self._start_ts)),
+                "build": APP_BUILD,
+                "app_mtime": round(st.st_mtime, 2),
+                "app_size": st.st_size,
+                "no_bytecode": bool(sys.dont_write_bytecode),
+                "pet": bool(self.pet),
+                "pet_theme": self.pet_theme,
+                "frames": (sum(len(v) for v in self.pet_frames.values())
+                           if self.pet_frames else 0),
+                "seqs": {k: len(v) for k, v in (self.pet_seqs or {}).items()},
+                "window": [self.x(), self.y(), self.width(), self.height()],
+                "rz_mode": bool(getattr(self, "_rz_mode", False)),
+                "state": getattr(self, "_state", "-"),
+            }
+            tmp = ball_status_path() + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+            os.replace(tmp, ball_status_path())
+        except Exception:
+            pass
 
     def _load_frames(self):
         """按当前主题加载素材 (含 v2→v1 回退); 结果缓存到 self.pet_frames"""

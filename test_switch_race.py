@@ -615,7 +615,14 @@ ca.theme_state["pet_theme"] = "v1"      # 本节状态机主测 v1 (回退链完
 ball = ca.BallWindow(None)
 check("默认悬浮球形态", ball.pet is False and ball.width() == 54)
 ball.set_pet(True)
-check("切换桌宠形态", ball.pet is True and (ball.width(), ball.height()) == (ca.PET_W, ca.PET_H))
+# 第101轮修: 桌宠尺寸已可自由调整(第100轮), set_pet 恢复的是**存档尺寸**
+#   (她的真实 ball_pos.json 里已有 w/h —— 她自己试过 178×203), 不再固定 118×148。
+check("切换桌宠形态(恢复存档尺寸)", ball.pet is True
+      and (ball.width(), ball.height()) == ball._ball_wh,
+      f"{ball.width()}x{ball.height()} wh={ball._ball_wh}")
+# 本节后续的渲染断言按默认口径: 把测试实例钳回 118×148
+ball._ball_wh = (ca.PET_W, ca.PET_H)
+ball.resize(*ball._ball_wh)
 check("桌宠状态机=待机", ball._state == "idle" and 0 <= ball._si < len(ball._seq))
 ball._pet_tick(); ball._pet_tick()
 check("待机 tick 推进不崩", 0 <= ball._si < len(ball._seq), f"si={ball._si}")

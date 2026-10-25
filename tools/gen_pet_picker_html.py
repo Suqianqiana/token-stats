@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
-"""2026-10-23: 生成「新素材选择器」交互 HTML (单文件, 数据全内嵌)。
+"""生成「新素材选择器」交互 HTML (单文件, 数据全内嵌)。
 
-读 assets/pet_new_20261023/manifest.json + thumbs/*.png (base64),
-产出 docs/pet_picker_20261023.html:
-  - 124 帧按 11 组展示, 棋盘格透明底预览
+用法: python -B tools/gen_pet_picker_html.py [批次日期, 默认 20261023]
+读 assets/pet_new_<批次>/manifest.json + thumbs/*.png (base64),
+产出 docs/pet_picker_<批次>.html:
+  - 全部帧按组展示, 棋盘格透明底预览
   - 勾选 + 分配到 7 个行为库 (idle/sleep/wake/drag/click/sidle/pat)
   - 场景栏显示各库已选帧 + 试播(按桌宠真实帧速)
-  - 导出 pet_selection.json (下载 / 复制)
-  - localStorage 记忆, 明暗双主题
+  - 导出 pet_selection_<批次>.json (复制为主 / 下载备用 —— 内置浏览器下载会静默丢失)
+  - localStorage 记忆(带"已恢复"提示), 明暗双主题
 """
 import base64
 import json
@@ -16,22 +17,23 @@ import sys
 
 sys.dont_write_bytecode = True
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUTDIR = os.path.join(BASE, "assets", "pet_new_20261023")
+BATCH = sys.argv[1] if len(sys.argv) > 1 else "20261023"
+OUTDIR = os.path.join(BASE, "assets", "pet_new_%s" % BATCH)
 THUMB = os.path.join(OUTDIR, "thumbs")
-HTML_OUT = os.path.join(BASE, "docs", "pet_picker_20261023.html")
+HTML_OUT = os.path.join(BASE, "docs", "pet_picker_%s.html" % BATCH)
 
 SCENES = [
-    ("idle",  "待机",     "默认帧停留 8~20s，其它帧偶尔插播 2~3s"),
-    ("sleep", "睡觉",     "整段只播一帧不动，持续 90~240s"),
-    ("wake",  "睡醒",     "醒来到待机的过渡，约 2s"),
+    ("idle",  "待机",     "默认帧停留 10~20s，偶尔插播其它帧 5s"),
+    ("sleep", "睡觉",     "50% 概率播睡觉动画(seq)，50% 单帧定格 90~240s"),
+    ("wake",  "睡醒",     "醒来到待机的过渡，约 4.2s，播完随机继续睡或回待机"),
     ("drag",  "拖拽",     "被拖拽时循环"),
     ("click", "点击互动", "点身体时的反馈"),
-    ("sidle", "特殊待机", "小剧场，持续 15~60s"),
+    ("sidle", "特殊待机", "小剧场，持续 30~60s"),
     ("pat",   "摸摸头",   "点头部 1/3 时的反馈"),
 ]
 
-# 现有 v3r 库帧数 (供参考)
-CURRENT_LIB = {"idle": 8, "sleep": 3, "wake": 2, "drag": 4, "click": 10, "sidle": 12, "pat": 6}
+# 现有 v3r 库帧数 (第98轮退休+新入库后; 供参考)
+CURRENT_LIB = {"idle": 10, "sleep": 8, "wake": 7, "drag": 6, "click": 23, "sidle": 55, "pat": 19}
 
 
 def main():
@@ -59,8 +61,8 @@ def main():
     data_json = json.dumps(data, ensure_ascii=False)
     cur_json = json.dumps(CURRENT_LIB, ensure_ascii=False)
 
-    # 苏企鹅的预分配 (浅浅猫的选择数据丢失后的兜底: 一键套用再微调)
-    pre_path = os.path.join(BASE, "docs", "pet_preselect_20261023.json")
+    # 苏企鹅的预分配 (一键套用再微调)
+    pre_path = os.path.join(BASE, "docs", "pet_preselect_%s.json" % BATCH)
     preselect = {}
     if os.path.exists(pre_path):
         with open(pre_path, encoding="utf-8") as f:
@@ -77,7 +79,8 @@ def main():
     pre_json = json.dumps(preselect, ensure_ascii=False)
 
     html = (TEMPLATE.replace("__SCENES__", scenes_json).replace("__DATA__", data_json)
-            .replace("__CURLIB__", cur_json).replace("__PRESELECT__", pre_json))
+            .replace("__CURLIB__", cur_json).replace("__PRESELECT__", pre_json)
+            .replace("__BATCH__", BATCH))
     os.makedirs(os.path.dirname(HTML_OUT), exist_ok=True)
     with open(HTML_OUT, "w", encoding="utf-8") as f:
         f.write(html)
@@ -253,7 +256,7 @@ var SCENES = __SCENES__;
 var DATA = __DATA__;
 var CURLIB = __CURLIB__;
 var PRESELECT = __PRESELECT__;
-var LS_KEY = "pet_picker_20261023";
+var LS_KEY = "pet_picker___BATCH__";
 var assign = {};      // fid -> scene key
 var view = "all";
 var groupFilter = "all";
@@ -454,10 +457,10 @@ document.getElementById("exportBtn").onclick = function(){
   var blob = new Blob([JSON.stringify(j, null, 1)], {type: "application/json"});
   var a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = "pet_selection_20261023.json";
+  a.download = "pet_selection___BATCH__.json";
   a.click();
   URL.revokeObjectURL(a.href);
-  toast("已导出 pet_selection_20261023.json，发给我即可入库");
+  toast("已导出 pet_selection___BATCH__.json（内置浏览器可能不落地，优先用复制）");
 };
 document.getElementById("copyBtn").onclick = function(){
   var txt = JSON.stringify(buildJSON());
