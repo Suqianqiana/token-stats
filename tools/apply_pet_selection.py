@@ -31,7 +31,13 @@ from scipy import ndimage
 
 S8 = np.ones((3, 3), bool)
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-NEW = os.path.join(BASE, "assets", "pet_new_20261023")
+# 2026-10-26 (第101轮): 批次由 --batch 指定(默认 20261023 保持旧用法兼容)。
+#   浅浅猫选材在 HTML 里做, 每批一个 assets/pet_new_<批次>/
+BATCH = "20261023"
+for _a in sys.argv[1:]:
+    if _a.startswith("--batch="):
+        BATCH = _a.split("=", 1)[1]
+NEW = os.path.join(BASE, "assets", "pet_new_%s" % BATCH)
 ALT = os.path.join(BASE, "assets", "pet_alt")
 SCENES = ("idle", "sleep", "wake", "drag", "click", "sidle", "pat")
 
@@ -87,8 +93,10 @@ def main():
     else:
         print("备份已存在或预演:", os.path.relpath(bak, BASE))
 
-    # 2) wake: 退役现有帧
-    wake_new = (sel.get("assignments") or {}).get("wake") or []
+    # 2) wake: 退役现有帧 —— 仅在显式 --retire-wake 时执行。
+    #    2026-10-23 那次是浅浅猫明确要求"睡醒素材弃用、只用新的"; 第101轮她没这么说,
+    #    默认**保留**旧的再追加(否则会把刚验收过的 wake 帧白白挪走)。
+    wake_new = ((sel.get("assignments") or {}).get("wake") or []) if "--retire-wake" in argv else []
     if wake_new:
         wd = os.path.join(lib_dir, "wake")
         olds = sorted(glob.glob(os.path.join(wd, "*.png"))) if os.path.isdir(wd) else []

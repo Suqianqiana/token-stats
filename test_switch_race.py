@@ -676,12 +676,12 @@ check("切回悬浮球形态", ball.pet is False and ball.width() == 54)
 # ---- 2026-09-17: V3 补充素材入库 + 点击分区（顶部 1/3 摸摸头 / 底部 2/3 点击互动）----
 from PySide6.QtCore import QRectF  # noqa: E402
 
-# ---- 2026-10-23: 浅浅猫新增 95 帧 + 退休 12 帧(旧 wake 2 + 清单页勾 10) ----
-# 库: 45(原有) - 2(旧 wake 退役) + 95(新) - 10(清单页退休) = 128 帧
-#   idle10/sleep8/wake7/drag6/click23/sidle55/pat19
-check("v3 各场景帧数（2026-10-23 新增+退休后：128 帧）",
+# ---- 2026-10-23: 浅浅猫新增 95 帧 + 退休 12 帧(旧 wake 2 + 清单页勾 10) = 128 帧
+# ---- 2026-10-26 (第101轮): 再入库浅浅猫勾选的 140 帧(H01~H16 批) = **268 帧**
+#   idle21/sleep28/wake21/drag11/click55/sidle103/pat29
+check("v3 各场景帧数（2026-10-26 落地 140 帧后：268 帧）",
       fr3 and [len(fr3[k]) for k in ("idle", "sleep", "wake", "drag", "click", "sidle", "pat")]
-      == [10, 8, 7, 6, 23, 55, 19],
+      == [21, 28, 21, 11, 55, 103, 29],
       str({k: len(v) for k, v in fr3.items()}) if fr3 else "-")
 check("v3 待机序列 n=10 不越界且静止为主",
       (lambda s: bool(s) and all(0 <= x < 10 for x in s)
@@ -690,8 +690,8 @@ check("v3 待机序列 n=10 不越界且静止为主",
 ca.theme_state["pet_theme"] = "v3"
 w6 = ca.BallWindow(None)
 w6.set_pet(True)
-check("v3 桌宠共加载 128 帧（45 原有 − 12 退休 + 95 新入库）", w6.pet_frames is not None
-      and sum(len(v) for v in w6.pet_frames.values()) == 128,
+check("v3 桌宠共加载 268 帧（128 + 2026-10-26 新入库 140）", w6.pet_frames is not None
+      and sum(len(v) for v in w6.pet_frames.values()) == 268,
       str(sum(len(v) for v in (w6.pet_frames or {}).values())))
 
 # ---- 2026-10-25 (第99轮): 睡觉「完整动作帧组」通用机制 + V5 主题 ----
@@ -707,7 +707,7 @@ check("睡觉动作帧组节拍取自 seq.json = 1000ms", _seq3["sleep"][0]["ms"
       str(_seq3["sleep"][0]["ms"]))
 check("睡觉动作帧组带 chance(单帧与动画按概率混播)", _seq3["sleep"][0]["chance"] == 0.5,
       str(_seq3["sleep"][0]["chance"]))
-check("动作帧组没混进 pet_frames(帧数统计仍 128)", "__seq__" not in (w6.pet_frames or {}),
+check("动作帧组没混进 pet_frames(帧数统计仍 268)", "__seq__" not in (w6.pet_frames or {}),
       str(sorted((w6.pet_frames or {}).keys())))
 
 # chance 决定"走动画还是走单帧" —— 显式置 1.0/0.0 测两条路, 避免 0.5 让断言 flaky
