@@ -7920,7 +7920,10 @@ def _launch_argv():
         return [launcher]
     pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
     if not os.path.exists(pythonw): pythonw = sys.executable
-    return [pythonw, os.path.abspath(__file__)]
+    # ★ 开发态(没有启动器 exe)也要带 -B (2026-10-25 第99轮):
+    #   火绒会把 __pycache__/card_app.cpython-313.pyc 判成 Trojan 并**结束进程**,
+    #   表现为"桌宠起来一秒就消失"。带 -B 不写字节码, 从源头绕开。
+    return [pythonw, "-B", os.path.abspath(__file__)]
 
 
 def _autostart_command():
@@ -8026,6 +8029,13 @@ def load_settings():
 
 # ============================================================ 桌宠形态 (DeepSeek 娘)
 PET_THEMES = {
+    # update 2026-10-25 (第99轮): 新增 V5 —— 浅浅猫做的「蓝色鲸鱼少女表情贴纸包」
+    #   素材源 = 蓝色鲸鱼少女表情贴纸包.png (1422x1106): 左侧「待机」区 2行x3列 + 右侧「睡觉」区 2张
+    #   映射(浅猫指定): 待机行1 三张 = idle_01~03 / 待机行2 第一张 = idle_04 /
+    #     待机行2 第二张(闭眼+爱心泡泡) = click / 睡觉两张 = sleep_01~02
+    #   drag、wake 暂无专属素材, 由 idle_01 / idle_04 派生(同一张站姿画布, 切换时大小不跳),
+    #   以后补了专属素材直接替换文件即可, 不用改代码。
+    "v5": {"name": "鲸鱼少女 V5", "dir": res("assets", "pet_v5")},
     # update 2026-09-14 (第40轮): 新增 V4 —— 浅浅猫指定右键菜单显示名 "deepseek娘V4Pro"
     #   素材源 = setC (ChatGPT Image 2026年9月14日 07_20_09.png, 2行x6列=12帧, 透明底零抠图)
     #   映射: C1~C3=idle / C4=sleep / C5=wake / C6=drag / C7~C10=click / C11=sidle
@@ -8097,6 +8107,65 @@ def load_pet_frames(theme=None):
     return frames or None
 
 
+def load_pet_seqs(theme=None):
+    """加载「完整动作帧组」—— 通用机制 (第99轮, 浅浅猫要求"以后其它单张动作也能加")。
+
+    目录约定::
+
+        <主题>/seq/<场景>/<组名>/01.png .. NN.png   (+ 可选 seq.json: {"ms": 1000})
+
+    设计要点:
+      * **一个场景支持多组**(A/B/C...), 运行时随机挑一组播 —— 以后想给某个动作再多做
+        几套完整动作, 只要往 `seq/<场景>/` 下丢一个新目录, **不用改一行代码**。
+      * 组内 PNG 按文件名排序顺序播放; **少于 2 帧视为无效**(单张静止图用普通帧库即可)。
+      * 场景名必须属于 PET_ANIMS, 其它目录忽略(避免误读)。原始目录不存在则返回空 dict。
+      * `seq.json` 的 `ms` 覆盖该场景的 PET_MS 节拍; 不给就沿用 PET_MS。
+        组与组可以有不同节奏(例如睡觉慢、点击快)。
+
+    返回: {场景: [{"name": 组名, "frames": [QImage...], "ms": int}, ...]}
+    """
+    theme = theme or theme_state.get("pet_theme", "v3")
+    if theme not in PET_THEMES:
+        return {}
+    root = os.path.join(PET_THEMES[theme]["dir"], "seq")
+    out = {}
+    if not os.path.isdir(root):
+        return out
+    try:
+        for scene in sorted(os.listdir(root)):
+            sd = os.path.join(root, scene)
+            if scene not in PET_ANIMS or not os.path.isdir(sd):
+                continue
+            groups = []
+            for g in sorted(os.listdir(sd)):
+                gd = os.path.join(sd, g)
+                if not os.path.isdir(gd):
+                    continue
+                imgs = []
+                for fn in sorted(os.listdir(gd)):
+                    if not fn.lower().endswith(".png"):
+                        continue
+                    img = QImage(os.path.join(gd, fn))
+                    if not img.isNull():
+                        imgs.append(img)
+                if len(imgs) < 2:
+                    continue
+                ms = PET_MS.get(scene, 240)
+                cfg = os.path.join(gd, "seq.json")
+                if os.path.isfile(cfg):
+                    try:
+                        with open(cfg, encoding="utf-8") as f:
+                            ms = int(json.load(f).get("ms", ms))
+                    except Exception:
+                        pass
+                groups.append({"name": g, "frames": imgs, "ms": max(60, int(ms))})
+            if groups:
+                out[scene] = groups
+    except OSError:
+        return {}
+    return out
+
+
 # ============================================================ 悬浮球 / 桌宠
 class BallWindow(QWidget):
     def __init__(self, card):
@@ -8107,6 +8176,8 @@ class BallWindow(QWidget):
 
         self.pet_theme = theme_state.get("pet_theme", "v3")
         self.pet_frames = None
+        self.pet_seqs = {}                  # update 2026-10-25: 完整动作帧组 (见 load_pet_seqs)
+        self._seq_frames = None             # 非 None = 当前场景正在播"完整动作帧组"
         if theme_state.get("pet"):
             # 桌宠模式启动: 立即加载素材 (懒加载: 非桌宠模式先不加载, 加快启动)
             self.pet_frames = self._load_frames()
@@ -8156,6 +8227,10 @@ class BallWindow(QWidget):
             self.pet_theme = "v1"
             fr = load_pet_frames("v1")
         self.pet_frames = fr
+        # update 2026-10-25: 完整动作帧组与普通帧库**分开存** ——
+        #   不塞进 pet_frames, 否则 frames 的 key 不再是纯场景名, 回归里
+        #   `sum(len(v) for v in pet_frames.values())` 这类统计会被多算一项。
+        self.pet_seqs = load_pet_seqs(self.pet_theme) if fr is not None else {}
         self._loaded_pet_theme = self.pet_theme
         return fr
 
@@ -8171,33 +8246,77 @@ class BallWindow(QWidget):
                 return fr[k]
         return []
 
-    def _pet_state(self, st, seq=None):
+    def _has_anim(self, st):
+        """严格判断主题里**真有** st 的素材(排除最后回退到 idle 的那一档)。
+
+        update 2026-10-25 (第99轮): V5 这种"只有基本动作"的主题没有 sidle/pat,
+        `_frames_of("sidle")` 会一路回退到 idle 帧 -> 旧写法 `if self._frames_of("sidle")`
+        就会被判为"有特殊待机", 于是桌宠定格 30~60 秒不动。这里把回退链里的 idle 摘掉。
+        """
+        fr = self.pet_frames or {}
+        return any(fr.get(k) for k in self._ANIM_FALLBACK.get(st, (st,)) if k != "idle")
+
+    def _pick_seq(self, st):
+        """取该场景的一组完整动作帧 (多组时随机挑一组); 没有返回 None。"""
+        grp = (self.pet_seqs or {}).get(st)
+        if not grp:
+            return None
+        return random.choice(grp)
+
+    def _pet_state(self, st, seq=None, seq_frames=None, ms=None):
+        """切场景。
+
+        update 2026-10-25 (第99轮) 新增参数:
+          * `seq_frames`: 传了 = 本场景改播这组**完整动作帧**(paintEvent 从这里取帧),
+            `seq` 就是组内下标序列; 不传则清空, 回到普通帧库。
+          * `ms`: 覆盖 PET_MS 的节拍(动作帧组自带节奏, 例如睡觉 1000ms/帧)。
+        """
         self._state = st
+        self._seq_frames = seq_frames        # 每次切场景都重置, 防止上一组残留
         if seq is not None:
             self._seq = seq
         elif st == "idle":
             self._seq = _pet_idle_seq(len(self._frames_of("idle")))
         elif st == "sleep":
-            # 睡觉(浅浅猫 2026-09-14 修正): **一次睡觉只取一帧**, 整段保持不动 ——
-            #   不循环、不轮播全部睡觉帧(否则看起来像在循环动画)。
-            #   帧从睡觉帧库随机取一个(原 v2 睡觉帧 + setB_08)。
-            fr = self._frames_of("sleep")
-            i = random.randrange(len(fr)) if fr else 0
-            self._seq = [i] * 8
+            grp = self._pick_seq("sleep")
+            if grp is not None:
+                # 有完整动作帧(第99轮 = A 套 8 帧循环)时顺序播放、循环到底,
+                # 睡姿会缓慢呼吸/眨眼, 比"一次睡觉只取一张静止帧"自然得多。
+                self._seq_frames = grp["frames"]
+                self._seq = list(range(len(grp["frames"])))
+                ms = ms or grp["ms"]
+            else:
+                # 睡觉(浅浅猫 2026-09-14 修正): 没有动作帧组的主题, 仍然
+                #   **一次睡觉只取一帧**, 整段保持不动 —— 不循环、不轮播全部睡觉帧。
+                fr = self._frames_of("sleep")
+                i = random.randrange(len(fr)) if fr else 0
+                self._seq = [i] * 8
             self._sleep_until = time.time() + random.uniform(*PET_SLEEP_DUR)
         elif st == "wake":
             # 睡醒 (浅浅猫 2026-10-23 改): ① 素材换成 2026-10-23 新入库的那批(旧 V3 睡醒帧已退役);
             #   ② 时长加长 —— 旧 3 拍(700ms)≈2.1s -> 6 拍 ≈ 4.2s, 让伸懒腰/揉眼的动作看得完整;
             #   ③ 播完**随机**接「继续睡觉」或「恢复到待机」(见 _pet_tick, 旧行为是固定回待机)。
-            fr = self._frames_of("wake")
-            i = random.randrange(len(fr)) if fr else 0
-            self._seq = [i] * 6
+            grp = self._pick_seq("wake")
+            if grp is not None:
+                self._seq_frames = grp["frames"]
+                self._seq = list(range(len(grp["frames"])))
+                ms = ms or grp["ms"]
+            else:
+                fr = self._frames_of("wake")
+                i = random.randrange(len(fr)) if fr else 0
+                self._seq = [i] * 6
         elif st == "drag":
-            fr = self._frames_of("drag")
-            i = random.randrange(len(fr)) if fr else 0
-            self._seq = [i] * 10
+            grp = self._pick_seq("drag")
+            if grp is not None:
+                self._seq_frames = grp["frames"]
+                self._seq = list(range(len(grp["frames"])))
+                ms = ms or grp["ms"]
+            else:
+                fr = self._frames_of("drag")
+                i = random.randrange(len(fr)) if fr else 0
+                self._seq = [i] * 10
         self._si = 0
-        self._tm.start(PET_MS.get(st, 240))
+        self._tm.start(ms or PET_MS.get(st, 240))
         self.update()
 
     def _pet_tick(self):
@@ -8214,7 +8333,9 @@ class BallWindow(QWidget):
                 return
             if now >= self._next_other:
                 self._next_other = now + random.randint(*PET_OTHER_EVERY)
-                if self._frames_of("sidle"):
+                # update 2026-10-25: 用 _has_anim 严格判断 —— 素材少的主题(V5)没有 sidle,
+                #   旧写法会回退到 idle 帧被误判成"有", 结果定格 30~60s 不动。
+                if self._has_anim("sidle"):
                     self._pet_sidle()
                     return
         self._si += 1
@@ -8327,7 +8448,9 @@ class BallWindow(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
         if self.pet and self.pet_frames is not None:
-            frames = self._frames_of(self._state)
+            # update 2026-10-25: 正在播"完整动作帧组"时从这里取帧(组内顺序循环),
+            #   否则回普通帧库(按场景 + 回退链)。两条路的 _seq 都是帧下标。
+            frames = self._seq_frames if self._seq_frames else self._frames_of(self._state)
             if not frames: return
             frame_no = self._seq[self._si % len(self._seq)]
             img = frames[frame_no % len(frames)]
@@ -9005,12 +9128,15 @@ class SettingsPage(QWidget):
         self._lbl_pet = s
         lbl.addWidget(s)
         rl.addWidget(lb, 1)
-        rl.addWidget(self._grid_pick([("v4", PET_THEMES["v4"]["name"]),
+        # update 2026-10-25 (第99轮): 主题从 4 个变 5 个 (新增 V5) -> 网格 2 列改 3 列,
+        #   否则 5 个按钮会排成 3 行、超出 74px 的行高被裁掉。
+        rl.addWidget(self._grid_pick([("v5", PET_THEMES["v5"]["name"]),
+                                      ("v4", PET_THEMES["v4"]["name"]),
                                       ("v3", PET_THEMES["v3"]["name"]),
                                       ("v2", PET_THEMES["v2"]["name"]),
                                       ("v1", PET_THEMES["v1"]["name"])],
                                      cur_pet, lambda k: self._set_pet_theme(k),
-                                     sink=self._pet_btns), 0, Qt.AlignVCenter)
+                                     cols=3, min_w=126, sink=self._pet_btns), 0, Qt.AlignVCenter)
         l3.addWidget(row)
         self._pet_row.append(row)
 

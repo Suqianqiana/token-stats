@@ -100,12 +100,18 @@ def main():
                     or k.startswith("PYINSTALLER_"):
                 env.pop(k, None)
         subprocess.Popen(
-            [pythonw, script],
+            # ★ -B 必带(2026-10-25 第99轮): 本机火绒把 `__pycache__/card_app.cpython-313.pyc`
+            #   判为 Trojan/Python.ShellLoader.am —— **删文件 + 结束进程**。症状就是
+            #   "启动器日志写着 OK launched, 但桌宠一秒后就没了", 极易误判成代码 bug。
+            #   仓库内其余 pyc(scanner/peer_store/win_backdrop)都在, 唯独 card_app 的每次都被杀,
+            #   就是因为它体积最大、最像 shellcode。加 -B 后根本不会写 pyc, 从源头绕开。
+            #   (治本还是给杀软加信任区, 但 -B 是代码侧能做到的最稳妥兜底。)
+            [pythonw, "-B", script],
             cwd=project, env=env,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=0x00000008 | 0x00000200 | 0x08000000,   # DETACHED|NEW_GROUP|NO_WINDOW
         )
-        log(f"OK   launched '{pythonw}' '{script}'")
+        log(f"OK   launched '{pythonw}' -B '{script}'")
     except OSError as e:
         fatal(f"启动失败：{e}")
 

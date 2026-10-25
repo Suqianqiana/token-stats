@@ -10,8 +10,9 @@
     桌面/Token统计.exe                     # 同时复制一份到桌面，双击即用
 
 设计要点:
-  1. **只打包"在用"的素材** —— assets/pet(v1)、pet_v2、pet_v3r、pet_v4 与 app_icon；
-     备份目录(pet_v2_green / *_bak_* / pet_v5 等)不进包，否则体积会白白翻几倍。
+  1. **只打包"在用"的素材** —— assets/pet(v1)、pet_v2、pet_v3r、pet_v4、pet_v5 与 app_icon；
+     备份目录(pet_v2_green / *_bak_* / 旧 pet_v5 备份 / pet_new_* / pet_alt 等)不进包，
+     否则体积会白白翻几倍。
   2. 构建临时目录优先放 **D 盘**（通过 TMP/TEMP 传给 PyInstaller 子进程），
      避免把 C 盘塞满导致打包失败。
   3. 图标只有一个来源 `assets/app_icon.ico`：exe 图标(--icon) / 任务栏(setWindowIcon)
@@ -33,7 +34,10 @@ APP_EXE = "TokenStats.exe"
 DESKTOP_NAME = "Token统计.exe"
 
 # 打进包里的素材（只含在用的）
-BUNDLE_ASSETS = ["assets/pet", "assets/pet_v2", "assets/pet_v3r", "assets/pet_v4"]
+# update 2026-10-25 (第99轮): 加入 pet_v5 (鲸鱼少女 V5);
+#   注意 pet_v3r 现在多了 seq/ 子目录(睡觉完整动作帧), --add-data 是整目录递归复制, 无需单独列。
+BUNDLE_ASSETS = ["assets/pet", "assets/pet_v2", "assets/pet_v3r", "assets/pet_v4",
+                 "assets/pet_v5"]
 BUNDLE_FILES = ["assets/app_icon.ico", "assets/app_icon.png"]
 
 

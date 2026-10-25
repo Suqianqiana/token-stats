@@ -674,6 +674,59 @@ check("v3 桌宠共加载 128 帧（45 原有 − 12 退休 + 95 新入库）", 
       and sum(len(v) for v in w6.pet_frames.values()) == 128,
       str(sum(len(v) for v in (w6.pet_frames or {}).values())))
 
+# ---- 2026-10-25 (第99轮): 睡觉「完整动作帧组」通用机制 + V5 主题 ----
+# 睡姿 A 套 8 帧走 seq/sleep/A/, 不再占用普通帧库(mood: 免得 frames 统计被多算一项)
+_seq3 = ca.load_pet_seqs("v3")
+check("v3 加载到睡觉动作帧组(sleep/A 8 帧)",
+      len(_seq3.get("sleep", [])) == 1 and len(_seq3["sleep"][0]["frames"]) == 8,
+      str({k: [len(g["frames"]) for g in v] for k, v in _seq3.items()}))
+check("睡觉动作帧组画布统一(播放不抖动)",
+      len({(im.width(), im.height()) for im in _seq3["sleep"][0]["frames"]}) == 1,
+      str({(im.width(), im.height()) for im in _seq3["sleep"][0]["frames"]}))
+check("睡觉动作帧组节拍取自 seq.json = 1000ms", _seq3["sleep"][0]["ms"] == 1000,
+      str(_seq3["sleep"][0]["ms"]))
+check("动作帧组没混进 pet_frames(帧数统计仍 128)", "__seq__" not in (w6.pet_frames or {}),
+      str(sorted((w6.pet_frames or {}).keys())))
+
+w6._pet_state("sleep")
+check("v3 睡觉改播动作帧组(顺序 0..7)", w6._seq_frames is not None
+      and w6._seq == list(range(8)) and w6._tm.interval() == 1000,
+      f"frames={w6._seq_frames is not None} seq={w6._seq[:4]}... ms={w6._tm.interval()}")
+for _ in range(8):
+    w6._pet_tick()
+check("睡觉动画循环(8 拍后回第 0 帧)", w6._si == 0, str(w6._si))
+w6._sleep_until = 0
+w6._pet_tick()
+check("睡够转 wake 且清空动作帧组", w6._state == "wake" and w6._seq_frames is None,
+      f"{w6._state} / {w6._seq_frames}")
+w6._pet_state("idle")
+
+# V5 主题
+check("PET_THEMES 含 v5 (鲸鱼少女)", "v5" in ca.PET_THEMES and len(ca.PET_THEMES) == 5,
+      str(list(ca.PET_THEMES.keys())))
+_fr5 = ca.load_pet_frames("v5")
+check("V5 素材可加载: idle4 / click1 / sleep2",
+      _fr5 is not None and [len(_fr5.get(k, [])) for k in ("idle", "click", "sleep")] == [4, 1, 2],
+      str({k: len(v) for k, v in (_fr5 or {}).items()}))
+check("V5 站姿组(idle/click/drag/wake)画布一致",
+      len({(im.width(), im.height()) for k in ("idle", "click", "drag", "wake")
+           for im in (_fr5 or {}).get(k, [])}) == 1)
+check("V5 躺姿组(sleep)画布一致",
+      len({(im.width(), im.height()) for im in (_fr5 or {}).get("sleep", [])}) == 1)
+check("V5 无动作帧组(seq 目录不存在)", ca.load_pet_seqs("v5") == {})
+w6.pet_theme = "v5"
+w6._loaded_pet_theme = None
+w6.pet_frames = None
+_fr5b = w6._load_frames()
+check("BallWindow 可切到 V5", _fr5b is not None and w6._loaded_pet_theme == "v5",
+      str(w6._loaded_pet_theme))
+check("V5 _has_anim(sidle) 为假(无 sidle/special 素材)",
+      w6._has_anim("sidle") is False)
+w6.pet_theme = "v3"
+w6._loaded_pet_theme = None
+w6.pet_frames = None
+w6._load_frames()
+
 w6._pet_draw_rect = QRectF(0, 20, 118, 120)          # 模拟实际绘制区域 y=20..140
 w6._pet_click_region(20 + 120 * 0.2)                 # 顶部 20% → 摸头区
 check("点角色顶部 1/3 → 摸摸头", w6._state == "pat", w6._state)
