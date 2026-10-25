@@ -8051,6 +8051,19 @@ PET_THEMES = {
 #   (这是第39轮我把 special 换成 pat 时漏掉的回归)。
 PET_ANIMS = ("idle", "sleep", "wake", "drag", "click", "sidle", "pat", "special")
 PET_W, PET_H = 118, 148
+# ============================================================ 桌宠自由缩放 (第100轮)
+# 浅浅猫 2026-10-25: 右键「📐 调整大小…」→ 桌宠四周出现**内部透明**的虚线框,
+#   拖四角改大小(对角锚定), 框右上 ✓ 确认 / ✕ 取消(Enter / Esc 同义)。
+#   确认后的尺寸写进 ball_pos.json 的 w/h, 重启/切主题都不丢。
+PET_SIZE_MIN = (72, 90)          # 再小就认不出是什么了
+PET_SIZE_MAX = (460, 575)        # 再大像素发糊 + 太挡屏幕
+_RZ_FRAME_M = 5                  # 虚线框相对窗口边缘的内缩(描边不被裁)
+_RZ_FRAME_R = 12                 # 虚线框圆角
+_RZ_HANDLE = 14                  # 角柄边长
+_RZ_BTN = 18                     # ✓ / ✕ 按钮直径
+_RZ_BTN_GAP = 5                  # ✓ 与 ✕ 的间距
+_RZ_TR_DROP = 4                  # 右上角柄下移量(给 ✓✕ 按钮让位)
+_RZ_FADE_STEP = 0.10             # 淡入每帧增量(16ms/帧 → ~170ms 到位; 淡出快 1.7 倍)
 PET_SLEEP_AFTER = 60            # 待机多久后入睡(秒)
 PET_SLEEP_DUR = (90, 240)       # 睡觉时长随机区间(秒) —— 浅浅猫要求"最少大于一分半"
 PET_OTHER_EVERY = (150, 420)    # 特殊待机动作触发间隔(秒)
@@ -8207,6 +8220,7 @@ class BallWindow(QWidget):
         self._moved = False
         self._press_time = 0.0
         self._press_origin = QPoint()
+        self._rz_init_state()          # 第100轮: 调整大小模式(默认关闭)
 
         pos = None
         try:
@@ -8214,6 +8228,9 @@ class BallWindow(QWidget):
                 pos = json.load(f)
         except Exception:
             pass
+        # update 2026-10-25 (第100轮): 桌宠尺寸可自由调节(右键「调整大小…」) →
+        #   启动时恢复存档里的 w/h; 没有(旧存档)则用默认 118×148。
+        self._ball_wh = self._read_ball_wh(pos)
         screen = QApplication.primaryScreen().availableGeometry()
         if pos:
             self.move(int(pos["x"]), int(pos["y"]))
@@ -8422,11 +8439,13 @@ class BallWindow(QWidget):
             return
         theme_state["pet_theme"] = theme
         save_settings()
+        self._rz_cancel_now()          # 第100轮: 换素材先取消没确认的调整
         if self.pet:
             self._pet_apply(True)
         self.update()
 
     def set_pet(self, on):
+        self._rz_cancel_now()          # 第100轮: 切形态先取消没确认的调整
         if on:
             self._load_frames()   # 懒加载: 首次开启桌宠时才读素材
         on = bool(on) and self.pet_frames is not None
@@ -8437,7 +8456,9 @@ class BallWindow(QWidget):
 
     def _pet_apply(self, on):
         if on:
-            self.resize(PET_W, PET_H)
+            # update 2026-10-25 (第100轮): 用存档尺寸(右键「调整大小…」确认的值)
+            #   而不是写死的 PET_W/PET_H —— 否则一切换主题/形态, 调好的大小就丢了。
+            self.resize(*self._ball_wh)
             self._idle_t = time.time()
             self._pet_state("idle")
             self.setToolTip("DeepSeek 娘 · 点头部 1/3 摸摸头 / 点身体单击互动 / 双击打开统计 / 右键菜单")
@@ -8454,6 +8475,313 @@ class BallWindow(QWidget):
         y = max(scr.top(), min(self.y(), scr.bottom() - self.height()))
         self.move(x, y)
 
+    # ============================================================ 调整大小 (第100轮)
+    # 浅浅猫 2026-10-25: 右键「📐 调整大小…」进入。桌宠四周出**内部透明**的虚线框,
+    #   拖四角改大小(对角锚定, 最小/最大钳制), 框右上 ✓ 确认 / ✕ 取消
+    #   (Enter / Esc 同义)。确认时把 w/h 写进 ball_pos.json, 重启不丢。
+    def _rz_init_state(self):
+        """调整大小模式的状态(抽成方法: __init__ / 测试 / 截图脚本都能复用)。"""
+        self._rz_mode = False          # True = 显示虚线框 + 四角手柄
+        self._rz_closing = False       # True = 正在淡出(此时不再接受输入)
+        self._rz_fade = 0.0            # 覆盖层透明度 0..1
+        self._rz_fade_dir = 1.0        # 1 = 淡入, -1 = 淡出
+        self._rz_corner = None         # 正在拖的角: tl/tr/bl/br
+        self._rz_hover = None          # 悬停中的元素(角名/ok/cancel)
+        self._rz_press = None          # 按下的元素(用于按钮按下态)
+        self._rz_anchor = QPoint()     # 拖角时锚定的**对角**(全局坐标, 全程不动)
+        self._rz_geo0 = None           # 进入模式时的几何(✕ 取消时还原)
+        self._rz_finalize_ok = True    # 淡出结束后: True=保存 False=还原
+        self._rz_timer = QTimer(self)
+        self._rz_timer.timeout.connect(self._rz_fade_tick)
+
+    def _read_ball_wh(self, pos=None):
+        """读存档里的桌宠尺寸; 缺省/脏值 → 默认 PET_W×PET_H, 并夹到合法区间。"""
+        if pos is None:
+            try:
+                with open(os.path.join(scanner.PLUGIN_DATA_DIR, "ball_pos.json")) as f:
+                    pos = json.load(f)
+            except Exception:
+                pos = None
+        w, h = PET_W, PET_H
+        if isinstance(pos, dict):
+            try:
+                w, h = int(pos.get("w", w)), int(pos.get("h", h))
+            except Exception:
+                return PET_W, PET_H
+        return (min(max(w, PET_SIZE_MIN[0]), PET_SIZE_MAX[0]),
+                min(max(h, PET_SIZE_MIN[1]), PET_SIZE_MAX[1]))
+
+    def _save_ball_pos(self, save_size=True):
+        """落盘窗口位置; save_size=True 时连同桌宠尺寸一起写(第100轮)。
+
+        只有桌宠形态才写 w/h —— 悬浮球是 54×54, 不写就不会把桌宠尺寸冲掉;
+        悬浮球态也**保留**已有的 w/h, 切回桌宠还是她调好的大小。
+        """
+        try:
+            path = os.path.join(scanner.PLUGIN_DATA_DIR, "ball_pos.json")
+            data = {}
+            try:
+                with open(path, encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                pass
+            if not isinstance(data, dict):
+                data = {}
+            data["x"], data["y"] = int(self.x()), int(self.y())
+            if save_size and self.pet:
+                data["w"], data["h"] = int(self.width()), int(self.height())
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+        except Exception:
+            pass
+
+    def _enter_resize_mode(self):
+        if not self.pet or self._rz_mode:
+            return
+        self._rz_mode = True
+        self._rz_closing = False
+        self._rz_geo0 = QRect(self.geometry())          # ✕ 取消时还原
+        self._rz_corner = self._rz_hover = self._rz_press = None
+        self._rz_fade, self._rz_fade_dir = 0.0, 1.0
+        self.setMouseTracking(True)                     # 悬停高亮需要 move 事件
+        self.setFocus(Qt.MouseFocusReason)              # 让 Enter/Esc 送到这里
+        self.activateWindow()
+        self._idle_t = time.time()                      # 调尺寸时别突然睡着
+        self._rz_timer.start(16)
+        self.setToolTip("拖动四角调整大小 · 回车确认 · Esc 取消")
+        self.update()
+
+    def _exit_resize_mode(self, ok):
+        """✓/✕: 先淡出(~110ms), 再由 _rz_finalize 落盘或还原。"""
+        if not self._rz_mode or self._rz_closing:
+            return
+        self._rz_closing = True
+        self._rz_finalize_ok = bool(ok)
+        self._rz_fade_dir = -1.0
+        if self._rz_corner is not None:                 # 拖到一半直接按 ✓/✕
+            self.releaseMouse()
+            self._rz_corner = None
+        self._rz_timer.start(16)
+
+    def _rz_finalize(self):
+        self._rz_timer.stop()
+        ok = self._rz_finalize_ok
+        self._rz_mode = False
+        self._rz_closing = False
+        self._rz_hover = self._rz_press = None
+        self.setMouseTracking(False)
+        self.unsetCursor()
+        self.setToolTip("DeepSeek 娘 · 点头部 1/3 摸摸头 / 点身体单击互动 / 双击打开统计 / 右键菜单")
+        if ok:
+            self._ball_wh = (self.width(), self.height())
+            self._save_ball_pos()
+        else:
+            g = self._rz_geo0
+            if g is not None:
+                self.setGeometry(g)
+                self._clamp_pos()
+        self._rz_geo0 = None
+        self.update()
+
+    def _rz_cancel_now(self):
+        """立即取消调整大小(不等淡出) —— 形态/主题切换时用。
+
+        否则会出现"54×54 悬浮球上挂着桌宠虚线框"或"切主题后框还在、尺寸却跳回存档值"。
+        """
+        if not self._rz_mode:
+            return
+        self._rz_timer.stop()
+        if self._rz_corner is not None:
+            self.releaseMouse()
+        g = self._rz_geo0
+        self._rz_mode = False
+        self._rz_closing = False
+        self._rz_fade = 0.0
+        self._rz_corner = self._rz_hover = self._rz_press = None
+        self.setMouseTracking(False)
+        self.unsetCursor()
+        self._rz_geo0 = None
+        if g is not None:
+            self.setGeometry(g)
+            self._clamp_pos()
+        self.update()
+
+    def _rz_fade_tick(self):
+        if not self._rz_mode:
+            self._rz_timer.stop()
+            return
+        step = _RZ_FADE_STEP * (1.0 if self._rz_fade_dir > 0 else -1.7)
+        self._rz_fade = max(0.0, min(1.0, self._rz_fade + step))
+        if self._rz_fade_dir < 0 and self._rz_fade <= 0.0:
+            self._rz_finalize()
+            return
+        if self._rz_fade_dir > 0 and self._rz_fade >= 1.0:
+            self._rz_timer.stop()
+        self.update()
+
+    # ---- 几何: 虚线框 / 四角手柄 / ✓✕ 按钮 / 尺寸胶囊(均为窗口局部坐标) ----
+    def _rz_frame(self):
+        m = _RZ_FRAME_M
+        return QRectF(m, m, max(1.0, self.width() - 2 * m), max(1.0, self.height() - 2 * m))
+
+    def _rz_handle_rect(self, corner):
+        f = self._rz_frame()
+        s = float(_RZ_HANDLE)
+        x = f.right() - s + 1.0 if corner.endswith("r") else f.left() - 1.0
+        y = f.bottom() - s + 1.0 if corner.startswith("b") else f.top() - 1.0
+        if corner == "tr":                     # 右上角柄下移, 给 ✓/✕ 按钮让位
+            y = f.top() + _RZ_BTN + _RZ_BTN_GAP + _RZ_TR_DROP
+        return QRectF(x, y, s, s)
+
+    def _rz_btn_rect(self, kind):
+        f = self._rz_frame()
+        s = float(_RZ_BTN)
+        y = f.top() + 2.0
+        x_ok = f.right() - 2.0 - s
+        x = x_ok if kind == "ok" else x_ok - _RZ_BTN_GAP - s
+        return QRectF(x, y, s, s)
+
+    def _rz_pill_rect(self):
+        f = self._rz_frame()
+        fm = QFontMetrics(self._rz_font())
+        w = min(f.width() - 4.0, float(fm.horizontalAdvance(self._rz_size_text())) + 18.0)
+        h = 20.0
+        return QRectF(f.center().x() - w / 2.0, f.bottom() - 2.0 - h, w, h)
+
+    @staticmethod
+    def _rz_font():
+        f = QFont()
+        f.setPixelSize(10)
+        return f
+
+    def _rz_size_text(self):
+        return "%d × %d" % (self.width(), self.height())
+
+    def _rz_hit(self, pt):
+        """局部坐标 → 命中的元素(ok/cancel/tl/tr/bl/br); 没命中返回 None。"""
+        if self._rz_btn_rect("ok").contains(pt):
+            return "ok"
+        if self._rz_btn_rect("cancel").contains(pt):
+            return "cancel"
+        for c in ("tl", "tr", "bl", "br"):
+            if self._rz_handle_rect(c).contains(pt):
+                return c
+        return None
+
+    def _rz_set_cursor(self, hit):
+        if hit in ("tl", "br"):
+            self.setCursor(Qt.SizeFDiagCursor)
+        elif hit in ("tr", "bl"):
+            self.setCursor(Qt.SizeBDiagCursor)
+        elif hit in ("ok", "cancel"):
+            self.setCursor(Qt.PointingHandCursor)
+        else:
+            self.unsetCursor()
+
+    def _rz_do_resize(self, gpos):
+        """拖角: 锚定对角不动, 按"鼠标到锚点的距离"算新尺寸(最小/最大钳制)。"""
+        ax, ay = self._rz_anchor.x(), self._rz_anchor.y()
+        nw = min(max(abs(gpos.x() - ax), PET_SIZE_MIN[0]), PET_SIZE_MAX[0])
+        nh = min(max(abs(gpos.y() - ay), PET_SIZE_MIN[1]), PET_SIZE_MAX[1])
+        c = self._rz_corner
+        if c == "br":                       # 锚在左上 → 右下角跟着鼠标
+            x, y = ax, ay
+        elif c == "tl":                     # 锚在右下 → 左上角跟着鼠标
+            x, y = ax - nw, ay - nh
+        elif c == "tr":                     # 锚在左下
+            x, y = ax, ay - nh
+        else:                               # bl, 锚在右上
+            x, y = ax - nw, ay
+        self.setGeometry(int(x), int(y), int(nw), int(nh))
+        self._idle_t = time.time()          # 调尺寸时别睡着
+        self.update()
+
+    # ---- 绘制 ----
+    def _paint_resize_overlay(self, p):
+        """第100轮: 调整大小覆盖层 —— 内部透明虚线框 + 四角手柄 + ✓/✕ + 尺寸胶囊。"""
+        a = self._rz_fade
+        if a <= 0.001 or not self.pet:
+            return
+        f = self._rz_frame()
+        # ---- 虚线框: 先画两圈暗色柔光(任何底图上都读得清), 再画强调色虚线 ----
+        for wd, al in ((4.2, 26), (2.8, 46)):
+            pen = QPen(QColor(12, 14, 18, int(al * a)), wd,
+                       Qt.CustomDashLine, Qt.RoundCap, Qt.RoundJoin)
+            pen.setDashPattern([4.0, 3.0])
+            p.setPen(pen)
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(f, _RZ_FRAME_R, _RZ_FRAME_R)
+        # 极淡的"选中区"底色(~4%): 内部仍然是透明的, 只是让区域读得出来
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(BLUE.red(), BLUE.green(), BLUE.blue(), int(11 * a)))
+        p.drawRoundedRect(f, _RZ_FRAME_R, _RZ_FRAME_R)
+        pen = QPen(QColor(BLUE.red(), BLUE.green(), BLUE.blue(), int(238 * a)), 1.6,
+                   Qt.CustomDashLine, Qt.RoundCap, Qt.RoundJoin)
+        pen.setDashPattern([4.0, 3.0])
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(f, _RZ_FRAME_R, _RZ_FRAME_R)
+        # ---- 四角手柄 ----
+        # 尺寸胶囊先画(在下层): 窗口很窄时它可能轻微蹭到底角手柄, 手柄要压在上面
+        self._rz_paint_pill(p, a)
+        for c in ("tl", "tr", "bl", "br"):
+            self._rz_paint_handle(p, c, a)
+        # ---- ✓ / ✕ ----
+        self._rz_paint_btn(p, "ok", a)
+        self._rz_paint_btn(p, "cancel", a)
+
+    def _rz_paint_handle(self, p, corner, a):
+        r = self._rz_handle_rect(corner)
+        hov = (self._rz_hover == corner) or (self._rz_corner == corner)
+        g = 1.5 if hov else 0.0
+        rr = r.adjusted(-g, -g, g, g)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(12, 14, 18, int(64 * a)))          # 1px 落影, 抽出层次
+        p.drawRoundedRect(rr.translated(0, 1.3), 4.4, 4.4)
+        p.setBrush(QColor(BLUE) if hov else QColor(255, 255, 255, int(246 * a)))
+        p.setPen(QPen(QColor(BLUE), 1.5))
+        p.drawRoundedRect(rr, 4.0, 4.0)
+        d = 3.2                                                # 中心点(hover 时反白)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, int(235 * a)) if hov else QColor(BLUE))
+        p.drawEllipse(QRectF(rr.center().x() - d / 2, rr.center().y() - d / 2, d, d))
+
+    def _rz_paint_btn(self, p, kind, a):
+        r = self._rz_btn_rect(kind)
+        hov = (self._rz_hover == kind) or (self._rz_press == kind)
+        rr = r.adjusted(-1.3, -1.3, 1.3, 1.3) if hov else QRectF(r)
+        base = QColor(GREEN if kind == "ok" else RED)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(12, 14, 18, int(72 * a)))
+        p.drawEllipse(rr.translated(0, 1.5))
+        p.setBrush(base.lighter(112) if hov else base)
+        p.setPen(QPen(QColor(255, 255, 255, int(130 * a)), 1.0))
+        p.drawEllipse(rr)
+        cx, cy = rr.center().x(), rr.center().y()
+        p.setPen(QPen(QColor(255, 255, 255, int(252 * a)), 2.0,
+                      Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        if kind == "ok":                                       # 勾
+            p.drawLine(QPointF(cx - 4.7, cy + 0.3), QPointF(cx - 1.3, cy + 3.7))
+            p.drawLine(QPointF(cx - 1.3, cy + 3.7), QPointF(cx + 4.9, cy - 3.5))
+        else:                                                  # 叉
+            d = 4.1
+            p.drawLine(QPointF(cx - d, cy - d), QPointF(cx + d, cy + d))
+            p.drawLine(QPointF(cx + d, cy - d), QPointF(cx - d, cy + d))
+
+    def _rz_paint_pill(self, p, a):
+        r = self._rz_pill_rect()
+        rad = r.height() / 2.0
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(12, 14, 18, int(56 * a)))
+        p.drawRoundedRect(r.translated(0, 1.3), rad, rad)
+        p.setBrush(QColor(CARD.red(), CARD.green(), CARD.blue(), int(238 * a)))
+        p.setPen(QPen(QColor(BORDER.red(), BORDER.green(), BORDER.blue(),
+                             int(235 * a)), 1.0))
+        p.drawRoundedRect(r, rad, rad)
+        p.setPen(QColor(TEXT.red(), TEXT.green(), TEXT.blue(), int(245 * a)))
+        p.setFont(self._rz_font())
+        p.drawText(r, Qt.AlignCenter, self._rz_size_text())
+
     def paintEvent(self, ev):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
@@ -8466,11 +8794,17 @@ class BallWindow(QWidget):
             frame_no = self._seq[self._si % len(self._seq)]
             img = frames[frame_no % len(frames)]
             iw, ih = img.width(), img.height()
-            scale = min(138.0 / ih, (PET_W - 10.0) / iw)
+            # update 2026-10-25 (第100轮): 桌宠可自由缩放 → 绘制预算改用**当前窗口**尺寸
+            #   (旧公式写死 PET_W/PET_H, 窗口一变大角色就缩在角落里不动)。
+            #   默认 118×148 时与旧公式完全等价(138 = PET_H-10, PET_W-10 = 108)。
+            ww, wh = self.width(), self.height()
+            scale = min((wh - 10.0) / ih, (ww - 10.0) / iw)
             dw, dh = iw * scale, ih * scale
-            rect = QRectF((PET_W - dw) / 2.0, PET_H - 4 - dh, dw, dh)
+            rect = QRectF((ww - dw) / 2.0, wh - 4 - dh, dw, dh)
             self._pet_draw_rect = rect      # 供点击分区判断"角色头顶 1/3"用
             p.drawImage(rect, img)
+            if self._rz_mode:
+                self._paint_resize_overlay(p)      # 第100轮: 调整大小覆盖层
             return
 
         w = self.width()
@@ -8521,9 +8855,35 @@ class BallWindow(QWidget):
 
     def leaveEvent(self, ev):
         self.hover = False
+        # 第100轮: 调整大小模式下鼠标移出 → 清悬停高亮并还原光标
+        #   (正在拖角时不清: 那时 grabMouse, 光标必须是缩放箭头)
+        if self._rz_mode and not self._rz_closing and self._rz_corner is None \
+                and self._rz_hover is not None:
+            self._rz_hover = None
+            self._rz_set_cursor(None)
         self.update()
 
     def mousePressEvent(self, ev):
+        # ---- 第100轮: 调整大小模式的命中分流(✓/✕ > 四角手柄 > 框内空白) ----
+        if self._rz_mode and not self._rz_closing and ev.button() == Qt.LeftButton:
+            hit = self._rz_hit(ev.position())
+            if hit in ("ok", "cancel"):
+                self._rz_press = hit
+                self.update()
+                return
+            if hit in ("tl", "tr", "bl", "br"):
+                self._rz_corner = hit
+                self._rz_press = hit
+                g = self.geometry()
+                # 锚定**对角**(全程不动): 与所拖角相对的那一条边
+                self._rz_anchor = QPoint(
+                    g.right() + 1 if hit in ("tl", "bl") else g.left(),
+                    g.bottom() + 1 if hit in ("tl", "tr") else g.top())
+                self.grabMouse()             # 拖角时鼠标可能移出窗口, 必须抓取
+                self._rz_set_cursor(hit)
+                self.update()
+                return
+            # 虚线框内空白处: 仍然允许拖动窗口(边移位边看大小)
         if ev.button() == Qt.LeftButton:
             self._drag = ev.globalPosition().toPoint() - self.frameGeometry().topLeft()
             self._moved = False
@@ -8532,6 +8892,15 @@ class BallWindow(QWidget):
             if self.pet: self._idle_t = time.time()
 
     def mouseMoveEvent(self, ev):
+        if self._rz_mode and not self._rz_closing:
+            if self._rz_corner is not None:
+                self._rz_do_resize(ev.globalPosition().toPoint())
+                return
+            hit = self._rz_hit(ev.position())          # 悬停高亮 + 光标提示
+            if hit != self._rz_hover:
+                self._rz_hover = hit
+                self._rz_set_cursor(hit)
+                self.update()
         if ev.buttons() & Qt.LeftButton:
             moved_now = (ev.globalPosition().toPoint() - self._press_origin).manhattanLength() > 4
             # 第97轮后半13 修(浅猫: "关闭桌宠模式时, 悬浮球无法拖动"):
@@ -8548,12 +8917,30 @@ class BallWindow(QWidget):
 
     def mouseReleaseEvent(self, ev):
         if ev.button() != Qt.LeftButton: return
-        self._clamp_pos()
-        try:
-            with open(os.path.join(scanner.PLUGIN_DATA_DIR, "ball_pos.json"), "w") as f:
-                json.dump({"x": self.x(), "y": self.y()}, f)
-        except Exception: pass
+        if self._rz_mode and not self._rz_closing:
+            if self._rz_press in ("ok", "cancel"):
+                ok = (self._rz_press == "ok")
+                self._rz_press = None
+                self._exit_resize_mode(ok)
+                return
+            if self._rz_corner is not None:            # 结束拖角
+                self.releaseMouse()
+                self._rz_corner = None
+                self._rz_press = None
+                self._rz_hover = None
+                self._rz_set_cursor(None)
+                self._clamp_pos()
+                self.update()
+                return
+            # 虚线框内空白处松手: 走原有"移动/点击"逻辑, 但**不落盘尺寸** ——
+            #   ✕ 取消时不该把拖到一半的尺寸留在存档里。
+            self._ball_release(ev, save_size=False)
+            return
+        self._ball_release(ev, save_size=True)
 
+    def _ball_release(self, ev, save_size=True):
+        self._clamp_pos()
+        self._save_ball_pos(save_size=save_size)
         if self.pet:
             self._idle_t = time.time()
             dur_ms = (time.time() - self._press_time) * 1000
@@ -8566,6 +8953,17 @@ class BallWindow(QWidget):
 
         if not self._moved:
             self._trigger_popup()
+
+    def keyPressEvent(self, ev):
+        # 第100轮: 调整大小模式下 Enter = 确认 / Esc = 取消
+        if self._rz_mode and not self._rz_closing:
+            if ev.key() == Qt.Key_Escape:
+                self._exit_resize_mode(False)
+                return
+            if ev.key() in (Qt.Key_Return, Qt.Key_Enter):
+                self._exit_resize_mode(True)
+                return
+        ev.ignore()
 
     def mouseDoubleClickEvent(self, ev):
         self._trigger_popup()
@@ -8619,7 +9017,7 @@ class BallWindow(QWidget):
         act_sz_lg = sz_menu.addAction(("● " if cur_sz == "large" else "○ ") + "舒适大窗口 (1180×730)")
         menu.addSeparator()
 
-        a_pet = a_head = a_theme_menu = None
+        a_pet = a_head = a_theme_menu = a_rz = None
         # 显示条件用「素材目录存在」而非「已加载」: 懒加载后未开启桌宠时
         # pet_frames 为 None, 若按旧条件判断会导致桌宠开关从菜单消失
         _pet_dir = (PET_THEMES.get(self.pet_theme) or {}).get("dir")
@@ -8635,6 +9033,8 @@ class BallWindow(QWidget):
                     act.setChecked(self.pet_theme == key)
                     act.setData(key)
                 a_head = menu.addAction("🤗  摸摸头")
+                # 2026-10-25 (第100轮, 浅浅猫): 桌宠自由缩放入口
+                a_rz = menu.addAction("📐  调整大小…")
         menu.addSeparator()
         a_quit = menu.addAction("🚪  退出")
 
@@ -8686,6 +9086,8 @@ class BallWindow(QWidget):
             self.set_pet(not self.pet)
         elif a_head is not None and chosen == a_head:
             self._pet_pat()
+        elif a_rz is not None and chosen == a_rz:
+            self._enter_resize_mode()
         elif chosen == a_restart:
             _restart_app()
         elif chosen == a_quit:

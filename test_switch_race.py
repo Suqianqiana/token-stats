@@ -3,6 +3,11 @@
 import os, sys, time, json, tempfile
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# 2026-10-25 (第100轮): 低内存机器救生符 —— OpenBLAS 默认按核数开线程、每个线程都要
+#   分配缓冲; 她机器空闲仅 ~2.2GB 时直接 "Memory allocation still failed after 10
+#   retries" 挂掉(实测**裸 import scipy 都崩**, 与用例无关)。限成单线程即正常。
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # --- 禁止生成 .pyc: 火绒把 __pycache__/card_app.cpython-313.pyc 误判为
@@ -39,6 +44,14 @@ except OSError:
 
 app = QApplication.instance() or QApplication([])
 PASS = 0
+
+# 2026-10-25 (第100轮): numpy/scipy/PIL 在**开头**导入, 不要留到中段。
+#   她机器常年 7GB+ 被 WorkBuddy/chrome/node 占着(实测空闲 2.4GB), 而本节跑完后
+#   进程里堆着好几个 CardWindow/BallWindow + 三四套桌宠帧库 —— 中段才 import scipy
+#   会在 numpy/OpenBLAS 分配时 MemoryError(实测两次都挂在这, 与用例本身无关)。
+import numpy as _np  # noqa: E402
+from PIL import Image as _Img  # noqa: E402
+from scipy import ndimage as _ndi  # noqa: E402
 
 
 def check(name, cond, detail=""):
@@ -742,6 +755,195 @@ w6._loaded_pet_theme = None
 w6.pet_frames = None
 w6._load_frames()
 
+# ---- 2026-10-25 (第100轮): 桌宠自由缩放(右键「📐 调整大小…」) ----
+# ⚠️ _save_ball_pos 写的是 scanner.PLUGIN_DATA_DIR/ball_pos.json(**真实目录**) ——
+#   必须先把数据目录指到临时目录, 否则会把她的真实位置/尺寸冲掉。
+from PySide6.QtCore import QPoint, QPointF, Qt, QEvent  # noqa: E402
+from PySide6.QtGui import QKeyEvent  # noqa: E402
+
+_REAL_DATA_DIR = ca.scanner.PLUGIN_DATA_DIR
+_TMP_BALL = tempfile.mkdtemp(prefix="tstats_ball_")
+ca.scanner.PLUGIN_DATA_DIR = _TMP_BALL
+
+
+class _FakeEv:
+    """鼠标事件桩: 只实现 BallWindow 用到的几个访问器
+    (与既有 mouseDoubleClickEvent(None) 同思路, 但能带局部/全局两个坐标)。"""
+    def __init__(self, lx, ly, gx, gy, button=Qt.LeftButton, buttons=None):
+        self._l, self._g = QPointF(lx, ly), QPointF(gx, gy)
+        self._b = button
+        self._bs = buttons if buttons is not None else button
+
+    def position(self):       return self._l
+    def globalPosition(self): return self._g
+    def button(self):         return self._b
+    def buttons(self):        return self._bs
+
+
+def _rz_flush(w, n=40):
+    """步进淡出定时器直到 _rz_finalize(退出调整大小模式)。"""
+    for _ in range(n):
+        w._rz_fade_tick()
+
+
+def _press(w, el):
+    """在元素(角名/ok/cancel)中心按下左键(局部坐标=窗口坐标, 全局=窗口坐标+偏移)。"""
+    r = w._rz_btn_rect(el) if el in ("ok", "cancel") else w._rz_handle_rect(el)
+    c = r.center()
+    w.mousePressEvent(_FakeEv(c.x(), c.y(), w.x() + c.x(), w.y() + c.y()))
+
+
+try:
+    w6._ball_wh = (118, 148)
+    w6.resize(118, 148)
+    w6.move(300, 300)
+
+    # ---------- 几何与命中 ----------
+    w6._enter_resize_mode()
+    check("进入调整大小模式(虚线框+四角)", w6._rz_mode is True and w6._rz_geo0 is not None
+          and w6._rz_timer.isActive(), f"mode={w6._rz_mode}")
+    w6._rz_fade = 1.0                                   # 跳过淡入, 测稳定态
+    _fr = w6._rz_frame()
+    check("虚线框内缩 5px(描边不被裁)", _fr == QRectF(5, 5, 108, 138), str(_fr))
+    check("四角手柄贴在框角上",
+          w6._rz_handle_rect("tl").topLeft() == QPointF(4, 4)
+          and w6._rz_handle_rect("br").bottomRight() == QPointF(114, 144),
+          f"tl={w6._rz_handle_rect('tl')} br={w6._rz_handle_rect('br')}")
+    check("右上角柄下移给 ✓/✕ 让位(不重叠)",
+          not w6._rz_handle_rect("tr").intersects(w6._rz_btn_rect("ok"))
+          and not w6._rz_handle_rect("tr").intersects(w6._rz_btn_rect("cancel")),
+          f"tr={w6._rz_handle_rect('tr')}")
+    check("✓ 在 ✕ 右侧且都在框内右上",
+          w6._rz_btn_rect("ok").left() > w6._rz_btn_rect("cancel").right()
+          and w6._rz_btn_rect("ok").right() <= _fr.right(),
+          f"ok={w6._rz_btn_rect('ok')} cancel={w6._rz_btn_rect('cancel')}")
+    check("命中测试: ✓/✕/角柄/框内空白",
+          w6._rz_hit(w6._rz_btn_rect("ok").center()) == "ok"
+          and w6._rz_hit(w6._rz_btn_rect("cancel").center()) == "cancel"
+          and w6._rz_hit(w6._rz_handle_rect("tl").center()) == "tl"
+          and w6._rz_hit(QPointF(60, 100)) is None, "-")
+    _im = w6.grab().toImage()
+    check("rz 模式 paintEvent 正常出图", not _im.isNull()
+          and _im.width() == 118 and _im.height() == 148, f"{_im.width()}x{_im.height()}")
+
+    # ---------- 真实事件流: 拖右下角(锚定左上角) ----------
+    _press(w6, "br")
+    check("按下右下角柄 → 进入拖角(锚定左上角不动)",
+          w6._rz_corner == "br" and w6._rz_anchor == QPoint(300, 300),
+          f"corner={w6._rz_corner} anchor={w6._rz_anchor}")
+    w6.mouseMoveEvent(_FakeEv(0, 0, 300 + 220, 300 + 275))
+    check("拖角 → 窗口实时变 220×275(位置不动)",
+          (w6.width(), w6.height()) == (220, 275) and (w6.x(), w6.y()) == (300, 300),
+          f"{w6.width()}x{w6.height()} @{w6.x()},{w6.y()}")
+    w6.mouseMoveEvent(_FakeEv(0, 0, 300 + 900, 300 + 900))
+    check("超过上限 → 钳制到 460×575", (w6.width(), w6.height()) == (460, 575),
+          f"{w6.width()}x{w6.height()}")
+    w6.mouseReleaseEvent(_FakeEv(0, 0, 0, 0))
+    check("松手结束拖角(尺寸保留, 尚未落盘)", w6._rz_corner is None
+          and (w6.width(), w6.height()) == (460, 575)
+          and not os.path.exists(os.path.join(_TMP_BALL, "ball_pos.json")),
+          f"corner={w6._rz_corner}")
+
+    # ---------- ✕ 取消: 还原进入模式时的几何 ----------
+    w6._rz_cancel_now()                       # 上一段(460×575)取消 → 回 118×148
+    check("取消后回到进入模式时的 118×148", (w6.width(), w6.height()) == (118, 148),
+          f"{w6.width()}x{w6.height()}")
+    _geo0 = w6.geometry()                     # 参照 = 本次进入调整模式的几何
+    w6._enter_resize_mode()
+    w6._rz_fade = 1.0
+    _press(w6, "br")
+    w6.mouseMoveEvent(_FakeEv(0, 0, w6.x() + 200, w6.y() + 250))
+    w6.mouseReleaseEvent(_FakeEv(0, 0, 0, 0))
+    _press(w6, "cancel")
+    check("按下 ✕ → 记录按下态", w6._rz_press == "cancel", str(w6._rz_press))
+    w6.mouseReleaseEvent(_FakeEv(0, 0, 0, 0))
+    check("✕ 松手 → 进入淡出", w6._rz_closing is True, f"closing={w6._rz_closing}")
+    _rz_flush(w6)
+    check("✕ 取消: 还原几何且不落盘", w6._rz_mode is False
+          and w6.geometry() == _geo0
+          and not os.path.exists(os.path.join(_TMP_BALL, "ball_pos.json")),
+          f"mode={w6._rz_mode} geo={w6.geometry()} vs {_geo0}")
+
+    # ---------- ✓ 确认: 落盘(含 w/h) ----------
+    w6._ball_wh = (118, 148)
+    w6.resize(150, 190)
+    w6._enter_resize_mode()
+    w6._rz_fade = 1.0
+    _press(w6, "br")
+    w6.mouseMoveEvent(_FakeEv(0, 0, w6.x() + 200, w6.y() + 250))
+    w6.mouseReleaseEvent(_FakeEv(0, 0, 0, 0))
+    _press(w6, "ok")
+    w6.mouseReleaseEvent(_FakeEv(0, 0, 0, 0))
+    _rz_flush(w6)
+    check("✓ 确认: 退出模式并写入 ball_pos(w/h)", w6._rz_mode is False
+          and os.path.isfile(os.path.join(_TMP_BALL, "ball_pos.json")),
+          f"mode={w6._rz_mode}")
+    with open(os.path.join(_TMP_BALL, "ball_pos.json")) as _f:
+        _bp = json.load(_f)
+    check("存档 w/h = 200×250 且 _ball_wh 同步(重启不丢)",
+          (_bp.get("w"), _bp.get("h")) == (200, 250) and w6._ball_wh == (200, 250),
+          f"file={_bp} wh={w6._ball_wh}")
+
+    # ---------- 快捷键: Esc=取消 / Enter=确认 ----------
+    w6._enter_resize_mode()
+    w6._rz_fade = 1.0
+    w6.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+    check("Esc → 取消(淡出中)", w6._rz_closing is True, f"closing={w6._rz_closing}")
+    _rz_flush(w6)
+    check("Esc 淡出后还原 200×250", w6._rz_mode is False
+          and (w6.width(), w6.height()) == (200, 250), f"{w6.width()}x{w6.height()}")
+    w6._enter_resize_mode()
+    w6._rz_fade = 1.0
+    w6.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Return, Qt.NoModifier))
+    _rz_flush(w6)
+    check("Enter → 确认并落盘", w6._rz_mode is False
+          and json.load(open(os.path.join(_TMP_BALL, "ball_pos.json")))["w"] == 200,
+          f"mode={w6._rz_mode}")
+
+    # ---------- 悬浮球不写 w/h(不冲掉桌宠尺寸) ----------
+    w6.set_pet(False)
+    w6.mouseReleaseEvent(_FakeEv(10, 10, 0, 0))
+    _bp2 = json.load(open(os.path.join(_TMP_BALL, "ball_pos.json")))
+    check("悬浮球态只更新 x/y, 保留桌宠 w/h", _bp2.get("w") == 200 and _bp2.get("h") == 250,
+          str(_bp2))
+    w6.set_pet(True)
+    check("切回桌宠 → 恢复存档尺寸 200×250", (w6.width(), w6.height()) == (200, 250),
+          f"{w6.width()}x{w6.height()}")
+
+    # ---------- 拖左上角: 锚定右下角 ----------
+    w6._rz_cancel_now()
+    w6._ball_wh = (118, 148)
+    w6.resize(118, 148)
+    w6.move(400, 400)
+    w6._enter_resize_mode()
+    w6._rz_fade = 1.0
+    _press(w6, "tl")
+    check("按下左上角柄 → 锚定右下角",
+          w6._rz_corner == "tl" and w6._rz_anchor == QPoint(518, 548),
+          f"anchor={w6._rz_anchor}")
+    w6.mouseMoveEvent(_FakeEv(0, 0, 518 - 60, 548 - 75))
+    check("拖左上角 → 钳制到下限 72×90 且右下角不动",
+          (w6.width(), w6.height()) == (72, 90)
+          and (w6.x() + w6.width(), w6.y() + w6.height()) == (518, 548),
+          f"{w6.width()}x{w6.height()} rb={w6.x()+w6.width()},{w6.y()+w6.height()}")
+    w6.mouseReleaseEvent(_FakeEv(0, 0, 0, 0))
+    w6._rz_cancel_now()
+
+    # ---------- 切主题/切形态时自动取消调整 ----------
+    w6._ball_wh = (118, 148)
+    w6.resize(118, 148)
+    w6._enter_resize_mode()
+    w6._rz_fade = 1.0
+    w6.resize(300, 375)                                  # 模拟拖到一半
+    w6.set_pet_theme("v5")
+    check("切主题 → 自动取消调整(还原存档尺寸)", w6._rz_mode is False
+          and (w6.width(), w6.height()) == (118, 148),
+          f"mode={w6._rz_mode} {w6.width()}x{w6.height()}")
+    w6.set_pet_theme("v3")
+    w6._rz_cancel_now()
+finally:
+    ca.scanner.PLUGIN_DATA_DIR = _REAL_DATA_DIR
+
 w6._pet_draw_rect = QRectF(0, 20, 118, 120)          # 模拟实际绘制区域 y=20..140
 w6._pet_click_region(20 + 120 * 0.2)                 # 顶部 20% → 摸头区
 check("点角色顶部 1/3 → 摸摸头", w6._state == "pat", w6._state)
@@ -771,9 +973,14 @@ w6._trigger_popup = _ball_pop
 # 抽帧自检: 新入库帧每帧只含 1 个"本体级"连通域（没裁断/没带邻居）
 # 注意: 不要硬编码编号 —— 帧可能被退役/重排(如 click 退役 2 帧后 12→10), 硬编码会随编号漂移失效。
 # 改用 installed_map.json 反查"哪些文件来自 09-17 那批素材"。
-import numpy as _np  # noqa: E402
-from PIL import Image as _Img  # noqa: E402
-from scipy import ndimage as _ndi  # noqa: E402
+#
+# 2026-10-25 (第100轮): 本节只读**磁盘文件**, 不需要任何窗口实例 —— 先放掉桌宠实例,
+#   给抽帧自检腾内存(导入已在开头做过, 这里纯粹是少占一点是一点)。
+import gc as _gc  # noqa: E402
+for _v in ("w6", "w3", "ball", "w", "w2", "w4", "w5"):
+    if _v in globals():
+        del globals()[_v]
+_gc.collect()
 _S8 = _np.ones((3, 3), bool)
 with open(os.path.join(ca.BASE_DIR, "assets", "pet_v3_add", "installed_map.json"),
           encoding="utf-8") as _f:
