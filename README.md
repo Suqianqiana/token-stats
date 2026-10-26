@@ -118,9 +118,28 @@
 
 ![设置页浅色](docs/assets/previews/13-settings-light.png)
 
-### 桌宠素材 · V3 全套动画（`pet_v3r`，212×347 高清 PNG）
+### 桌宠素材 · 三个主题的现役帧库
 
-![桌宠素材](docs/assets/previews/pet_v3_sheet.png)
+素材均为透明背景 PNG，绘制时按窗口预算等比缩放、底部对齐（帧高统一，播放不跳动）。
+V3 / V4 为**全帧展示**，V5 为每场景抽样 8 帧的概览。
+
+**V5 · 鲸鱼少女（`pet_v5`，149 帧：idle15 / click33 / sleep22 / wake15 / drag6 / sidle48 / pat10）**
+
+![V5 素材](docs/assets/previews/pet_v5_sheet.png)
+
+**V4 · deepseek娘V4Pro（`pet_v4`，12 帧：idle3 / click5 / sleep1 / wake1 / drag1 / sidle1）**
+
+![V4 素材](docs/assets/previews/pet_v4_sheet.png)
+
+**V3 · 最新素材（`pet_v3r`，128 帧）— ① 待机 10 / 睡觉 8 / 睡醒 7 / 拖拽 6 / 点击 23（54 帧）**
+
+![V3 素材 1](docs/assets/previews/pet_v3_sheet_1.png)
+
+**V3 — ② 特殊待机 55 / 摸摸头 19（74 帧）**
+
+![V3 素材 2](docs/assets/previews/pet_v3_sheet_2.png)
+
+> 生成方式：`python -B tools/gen_lib_sheet.py <库名> [--cols=N] [--scenes=a,b] [--flow]`
 
 ---
 
