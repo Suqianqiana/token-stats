@@ -18,6 +18,7 @@ import sys
 sys.dont_write_bytecode = True
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BATCH = sys.argv[1] if len(sys.argv) > 1 else "20261023"
+DISP_THUMB_H = 240          # HTML 内嵌缩略图高度(量化前); 格子显示 190px
 OUTDIR = os.path.join(BASE, "assets", "pet_new_%s" % BATCH)
 THUMB = os.path.join(OUTDIR, "thumbs")
 HTML_OUT = os.path.join(BASE, "docs", "pet_picker_%s.html" % BATCH)
@@ -32,18 +33,37 @@ SCENES = [
     ("pat",   "摸摸头",   "点头部 1/3 时的反馈"),
 ]
 
-# 现有 v3r 库帧数 (第98轮退休+新入库后; 供参考)
-CURRENT_LIB = {"idle": 10, "sleep": 8, "wake": 7, "drag": 6, "click": 23, "sidle": 55, "pat": 19}
+# 现有各主题库帧数 (供参考; 2026-10-26 第101轮后)
+CURRENT_LIB = {
+    "pet_v5":  {"idle": 15, "sleep": 22, "wake": 15, "drag": 6, "click": 33, "sidle": 48, "pat": 10},
+    "pet_v3r": {"idle": 10, "sleep": 8, "wake": 7, "drag": 6, "click": 23, "sidle": 55, "pat": 19},
+    "pet_v4":  {"idle": 3, "sleep": 1, "wake": 1, "drag": 1, "click": 5, "sidle": 1, "pat": 0},
+}
 
 
 def main():
     man = json.load(open(os.path.join(OUTDIR, "manifest.json"), encoding="utf-8"))
+    # 第102轮: 缩略图"高清化" —— 源 thumb 是 300px 高(第102轮起), 内嵌前缩到
+    # DISP_H(240) 并做 **FASTOCTREE 调色板量化**(实测 146KB→29KB, 省 80%),
+    # 格子显示尺寸同步放大(190px), 2 倍像素密度 + 大格子, 看质量清楚得多。
+    # ⚠️ 量化对边缘半透明 alpha 有轻微损失(平均差 ~2.7/255), 预览场景可接受;
+    #    落地入库仍用 assets/pet_new_<批次>/ 下的原始帧, 不经过这里。
+    import io
+    from PIL import Image
     thumbs = {}
+    raw = 0
     for g in man["groups"]:
         for fr in g["frames"]:
             p = os.path.join(THUMB, fr["id"] + ".png")
-            with open(p, "rb") as f:
-                thumbs[fr["id"]] = "data:image/png;base64," + base64.b64encode(f.read()).decode()
+            im = Image.open(p).convert("RGBA")
+            if im.height > DISP_THUMB_H:
+                r = DISP_THUMB_H / im.height
+                im = im.resize((max(1, int(im.width * r)), DISP_THUMB_H), Image.LANCZOS)
+            buf = io.BytesIO()
+            im.quantize(colors=255, method=Image.FASTOCTREE).save(
+                buf, "PNG", optimize=True)
+            raw += os.path.getsize(p)
+            thumbs[fr["id"]] = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
     data = {
         "groups": [{"gid": g["gid"], "source": g["source"], "source_cn": g["source_cn"],
                     "note": g.get("note"),
@@ -143,11 +163,11 @@ h1{font-size:24px;font-weight:700;letter-spacing:.5px;display:flex;align-items:c
 .ghead .gname{font-size:16.5px;font-weight:700}
 .ghead .gnote{font-size:12.5px;color:var(--txt3)}
 .ghead .gcount{font-size:12.5px;color:var(--txt2);margin-left:auto}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px}
 .fcard{border:1px solid var(--line);background:var(--card);border-radius:12px;overflow:hidden;transition:.15s;position:relative}
 .fcard:hover{border-color:var(--acc2);transform:translateY(-2px)}
 .fcard.sel{border-color:var(--ok);box-shadow:0 0 0 1px var(--ok) inset}
-.fprev{height:150px;display:flex;align-items:center;justify-content:center;cursor:pointer;
+.fprev{height:190px;display:flex;align-items:center;justify-content:center;cursor:pointer;
   background:repeating-conic-gradient(var(--panel2) 0% 25%, var(--panel) 0% 50%) 50% / 16px 16px}
 .fprev img{max-width:100%;max-height:100%;object-fit:contain}
 .fmeta{padding:8px 10px 10px}
@@ -190,8 +210,9 @@ footer{margin-top:34px;color:var(--txt3);font-size:12.5px;line-height:1.8;border
   </div>
   <div class="hdr-right">
     <select id="libSel">
-      <option value="pet_v3r">并入现有库 pet_v3r</option>
-      <option value="pet_new_20261023">新建库（沿用现编号）</option>
+      <option value="pet_v5" selected>并入 V5 库 pet_v5（鲸鱼少女）</option>
+      <option value="pet_v3r">并入 V3 库 pet_v3r</option>
+      <option value="pet_v4">并入 V4 库 pet_v4</option>
     </select>
     <button class="btn" id="themeBtn">🌙 明/暗</button>
     <button class="btn" id="presetBtn" title="按动作语义预先分好 124 帧，套用后再微调">⚡ 载入预选</button>
@@ -300,7 +321,7 @@ function renderScenes(){
       '<div class="sname"><span class="dot" style="background:var(--acc2)"></span>' + sc.name +
       ' <span style="font-size:11px;color:var(--txt3);font-weight:400">' + sc.key + '</span></div>' +
       '<div class="sdesc">' + sc.desc + '</div>' +
-      '<div class="scount"><span>已选 <b>' + sel.length + '</b> 帧 · 现库 ' + CURLIB[sc.key] + '</span>' +
+      '<div class="scount"><span>已选 <b>' + sel.length + '</b> 帧 · 现库 ' + ((CURLIB[document.getElementById("libSel").value] || {})[sc.key] || 0) + '</span>' +
       (sel.length ? '<span class="play" data-play="' + sc.key + '">▶ 试播</span>' : '') + '</div>' +
       '<div class="mini">' + (mini || '<span class="empty">未分配</span>') + '</div>';
     div.addEventListener("click", function(ev){
@@ -444,7 +465,7 @@ function buildJSON(){
     assignments[k].push(Object.assign({id: fid}, meta[fid] || {}));
   });
   return {
-    v: 1, tool: "pet_picker_20261023",
+    v: 1, tool: "pet_picker___BATCH__",
     created: new Date().toISOString(),
     target_library: document.getElementById("libSel").value,
     stats: {total: flatFrames().length, selected: Object.keys(assign).length,
