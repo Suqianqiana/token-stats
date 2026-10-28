@@ -60,23 +60,26 @@ def process(gid, path, cname, out_dir, thumb_dir):
     al = A[..., 3]
     H, W = al.shape
     if al.min() == 255:
-        # 第102轮: 混进来的**全不透明 PNG**(白底图, 没有透明通道)无法按 alpha
-        # 切分 —— 直接跳过。实测 K05(萌系日常贴纸合集)整图 alpha=255,
-        # 内容与其它组同质(感知相似 0.90), 跳过零损失。
+        # 全不透明 PNG(白底)无法按 alpha 切分 → 跳过(K05 实测)
         print("  !! 全图不透明(无透明通道), 跳过: %s" % os.path.basename(path))
         return None
     scale = max(W, H) / 1536.0
     bg_area = int(20000 * scale * scale)
+    lab_min = int(3000 * scale * scale)
+
+    # ---- 第102轮第3版: 源图级**清底噪** ----
+    # 一批导出图带 alpha=1~25 的极淡背景(雾感 25~38%), 桌宠放深色底上显灰蒙,
+    # 浅浅猫: "不是完全透明的素材图那一整套都不需要" —— 清掉后就是完全透明,
+    # 整套内容得以保留。贴纸本体(alpha≥200)不受影响。
+    noise = int(((al >= 1) & (al <= 15)).sum())
+    al[al <= 15] = 0
     fg = al > 128
     lbl, n = ndimage.label(fg, S8)
     areas = ndimage.sum(fg, lbl, range(1, n + 1)) if n else []
     objs = ndimage.find_objects(lbl)
+    print("   清底噪 %d px (%.1f%%)" % (noise, 100.0 * noise / (H * W)))
 
-    lab_min = int(3000 * scale * scale)
-    # ---- 只做一件事: 找出"标签"(细长文字带), 切分时剔除 ----
-    # 第102轮重做: 以前还把"小面积装饰"单独挑出来按距离归附, 距离一超就当
-    # 别人的像素擦掉 —— 结果煎锅/气泡/书本这些道具被挖没了(浅浅猫指出)。
-    # 现在装饰**不单独处理**: 每个格子内除标签外的域全部保留。
+    # 标签(细长文字带)剔除
     labels = set()
     for i in range(1, n + 1):
         sl = objs[i - 1]
@@ -88,14 +91,12 @@ def process(gid, path, cname, out_dir, thumb_dir):
         if areas[i - 1] >= lab_min and hh < 0.08 * H and ww >= 1.5 * hh:
             labels.add(i)
 
-    # ================= 网格切分(第102轮重写) =================
-    # 规则贴纸集用**投影**切比连通域聚类可靠得多:
-    #   ① 行投影 → 行带(递归: 带太高就在带内再找行谷, 解决两行紧贴无谷)
-    #   ② 行带内列投影 → 单元格
-    #   ③ 格内除标签外全部保留(角色 + 道具)
-    #   ④ QC: 本体=1; 面积过小(残片)丢弃; 本体≥2 尝试深谷纵切(严格验证否则丢)
-    # ① 首层**无条件**按行投影下刀(否则只有 1 个带时 med=带高, 递归条件恒假,
-    #    第一刀永远落不下去 —— 实测会整图当一个带, 格内塞满角色被当成多本体丢光)
+    # ---- 网格投影切分(行带递归 → 行带内列带), **只作归属分区** ----
+    def col_bands(y0, y1):
+        cs = valley_cuts(fg[y0:y1].sum(axis=0), int(0.06 * W), 0.15)
+        cuts = [0] + cs + [W]
+        return [(x0, x1) for x0, x1 in zip(cuts, cuts[1:]) if x1 - x0 > 0.04 * W]
+
     cs0 = valley_cuts(fg.sum(axis=1), int(0.06 * H), 0.12)
     bands, prev = [], 0
     for c in cs0:
@@ -103,8 +104,7 @@ def process(gid, path, cname, out_dir, thumb_dir):
         prev = c
     bands.append((prev, H))
     bands = [(a, b) for a, b in bands if b - a > 0.04 * H] or [(0, H)]
-    # ② 后续层: 过高的带(两行贴纸紧贴、首层没切到)在带内再找行谷
-    for depth in range(2):
+    for _depth in range(2):
         hs = [b[1] - b[0] for b in bands]
         med = float(np.median(hs)) if hs else 0.0
         new = []
@@ -112,11 +112,11 @@ def process(gid, path, cname, out_dir, thumb_dir):
             if med > 0 and (b - a) > 1.4 * med:
                 cs = valley_cuts(fg[a:b].sum(axis=1), int(0.08 * (b - a)), 0.22)
                 if cs:
-                    prev, seq = a, []
+                    p2, seq = a, []
                     for c in cs:
-                        seq.append((prev, a + c))
-                        prev = a + c
-                    seq.append((prev, b))
+                        seq.append((p2, a + c))
+                        p2 = a + c
+                    seq.append((p2, b))
                     new += seq
                     continue
             new.append((a, b))
@@ -124,39 +124,47 @@ def process(gid, path, cname, out_dir, thumb_dir):
             bands = new or bands
             break
         bands = new
+    bands = [(a, b) for a, b in bands if b - a > 0.04 * H] or [(0, H)]
+    row_cols = [(a, b, col_bands(a, b)) for a, b in bands]
+
+    # ---- 域按**中心点**归格; 格的裁剪范围 = 格内域 bbox 并集(允许溢出格子) ----
+    # 这样呆毛/爱心气泡等跨格元素会完整跟着"中心所在格"走, 不再被切线腰斩
+    # (浅浅猫: K10_08 的爱心对话框一半截到了 K10_09)。
+    cells = {}
+    for i in range(1, n + 1):
+        if i in labels:
+            continue
+        sl = objs[i - 1]
+        if sl is None:
+            continue
+        cy = (sl[0].start + sl[0].stop) / 2.0
+        cx = (sl[1].start + sl[1].stop) / 2.0
+        for bi, (a, b, cols) in enumerate(row_cols):
+            if not (a <= cy < b):
+                continue
+            for xi, (x0, x1) in enumerate(cols):
+                if x0 <= cx < x1:
+                    cells.setdefault((bi, xi), []).append(i)
+                    break
+            break
 
     units = []
-    for (a, b) in bands:
-        bw = b - a
-        cs = valley_cuts(fg[a:b].sum(axis=0), int(0.06 * W), 0.15)
-        cuts = [0] + cs + [W]
-        cells = [(x0, x1) for x0, x1 in zip(cuts, cuts[1:]) if x1 - x0 > 0.04 * W]
-        # 若格数少于该带的角色域数, 收紧 min_gap 再切一次(贴纸横向紧贴时)
-        want = len([1 for i in range(1, n + 1)
-                    if objs[i - 1] and areas[i - 1] >= bg_area
-                    and a <= objs[i - 1][0].start and objs[i - 1][0].stop <= b + 1])
-        if want and len(cells) < want:
-            cs = valley_cuts(fg[a:b].sum(axis=0), int(0.035 * W), 0.22)
-            cuts = [0] + cs + [W]
-            cells = [(x0, x1) for x0, x1 in zip(cuts, cuts[1:]) if x1 - x0 > 0.03 * W]
-        for (x0, x1) in cells:
-            units.append((a, b - 1, x0, x1 - 1))
+    for (bi, xi), ids in sorted(cells.items()):
+        y0 = min(objs[i - 1][0].start for i in ids)
+        y1 = max(objs[i - 1][0].stop for i in ids) - 1
+        x0 = min(objs[i - 1][1].start for i in ids)
+        x1 = max(objs[i - 1][1].stop for i in ids) - 1
+        units.append((y0, y1, x0, x1, ids))
     units.sort(key=lambda u: (u[0], u[2]))
-    print("   网格: %d 行带 x 列 → %d 格" % (len(bands), len(units)))
+    print("   网格: %d 行带 → %d 格 / %d 域" % (len(bands), len(units), n))
 
-    # ---- 格内面积中位数(用于判残片) ----
-    inks = []
-    for (y0, y1, x0, x1) in units:
-        inks.append(int(fg[y0:y1 + 1, x0:x1 + 1].sum()))
+    inks = [int(fg[u[0]:u[1] + 1, u[2]:u[3] + 1].sum()) for u in units]
     med_ink = float(np.median(inks)) if inks else 1.0
-    med_h = float(np.median([u[1] - u[0] + 1 for u in units])) if units else 1.0
 
     frames = []
-    for k, (uy0, uy1, ux0, ux1) in enumerate(units, 1):
+    for k, (uy0, uy1, ux0, ux1, ids) in enumerate(units, 1):
         sub = A[uy0:uy1 + 1, ux0:ux1 + 1].copy()
         sub_lbl = lbl[uy0:uy1 + 1, ux0:ux1 + 1]
-        # keep = 格内所有域 - 标签
-        ids = sorted({int(v) for v in np.unique(sub_lbl) if v})
         keep = [i for i in ids if i not in labels]
         if not keep:
             continue
@@ -167,37 +175,41 @@ def process(gid, path, cname, out_dir, thumb_dir):
             continue
         sub = sub[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
 
-        al2 = sub[..., 3]
-        m2 = al2 > 128
+        m2 = sub[..., 3] > 128
         l2, n2 = ndimage.label(m2, S8)
         a2 = ndimage.sum(m2, l2, range(1, n2 + 1)) if n2 else []
         nbody = int(sum(1 for v in a2 if v >= bg_area))
         ink = int(m2.sum())
 
-        # 残片/异常: 面积太小 = 被切残了 → 丢弃(浅浅猫: "一样的但不完整的图")
         if ink < 0.5 * med_ink or nbody < 1:
             print("    ★★ 丢弃残片 %s_?? %dx%d 墨水%d(中位%.0f) 本体%d"
                   % (gid, sub.shape[1], sub.shape[0], ink, med_ink, nbody))
             continue
 
-        # 本体≥2(罕见: 格内确实有两个角色) → 尝试行投影深谷纵切, 验证不过就丢
         if nbody >= 2:
             proj = m2.sum(axis=1)
             cs = valley_cuts(proj, int(0.22 * sub.shape[0]), 0.20)
-            ok = False
+            pieces, prev = [], 0
             if cs:
-                pieces, prev = [], 0
                 for c in cs + [sub.shape[0]]:
                     pieces.append(sub[prev:c].copy())
                     prev = c
-                if all(_qc(p, bg_area, med_ink) for p in pieces):
-                    for pi, pc in enumerate(pieces):
-                        _save(pc, "%s_%02d" % (gid, k + pi * 1000))
-                    ok = True
-            if not ok:
-                print("    ★★ 丢弃多本体格 %s_?? %dx%d 本体%d"
-                      % (gid, sub.shape[1], sub.shape[0], nbody))
+            if pieces and all(_qc(p, bg_area, med_ink) for p in pieces):
+                for pi, pc in enumerate(pieces):
+                    nm2 = "%s_%03d.png" % (gid, len(frames) + 1 + pi)
+                    Image.fromarray(pc).save(os.path.join(out_dir, nm2), optimize=True)
+                    th = Image.fromarray(pc)
+                    r = THUMB_H / th.height
+                    th = th.resize((max(1, int(th.width * r)), THUMB_H), Image.LANCZOS)
+                    th.save(os.path.join(thumb_dir, nm2), optimize=True)
+                    frames.append(dict(id=nm2[:-4], source=os.path.basename(path),
+                                       source_cn=cname, size=[pc.shape[1], pc.shape[0]],
+                                       decorations=len(keep) - nbody,
+                                       selfcheck_bodies=1))
+                print("    ★ 多本体格 %dx%d → 深谷纵切 %d 份" % (sub.shape[1], sub.shape[0], len(pieces)))
                 continue
+            print("    ★★ 丢弃多本体格 %s_?? %dx%d 本体%d" % (gid, sub.shape[1], sub.shape[0], nbody))
+            continue
 
         name = "%s_%02d.png" % (gid, len(frames) + 1)
         out = Image.fromarray(sub)
@@ -208,11 +220,10 @@ def process(gid, path, cname, out_dir, thumb_dir):
         th.save(os.path.join(thumb_dir, name), optimize=True)
         frames.append(dict(id=name[:-4], source=os.path.basename(path), source_cn=cname,
                            size=[sub.shape[1], sub.shape[0]],
-                           decorations=max(0, len(keep) - nbody),
+                           decorations=len(keep) - nbody,
                            selfcheck_bodies=nbody))
-        flag = "" if nbody == 1 else "  ★本体数=%d" % nbody
-        print("  %s  %4dx%-4d 域%2d 墨水%6d%s" % (name, sub.shape[1], sub.shape[0],
-                                                 len(keep), ink, flag))
+        print("  %s  %4dx%-4d 域%2d 墨水%6d" % (name, sub.shape[1], sub.shape[0],
+                                               len(keep), ink))
     return dict(gid=gid, source=os.path.basename(path), source_cn=cname,
                 src_size=[W, H], frames=frames)
 
