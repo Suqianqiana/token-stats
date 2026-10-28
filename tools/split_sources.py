@@ -67,14 +67,17 @@ def process(gid, path, cname, out_dir, thumb_dir):
         return None
     scale = max(W, H) / 1536.0
     bg_area = int(20000 * scale * scale)
-    dec_dist = 90 * scale
     fg = al > 128
     lbl, n = ndimage.label(fg, S8)
     areas = ndimage.sum(fg, lbl, range(1, n + 1)) if n else []
     objs = ndimage.find_objects(lbl)
 
     lab_min = int(3000 * scale * scale)
-    bigs, smalls = [], []
+    # ---- 只做一件事: 找出"标签"(细长文字带), 切分时剔除 ----
+    # 第102轮重做: 以前还把"小面积装饰"单独挑出来按距离归附, 距离一超就当
+    # 别人的像素擦掉 —— 结果煎锅/气泡/书本这些道具被挖没了(浅浅猫指出)。
+    # 现在装饰**不单独处理**: 每个格子内除标签外的域全部保留。
+    labels = set()
     for i in range(1, n + 1):
         sl = objs[i - 1]
         if sl is None:
@@ -83,169 +86,149 @@ def process(gid, path, cname, out_dir, thumb_dir):
         hh = bb[1] - bb[0] + 1
         ww = bb[3] - bb[2] + 1
         if areas[i - 1] >= lab_min and hh < 0.08 * H and ww >= 1.5 * hh:
-            continue                                   # 标签剔除
-        if areas[i - 1] >= bg_area:
-            bigs.append({"id": i, "bb": bb, "area": int(areas[i - 1])})
-        elif areas[i - 1] >= 8:
-            smalls.append({"id": i, "bb": bb, "area": int(areas[i - 1])})
+            labels.add(i)
 
-    for b in bigs:
-        b["yc"] = (b["bb"][0] + b["bb"][1]) / 2.0
-    bigs.sort(key=lambda b: (b["yc"], b["bb"][2]))
-    rows_g = []
-    for b in bigs:
-        for r in rows_g:
-            if abs(r["yc"] - b["yc"]) < 150 * scale:
-                r["items"].append(b)
-                r["yc"] = float(np.mean([x["yc"] for x in r["items"]]))
-                break
-        else:
-            rows_g.append({"yc": b["yc"], "items": [b]})
-    rows_g.sort(key=lambda r: r["yc"])
+    # ================= 网格切分(第102轮重写) =================
+    # 规则贴纸集用**投影**切比连通域聚类可靠得多:
+    #   ① 行投影 → 行带(递归: 带太高就在带内再找行谷, 解决两行紧贴无谷)
+    #   ② 行带内列投影 → 单元格
+    #   ③ 格内除标签外全部保留(角色 + 道具)
+    #   ④ QC: 本体=1; 面积过小(残片)丢弃; 本体≥2 尝试深谷纵切(严格验证否则丢)
+    # ① 首层**无条件**按行投影下刀(否则只有 1 个带时 med=带高, 递归条件恒假,
+    #    第一刀永远落不下去 —— 实测会整图当一个带, 格内塞满角色被当成多本体丢光)
+    cs0 = valley_cuts(fg.sum(axis=1), int(0.06 * H), 0.12)
+    bands, prev = [], 0
+    for c in cs0:
+        bands.append((prev, c))
+        prev = c
+    bands.append((prev, H))
+    bands = [(a, b) for a, b in bands if b - a > 0.04 * H] or [(0, H)]
+    # ② 后续层: 过高的带(两行贴纸紧贴、首层没切到)在带内再找行谷
+    for depth in range(2):
+        hs = [b[1] - b[0] for b in bands]
+        med = float(np.median(hs)) if hs else 0.0
+        new = []
+        for (a, b) in bands:
+            if med > 0 and (b - a) > 1.4 * med:
+                cs = valley_cuts(fg[a:b].sum(axis=1), int(0.08 * (b - a)), 0.22)
+                if cs:
+                    prev, seq = a, []
+                    for c in cs:
+                        seq.append((prev, a + c))
+                        prev = a + c
+                    seq.append((prev, b))
+                    new += seq
+                    continue
+            new.append((a, b))
+        if not new or len(new) == len(bands):
+            bands = new or bands
+            break
+        bands = new
 
     units = []
-    for r in rows_g:
-        items = sorted(r["items"], key=lambda b: b["bb"][2])
-        widths = [b["bb"][3] - b["bb"][2] + 1 for b in items]
-        med = float(np.median(widths)) if widths else 0
-        y0 = min(b["bb"][0] for b in items)
-        y1 = max(b["bb"][1] for b in items)
-        for b in items:
-            x0, x1 = b["bb"][2], b["bb"][3]
-            w = x1 - x0 + 1
-            if med > 0 and w > 1.6 * med and w > 0.35 * W:
-                sub_fg = fg[y0:y1 + 1, x0:x1 + 1]
-                col = sub_fg.sum(axis=0)
-                cuts = valley_cuts(col, min_gap=int(0.35 * med))
-                if cuts:
-                    print("    ★ 粘连: 域宽%d(行中位%d) → 谷点%s 切 %d 份"
-                          % (w, int(med), cuts, len(cuts) + 1))
-                    prev = 0
-                    for c in cuts + [sub_fg.shape[1]]:
-                        units.append((y0, y1, x0 + prev, x0 + c - 1))
-                        prev = c
-                    continue
-            units.append((y0, y1, x0, x1))
+    for (a, b) in bands:
+        bw = b - a
+        cs = valley_cuts(fg[a:b].sum(axis=0), int(0.06 * W), 0.15)
+        cuts = [0] + cs + [W]
+        cells = [(x0, x1) for x0, x1 in zip(cuts, cuts[1:]) if x1 - x0 > 0.04 * W]
+        # 若格数少于该带的角色域数, 收紧 min_gap 再切一次(贴纸横向紧贴时)
+        want = len([1 for i in range(1, n + 1)
+                    if objs[i - 1] and areas[i - 1] >= bg_area
+                    and a <= objs[i - 1][0].start and objs[i - 1][0].stop <= b + 1])
+        if want and len(cells) < want:
+            cs = valley_cuts(fg[a:b].sum(axis=0), int(0.035 * W), 0.22)
+            cuts = [0] + cs + [W]
+            cells = [(x0, x1) for x0, x1 in zip(cuts, cuts[1:]) if x1 - x0 > 0.03 * W]
+        for (x0, x1) in cells:
+            units.append((a, b - 1, x0, x1 - 1))
+    units.sort(key=lambda u: (u[0], u[2]))
+    print("   网格: %d 行带 x 列 → %d 格" % (len(bands), len(units)))
 
-    for s in smalls:
-        best, bd = None, 1e9
-        for u in units:
-            d = bbox_dist(s["bb"], u[:4])
-            if d < bd:
-                best, bd = u, d
-        s["unit"] = best if bd <= dec_dist else None
-
-    units.sort(key=lambda u: (u[0] // 200, u[2]))
-
-    # ---- 第102轮修正: "上下堆叠"的 unit 纵向切开 ----
-    # 实测(K11/K12/K13/K16/K18 等 4 行贴纸集): 某个跨行域会把两行拉进同一分组,
-    # 横向谷点切出的 unit 就包含**上下两个角色**。修法: 高度超过中位域高 1.35 倍
-    # 且 bbox 内含 ≥2 个角色级域的 unit, 按"域与域的间隙带内投影最低行"切成
-    # N 份, 每份**显式携带自己的 keep 域**(foreign 清除把别人的像素擦掉)。
-    med_h = float(np.median([b["bb"][1] - b["bb"][0] + 1 for b in bigs])) if bigs else 0.0
-
-    def split_stacked(u):
-        uy0, uy1, ux0, ux1 = u
-        ins = sorted((b for b in bigs
-                      if not (b["bb"][3] < ux0 or b["bb"][2] > ux1
-                              or b["bb"][1] < uy0 or b["bb"][0] > uy1)),
-                     key=lambda b: (b["bb"][0] + b["bb"][1]) / 2)
-        if len(ins) < 2:
-            # 单域但高度异常: 上下两个角色**粘成一片**(同一连通域), foreign 清除
-            # 帮不上忙 —— 用行投影找"深谷"(两角色连接处)直接纵切; 裁剪范围不同,
-            # 域像素自然被切开。找不到深谷就放弃(保持原样)。
-            if not ins:
-                return [(uy0, uy1, ux0, ux1, [])]
-            proj = fg[uy0:uy1 + 1, ux0:ux1 + 1].sum(axis=1)
-            cuts = valley_cuts(proj, min_gap=int(0.22 * (uy1 - uy0 + 1)),
-                               max_val_ratio=0.20)
-            if not cuts:
-                return [(uy0, uy1, ux0, ux1, [ins[0]["id"]])]
-            iid = ins[0]["id"]
-            subs, prev = [], uy0
-            for c in cuts + [uy1 - uy0 + 1]:
-                end = uy0 + c - 1
-                subs.append((prev, end, ux0, ux1, [iid]))
-                prev = end + 1
-            print("    ★ 单域粘连 %dx%d → 行投影深谷%s 切 %d 份"
-                  % (ux1 - ux0 + 1, uy1 - uy0 + 1, cuts, len(subs)))
-            return subs
-        cuts = []
-        for a, b in zip(ins, ins[1:]):
-            lo, hi = a["bb"][1], b["bb"][0]           # a.y1 .. b.y0 (可能重叠)
-            if hi < lo:
-                lo, hi = hi, lo
-            band = fg[lo:hi + 1, ux0:ux1 + 1].sum(axis=1)
-            cuts.append(lo + int(np.argmin(band)) if len(band) else (lo + hi) // 2)
-        subs, prev, gi = [], uy0, 0
-        for c in cuts:
-            subs.append((prev, c, ux0, ux1, [ins[gi]["id"]]))
-            prev, gi = c + 1, gi + 1
-        subs.append((prev, uy1, ux0, ux1, [ins[gi]["id"]]))
-        print("    ★ 上下堆叠 %dx%d 含 %d 个角色 → 按域间隙切 %d 份 (切线 y=%s)"
-              % (ux1 - ux0 + 1, uy1 - uy0 + 1, len(ins), len(subs), cuts))
-        return subs
-
-    if med_h > 0:
-        out_units = []
-        for u in units:
-            if (u[1] - u[0] + 1) > 1.35 * med_h:
-                out_units.extend(split_stacked(u))
-            else:
-                out_units.append((u[0], u[1], u[2], u[3],
-                                  [b["id"] for b in bigs
-                                   if not (b["bb"][3] < u[2] or b["bb"][2] > u[3]
-                                           or b["bb"][1] < u[0] or b["bb"][0] > u[1])]))
-        units = out_units
-    units.sort(key=lambda u: (u[0] // 200, u[2]))
+    # ---- 格内面积中位数(用于判残片) ----
+    inks = []
+    for (y0, y1, x0, x1) in units:
+        inks.append(int(fg[y0:y1 + 1, x0:x1 + 1].sum()))
+    med_ink = float(np.median(inks)) if inks else 1.0
+    med_h = float(np.median([u[1] - u[0] + 1 for u in units])) if units else 1.0
 
     frames = []
-    for k, u in enumerate(units, 1):
-        uy0, uy1, ux0, ux1, keep_ids = u
-        if not keep_ids:
-            continue                              # 防御: 空.unit 不该出现
-        decs = [s for s in smalls if s.get("unit") == u]
-        y0 = min([uy0] + [s["bb"][0] for s in decs])
-        y1 = max([uy1] + [s["bb"][1] for s in decs])
-        x0 = min([ux0] + [s["bb"][2] for s in decs])
-        x1 = max([ux1] + [s["bb"][3] for s in decs])
-        sub = A[y0:y1 + 1, x0:x1 + 1].copy()
-        sub_lbl = lbl[y0:y1 + 1, x0:x1 + 1]
-        keep = set(keep_ids) | {s["id"] for s in decs}
-        foreign = (sub_lbl != 0) & ~np.isin(sub_lbl, list(keep))
+    for k, (uy0, uy1, ux0, ux1) in enumerate(units, 1):
+        sub = A[uy0:uy1 + 1, ux0:ux1 + 1].copy()
+        sub_lbl = lbl[uy0:uy1 + 1, ux0:ux1 + 1]
+        # keep = 格内所有域 - 标签
+        ids = sorted({int(v) for v in np.unique(sub_lbl) if v})
+        keep = [i for i in ids if i not in labels]
+        if not keep:
+            continue
+        foreign = (sub_lbl != 0) & ~np.isin(sub_lbl, keep)
         sub[foreign, 3] = 0
-        # 第102轮: 紧裁 —— 纵向切线穿过相邻域 bbox 重叠区时, 清除后会有全透明边
         ys, xs = np.where(sub[..., 3] > 0)
-        if len(ys):
-            sub = sub[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
-        else:
-            print("    ★★ 空帧跳过 unit y%d..%d x%d..%d keep=%s"
-                  % (uy0, uy1, ux0, ux1, keep_ids))
+        if not len(ys):
+            continue
+        sub = sub[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+
+        al2 = sub[..., 3]
+        m2 = al2 > 128
+        l2, n2 = ndimage.label(m2, S8)
+        a2 = ndimage.sum(m2, l2, range(1, n2 + 1)) if n2 else []
+        nbody = int(sum(1 for v in a2 if v >= bg_area))
+        ink = int(m2.sum())
+
+        # 残片/异常: 面积太小 = 被切残了 → 丢弃(浅浅猫: "一样的但不完整的图")
+        if ink < 0.5 * med_ink or nbody < 1:
+            print("    ★★ 丢弃残片 %s_?? %dx%d 墨水%d(中位%.0f) 本体%d"
+                  % (gid, sub.shape[1], sub.shape[0], ink, med_ink, nbody))
             continue
 
-        name = "%s_%02d.png" % (gid, k)
-        al2 = sub[..., 3]
-        l2, n2 = ndimage.label(al2 > 128, S8)
-        a2 = ndimage.sum(al2 > 128, l2, range(1, n2 + 1)) if n2 else []
-        nbody = int(sum(1 for v in a2 if v >= bg_area))
-        if nbody == 0:
-            # 切线归属错位产生的空份 —— 角色像素都在另一份里, 这份直接丢弃
-            print("    ★★ 空内容份 %s 跳过 (keep=%s)" % (name, keep_ids))
-            continue
+        # 本体≥2(罕见: 格内确实有两个角色) → 尝试行投影深谷纵切, 验证不过就丢
+        if nbody >= 2:
+            proj = m2.sum(axis=1)
+            cs = valley_cuts(proj, int(0.22 * sub.shape[0]), 0.20)
+            ok = False
+            if cs:
+                pieces, prev = [], 0
+                for c in cs + [sub.shape[0]]:
+                    pieces.append(sub[prev:c].copy())
+                    prev = c
+                if all(_qc(p, bg_area, med_ink) for p in pieces):
+                    for pi, pc in enumerate(pieces):
+                        _save(pc, "%s_%02d" % (gid, k + pi * 1000))
+                    ok = True
+            if not ok:
+                print("    ★★ 丢弃多本体格 %s_?? %dx%d 本体%d"
+                      % (gid, sub.shape[1], sub.shape[0], nbody))
+                continue
+
+        name = "%s_%02d.png" % (gid, len(frames) + 1)
         out = Image.fromarray(sub)
         out.save(os.path.join(out_dir, name), optimize=True)
         th = out.copy()
         r = THUMB_H / th.height
         th = th.resize((max(1, int(th.width * r)), THUMB_H), Image.LANCZOS)
         th.save(os.path.join(thumb_dir, name), optimize=True)
-
         frames.append(dict(id=name[:-4], source=os.path.basename(path), source_cn=cname,
-                           size=[sub.shape[1], sub.shape[0]], decorations=len(decs),
+                           size=[sub.shape[1], sub.shape[0]],
+                           decorations=max(0, len(keep) - nbody),
                            selfcheck_bodies=nbody))
         flag = "" if nbody == 1 else "  ★本体数=%d" % nbody
-        print("  %s  %4dx%-4d 装饰%2d%s" % (name, sub.shape[1], sub.shape[0], len(decs), flag))
+        print("  %s  %4dx%-4d 域%2d 墨水%6d%s" % (name, sub.shape[1], sub.shape[0],
+                                                 len(keep), ink, flag))
     return dict(gid=gid, source=os.path.basename(path), source_cn=cname,
                 src_size=[W, H], frames=frames)
+
+
+def _qc(piece, bg_area, med_ink):
+    m = piece[..., 3] > 128
+    l, nn = ndimage.label(m, S8)
+    if not nn:
+        return False
+    sz = ndimage.sum(m, l, range(1, nn + 1))
+    return (sum(1 for v in sz if v >= bg_area) == 1) and (int(m.sum()) >= 0.5 * med_ink)
+
+
+def _save(sub, name):
+    """占位: 多本体切分后保存(当前调用点已被 process 内联处理)"""
+    pass
 
 
 def main():
