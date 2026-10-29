@@ -170,10 +170,17 @@ def process(gid, path, cname, out_dir, thumb_dir):
             continue
         foreign = (sub_lbl != 0) & ~np.isin(sub_lbl, keep)
         sub[foreign, 3] = 0
-        ys, xs = np.where(sub[..., 3] > 0)
-        if not len(ys):
+        if not (sub[..., 3] > 0).any():
             continue
-        sub = sub[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+        # ---- 统一补安全边距(剪完再 pad, 不依赖源图边缘) ----
+        # 顶部留最多(头发/呆毛/帽尖), 底部与左右少一些; 桌宠绘制是"底部对齐 + 居中",
+        # 四周有留白就不会出现被削顶的观感。
+        h0, w0 = sub.shape[0], sub.shape[1]
+        pad_top = max(12, int(0.06 * h0))
+        pad_bot = max(6, int(0.03 * h0))
+        pad_side = max(6, int(0.03 * w0))
+        sub = np.pad(sub, ((pad_top, pad_bot), (pad_side, pad_side), (0, 0)),
+                     mode="constant", constant_values=0)
 
         m2 = sub[..., 3] > 128
         l2, n2 = ndimage.label(m2, S8)
