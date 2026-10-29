@@ -741,11 +741,12 @@ check("PET_THEMES 含 v6 (睡衣日常) 且共 6 档",
       "v6" in ca.PET_THEMES and len(ca.PET_THEMES) == 6,
       str(list(ca.PET_THEMES.keys())))
 _fr6 = ca.load_pet_frames("v6")
-check("V6 素材可加载: idle3 / sleep6 / wake13 / drag2 / click3 / sidle51 / pat13 (共 91)",
+# 2026-10-30 第103轮: 再追加新待机批次(L01~L07)勾选的 53 帧 → 共 144 帧
+check("V6 素材可加载: idle5 / sleep7 / wake13 / drag6 / click23 / sidle70 / pat20 (共 144)",
       _fr6 is not None
       and [len(_fr6.get(k, [])) for k in ("idle", "sleep", "wake", "drag", "click", "sidle", "pat")]
-      == [3, 6, 13, 2, 3, 51, 13]
-      and sum(len(v) for v in _fr6.values()) == 91,
+      == [5, 7, 13, 6, 23, 70, 20]
+      and sum(len(v) for v in _fr6.values()) == 144,
       str({k: len(v) for k, v in (_fr6 or {}).items()}))
 check("V6 全库帧高统一(360, 与 V5 同基准, 播放不跳动)",
       len({im.height() for v in (_fr6 or {}).values() for im in v}) == 1,
