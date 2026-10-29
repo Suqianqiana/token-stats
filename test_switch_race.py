@@ -736,8 +736,23 @@ _hits = sum(1 for _ in range(400)
             if (w6._pet_state("sleep"), w6._seq_frames is not None)[1])
 check("chance=0.5 → 两种睡觉形态都出现(400 次抽样)", 120 < _hits < 280, f"动画 {_hits}/400")
 
+# V6 主题(2026-10-30 第102轮新增: 新睡衣素材批次勾选的 91 帧, 主待机 = idle_01/K15_02)
+check("PET_THEMES 含 v6 (睡衣日常) 且共 6 档",
+      "v6" in ca.PET_THEMES and len(ca.PET_THEMES) == 6,
+      str(list(ca.PET_THEMES.keys())))
+_fr6 = ca.load_pet_frames("v6")
+check("V6 素材可加载: idle3 / sleep6 / wake13 / drag2 / click3 / sidle51 / pat13 (共 91)",
+      _fr6 is not None
+      and [len(_fr6.get(k, [])) for k in ("idle", "sleep", "wake", "drag", "click", "sidle", "pat")]
+      == [3, 6, 13, 2, 3, 51, 13]
+      and sum(len(v) for v in _fr6.values()) == 91,
+      str({k: len(v) for k, v in (_fr6 or {}).items()}))
+check("V6 全库帧高统一(360, 与 V5 同基准, 播放不跳动)",
+      len({im.height() for v in (_fr6 or {}).values() for im in v}) == 1,
+      str(sorted({im.height() for v in (_fr6 or {}).values() for im in v})))
+
 # V5 主题
-check("PET_THEMES 含 v5 (鲸鱼少女)", "v5" in ca.PET_THEMES and len(ca.PET_THEMES) == 5,
+check("PET_THEMES 含 v5 (鲸鱼少女)", "v5" in ca.PET_THEMES,
       str(list(ca.PET_THEMES.keys())))
 _fr5 = ca.load_pet_frames("v5")
 # 2026-10-26 (第101轮): V5 并入浅浅猫勾选的 140 帧 → idle15/click33/sleep22/
