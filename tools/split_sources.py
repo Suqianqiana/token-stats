@@ -22,6 +22,7 @@ from scipy import ndimage
 S8 = np.ones((3, 3), bool)
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 THUMB_H = 300
+PREFIX = "K"          # 组前缀(每批一个字母: K=20261028, L=20261030, ...)
 
 
 def bbox_dist(a, b):
@@ -256,12 +257,15 @@ def main():
         print(__doc__)
         return 1
     batch = "20261028"
+    global THUMB_H, PREFIX
+    PREFIX = "K"
     for a in args:
         if a.startswith("--batch="):
             batch = a.split("=", 1)[1]
         elif a.startswith("--thumb="):
-            global THUMB_H
             THUMB_H = int(a.split("=", 1)[1])
+        elif a.startswith("--prefix="):
+            PREFIX = a.split("=", 1)[1]
     src = json.load(open(paths[0], encoding="utf-8"))
     out_dir = os.path.join(BASE, "assets", "pet_new_%s" % batch)
     thumb_dir = os.path.join(out_dir, "thumbs")
@@ -270,7 +274,8 @@ def main():
 
     groups = []
     for i, item in enumerate(src["keep"], 1):
-        gid = "K%02d" % i
+        # 第102轮: 组前缀可配(--prefix=L, 默认 K) —— 换批次时别再和上批 K01..K24 撞号
+        gid = "%s%02d" % (PREFIX, i)
         cname = os.path.splitext(item["name"])[0][:12]
         print("== %s %s" % (gid, item["name"]))
         g = process(gid, item["path"], cname, out_dir, thumb_dir)
