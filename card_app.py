@@ -8352,6 +8352,13 @@ class BallWindow(QWidget):
           * `ms`: 覆盖 PET_MS 的节拍(动作帧组自带节奏, 例如睡觉 1000ms/帧)。
         """
         self._state = st
+        # update 2026-10-31 (第104轮) 修 bug: **进入待机就复位待机计时**。
+        #   浅浅猫反馈"睡醒后偶尔闪一下待机帧又变回睡觉" —— 根因是 _idle_t 只在
+        #   点击/特殊待机/摸头等交互时更新, 切回 idle 状态本身不更新。于是
+        #   待机(60s)→睡觉(90~240s)→睡醒→回待机 时, _idle_t 还停在几百秒前,
+        #   下一个 tick(240ms)就判定"待机超时"又睡回去 —— 观感上就是"闪一下"。
+        if st == "idle":
+            self._idle_t = time.time()
         self._seq_frames = seq_frames        # 每次切场景都重置, 防止上一组残留
         if seq is not None:
             self._seq = seq

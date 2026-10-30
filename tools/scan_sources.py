@@ -54,7 +54,14 @@ def main():
     for a in args[1:]:
         if a.startswith("--out="):
             out = a.split("=", 1)[1]
-    files = [p for p in glob.glob(os.path.join(d, "*.png"))]
+    paths = [a for a in args if not a.startswith("--")]
+    # 第103轮: 支持直接传**文件列表**(她这次给的是 4 张散文件, 不是目录)
+    if len(paths) == 1 and os.path.isdir(paths[0]):
+        d = paths[0]
+        files = sorted(glob.glob(os.path.join(d, "*.png")), key=os.path.getmtime)
+    else:
+        d = os.path.dirname(os.path.abspath(paths[0]))
+        files = [p for p in paths if p.lower().endswith(".png")]
     files.sort(key=os.path.getmtime)
     print("目录:", d)
     print("png 数量:", len(files))

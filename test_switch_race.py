@@ -741,16 +741,36 @@ check("PET_THEMES 含 v6 (睡衣日常) 且共 6 档",
       "v6" in ca.PET_THEMES and len(ca.PET_THEMES) == 6,
       str(list(ca.PET_THEMES.keys())))
 _fr6 = ca.load_pet_frames("v6")
-# 2026-10-30 第103轮: 再追加新待机批次(L01~L07)勾选的 53 帧 → 共 144 帧
-check("V6 素材可加载: idle5 / sleep7 / wake13 / drag6 / click23 / sidle70 / pat20 (共 144)",
+# 2026-10-30 第103轮: 追加新待机批次(L01~L07)53 帧 → 144
+# 2026-10-31 第104轮: 再追加 4 张新素材批次(M01~M04)勾选的 29 帧 → 共 173 帧
+check("V6 素材可加载: idle5 / sleep7 / wake13 / drag6 / click34 / sidle82 / pat26 (共 173)",
       _fr6 is not None
       and [len(_fr6.get(k, [])) for k in ("idle", "sleep", "wake", "drag", "click", "sidle", "pat")]
-      == [5, 7, 13, 6, 23, 70, 20]
-      and sum(len(v) for v in _fr6.values()) == 144,
+      == [5, 7, 13, 6, 34, 82, 26]
+      and sum(len(v) for v in _fr6.values()) == 173,
       str({k: len(v) for k, v in (_fr6 or {}).items()}))
 check("V6 全库帧高统一(360, 与 V5 同基准, 播放不跳动)",
       len({im.height() for v in (_fr6 or {}).values() for im in v}) == 1,
       str(sorted({im.height() for v in (_fr6 or {}).values() for im in v})))
+
+# ---- 2026-10-31 (第104轮) 修 bug: 睡醒→待机 会"闪一下待机帧又回睡" ----
+# 根因: _idle_t(待机计时起点)只在点击/特殊待机/摸头等交互时更新, **切回 idle 状态
+#   本身不更新** → 待机(60s)→睡(90~240s)→睡醒→回待机 时, _idle_t 还是几百秒前,
+#   下一个 tick(240ms)就判定"待机超时"又睡回去。修法: _pet_state("idle") 里复位计时。
+_w6b = ca.BallWindow(None)
+_w6b.set_pet(True)
+_w6b._idle_t = time.time() - 300          # 模拟: 计时器停在很久以前(睡觉前)
+_w6b._pet_state("idle")
+check("切到 idle 会复位待机计时(_idle_t) —— 睡醒回待机不再立刻回睡",
+      time.time() - _w6b._idle_t < 2 and _w6b._state == "idle",
+      "%.1fs 前" % (time.time() - _w6b._idle_t))
+# 再走一次 tick: _idle_t 已复位 → 不该判定"待机超时"(修前会立刻切回 sleep)
+_w6b._state = "idle"
+_w6b._seq = [0]
+_w6b._si = 0
+_w6b._pet_tick()
+check("待机 tick 一次不会立刻回睡(修前会闪一下就睡回去)",
+      _w6b._state == "idle", _w6b._state)
 
 # V5 主题
 check("PET_THEMES 含 v5 (鲸鱼少女)", "v5" in ca.PET_THEMES,

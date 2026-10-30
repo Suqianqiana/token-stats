@@ -1,0 +1,41 @@
+{
+ "dir": "C:\\Users\\a3564\\Downloads",
+ "total": 4,
+ "unique": 4,
+ "exact_dups": [],
+ "perceptual_dups": [],
+ "keep": [
+  {
+   "path": "C:/Users/a3564/Downloads/pajama_desktop_pet_8_actions_4k_transparent.png",
+   "name": "pajama_desktop_pet_8_actions_4k_transparent.png",
+   "size": [
+    3840,
+    2560
+   ]
+  },
+  {
+   "path": "C:/Users/a3564/Downloads/pajama_desktop_pet_new_8_actions_4k.png",
+   "name": "pajama_desktop_pet_new_8_actions_4k.png",
+   "size": [
+    4096,
+    2732
+   ]
+  },
+  {
+   "path": "C:/Users/a3564/Downloads/蓝色鲸鱼主题少女贴纸表情包.png",
+   "name": "蓝色鲸鱼主题少女贴纸表情包.png",
+   "size": [
+    1448,
+    1086
+   ]
+  },
+  {
+   "path": "C:/Users/a3564/Downloads/蓝鲸主题可爱精灵贴纸组.png",
+   "name": "蓝鲸主题可爱精灵贴纸组.png",
+   "size": [
+    1536,
+    1024
+   ]
+  }
+ ]
+}
