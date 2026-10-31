@@ -8126,6 +8126,11 @@ PET_SLEEP_DUR = (90, 240)       # 睡觉时长随机区间(秒) —— 浅浅猫
 PET_OTHER_EVERY = (150, 420)    # 特殊待机动作触发间隔(秒)
 # update 2026-10-23 (浅浅猫): 特殊待机持续 15~60s -> **30~60s** (触发间隔 150~420s 不变)
 PET_SIDLE_DUR = (30, 60)        # 特殊待机动作持续时长(秒)
+# update 2026-10-31 (第106轮, 浅浅猫认可 P1-⑤): 睡醒后"继续睡"的概率 **0.4 -> 0.15**,
+#   并且**最多连续赖床一次**(见 _pet_tick 的 _nap_chain)。
+#   旧写法 40% 会串成链式赖床: 3 小时模拟里最长一段连续 610 秒(10.2 分钟)只在中间闪过
+#   几次 4 秒伸懒腰, 用户视角就是"桌宠一上午都不见了"。改后期望每次小睡只赖 1 次床。
+PET_WAKE_NAPTIME = 0.15
 PET_MS = {"idle": 240, "sleep": 1500, "wake": 700, "drag": 140,
           "click": 300, "sidle": 600, "pat": 600}
 # 2026-09-17 浅浅猫的想法: 桌宠"顶部 1/3"点= 摸摸头, 其余(底部 2/3)= 普通点击互动;
@@ -8287,8 +8292,19 @@ class BallWindow(QWidget):
         self.resize(54, 54)
         self.hover = False
         self._moved = False
+        # update 2026-10-31 (第106轮, P1-⑥): 补齐 self._drag 初始化。
+        #   `mouseMoveEvent` 一直直接读它, 而它只在 `mousePressEvent` 里被赋值 ——
+        #   任何"没经过本控件 press 就走 move"的路径(抓鼠标残留/脚本模拟/以后加拖拽源)
+        #   都会 AttributeError。对照 GlassDialog / CardWindow 都规规矩矩置了 None。
+        self._drag = None
         self._press_time = 0.0
         self._press_origin = QPoint()
+        # update 2026-10-31 (第106轮, P1-⑦): `_sleep_until` 以前只在 _pet_state("sleep")
+        #   里才第一次出现, `_pet_tick` 靠 getattr 兜底 —— 能跑, 但把"初始化缺失"藏住了。
+        self._sleep_until = 0.0
+        self._nap_chain = 0            # update 2026-10-31 (第106轮): 连续赖床次数(最多 1)
+        self._screens_hooked = False   # update 2026-10-31 (第106轮): 屏幕信号是否已订阅
+        self._hooked_screens = []      # update 2026-10-31 (第106轮): 已挂信号的 QScreen
         self._rz_init_state()          # 第100轮: 调整大小模式(默认关闭)
 
         pos = None
@@ -8300,11 +8316,24 @@ class BallWindow(QWidget):
         # update 2026-10-25 (第100轮): 桌宠尺寸可自由调节(右键「调整大小…」) →
         #   启动时恢复存档里的 w/h; 没有(旧存档)则用默认 118×148。
         self._ball_wh = self._read_ball_wh(pos)
-        screen = QApplication.primaryScreen().availableGeometry()
-        if pos:
-            self.move(int(pos["x"]), int(pos["y"]))
+        scr0 = QApplication.primaryScreen().availableGeometry()
+        px = py = None
+        if isinstance(pos, dict):
+            try:
+                px, py = int(pos["x"]), int(pos["y"])
+            except Exception:
+                # update 2026-10-31 (第106轮): 存档字段缺失/被截断时不再 KeyError ——
+                #   以前 ball_pos.json 只要少了 x/y, __init__ 直接抛异常, 整个应用起不来。
+                px = py = None
+        if px is None:
+            self.move(scr0.right() - self.width() - 20, scr0.bottom() - self.height() - 40)
         else:
-            self.move(screen.right() - self.width() - 20, screen.bottom() - self.height() - 40)
+            self.move(px, py)
+        # update 2026-10-31 (第106轮, P0-①): **启动就夹一次屏**。
+        #   以前只有 _pet_apply() 里才调 _clamp_pos —— 于是「悬浮球」形态直接吃存档坐标,
+        #   拔过显示器 / 改过分辨率后它会整只落到屏幕外: 肉眼彻底消失、右键也点不到,
+        #   而且存档里仍是坏坐标, 重启也自愈不了(实测存档 x=4799 vs 屏幕右边界 799)。
+        self._clamp_pos()
 
         self.setToolTip("Token 统计 — 单击/双击打开统计面板 / 右键菜单")
         self.show()
@@ -8316,6 +8345,8 @@ class BallWindow(QWidget):
         self._stat_timer.timeout.connect(self._write_status)
         self._stat_timer.start(5000)
         self._write_status()
+        # update 2026-10-31 (第106轮, P0-③): 订阅显示器增删/可用区域变化
+        self._hook_screens()
 
     def _write_status(self):
         """把"我是谁、跑的哪份代码、现在什么状态"写进 ball_status.json。
@@ -8410,6 +8441,9 @@ class BallWindow(QWidget):
         #   下一个 tick(240ms)就判定"待机超时"又睡回去 —— 观感上就是"闪一下"。
         if st == "idle":
             self._idle_t = time.time()
+            # update 2026-10-31 (第106轮, P1-⑤): 真正回到待机 = 赖床链结束。
+            #   于是"睡→醒→再睡"最多只允许一次, 下一次必须先有一段真实待机。
+            self._nap_chain = 0
         self._seq_frames = seq_frames        # 每次切场景都重置, 防止上一组残留
         if seq is not None:
             self._seq = seq
@@ -8465,7 +8499,9 @@ class BallWindow(QWidget):
         now = time.time()
         if self._state == "sleep":
             # 睡够随机时长(>=90s) -> 播"睡醒"帧
-            if now >= getattr(self, "_sleep_until", now + PET_SLEEP_DUR[0]):
+            # update 2026-10-31 (第106轮, P1-⑦): `_sleep_until` 已在 __init__ 声明,
+            #   不再用 getattr 兜底(那会把"初始化缺失"藏起来)。
+            if now >= self._sleep_until:
                 self._pet_state("wake")
                 return
         elif self._state == "idle":
@@ -8489,7 +8525,14 @@ class BallWindow(QWidget):
             elif self._state == "wake":
                 # 浅浅猫 2026-10-23: 睡醒之后**随机**接「继续睡觉」或「恢复到待机」
                 #   (旧行为: 睡醒播完必定回待机 —— 醒了就不再睡, 少了"赖床"的自然感)
-                self._pet_state("sleep" if random.random() < 0.4 else "idle")
+                # update 2026-10-31 (第106轮, P1-⑤, 浅浅猫认可): 概率 0.4 -> PET_WAKE_NAPTIME(0.15),
+                #   并且**最多连续赖床一次**。旧写法 40% 会串成链: 3 小时模拟里最长一段连续
+                #   610 秒(10.2 分钟)只在中间闪过几次 4 秒伸懒腰 —— 用户视角是"桌宠不见了"。
+                #   `_nap_chain` 在 _pet_state("idle") 里清零, 所以下一次小睡可以正常赖一次床。
+                doze = (self._nap_chain < 1) and random.random() < PET_WAKE_NAPTIME
+                if doze:
+                    self._nap_chain += 1
+                self._pet_state("sleep" if doze else "idle")
                 return
             else:
                 self._pet_state("idle")
@@ -8587,6 +8630,56 @@ class BallWindow(QWidget):
         x = max(scr.left(), min(self.x(), scr.right() - self.width()))
         y = max(scr.top(), min(self.y(), scr.bottom() - self.height()))
         self.move(x, y)
+
+    # ============================================================ 屏幕变化自适应 (第106轮)
+    def _hook_screens(self):
+        """订阅显示器增删 / 可用区域变化 → 自动把窗口夹回可见区域。
+
+        update 2026-10-31 (第106轮, P0-③):
+          全程序以前**没有任何屏幕变化监听**。运行中拔显示器、改分辨率、切换扩展屏,
+          桌宠都留在旧坐标不动 —— 可能整只落到已经不存在的区域里, 用户再也点不到,
+          只能重启(而且重启后还要靠 P0-① 那次夹屏才救得回来)。
+
+        设计要点:
+          · `screenAdded` 里会**补挂**新显示器的 `availableGeometryChanged` —— 否则新屏
+            之后改分辨率收不到通知。
+          · 已挂过的 QScreen 记在 `self._hooked_screens` 里按**对象身份**去重:
+            Qt 对同一个 QScreen 只会给一个 wrapper, 用 `is` 判断即可;
+            不留记录会导致每次屏幕事件都重复 connect, 信号越积越多。
+        """
+        if self._screens_hooked:
+            return
+        self._screens_hooked = True
+        app = QGuiApplication.instance()
+        if app is not None:
+            try:
+                app.screenAdded.connect(self._on_screen_changed)
+                app.screenRemoved.connect(self._on_screen_changed)
+            except Exception:
+                pass
+        for s in QGuiApplication.screens():
+            self._hook_one_screen(s)
+
+    def _hook_one_screen(self, s):
+        """给单个 QScreen 挂 availableGeometryChanged(幂等)。"""
+        for old in self._hooked_screens:
+            if old is s:
+                return
+        try:
+            s.availableGeometryChanged.connect(self._on_screen_changed)
+        except Exception:
+            return
+        self._hooked_screens.append(s)
+
+    def _on_screen_changed(self, *_args):
+        """屏幕拓扑或可用区域变化: 补挂新屏 + 把窗口夹回可见区域。
+
+        `_clamp_pos()` 本身**幂等**(已经在屏内就不会动), 所以多个信号连着来也不用去抖。
+        """
+        for s in QGuiApplication.screens():
+            self._hook_one_screen(s)
+        self._clamp_pos()
+        self.update()
 
     # ============================================================ 调整大小 (第100轮)
     # 浅浅猫 2026-10-25: 右键「📐 调整大小…」进入。桌宠四周出**内部透明**的虚线框,
@@ -8903,7 +8996,13 @@ class BallWindow(QWidget):
             # update 2026-10-25: 正在播"完整动作帧组"时从这里取帧(组内顺序循环),
             #   否则回普通帧库(按场景 + 回退链)。两条路的 _seq 都是帧下标。
             frames = self._seq_frames if self._seq_frames else self._frames_of(self._state)
-            if not frames: return
+            # update 2026-10-31 (第106轮, P0-②): **空帧序列必须挡住**。
+            #   旧写法只判 `frames`, 没判 `self._seq`: 序列为空时 `_si % 0` 抛
+            #   ZeroDivisionError, 而 Qt 覆写方法里抛异常是**不可捕获**的 ——
+            #   进程直接 abort(等价 exit 139), 现象是"桌宠毫无征兆消失"。
+            #   实测: `ball._seq = []` 后 `grab()` 即复现。
+            if not frames or not self._seq:
+                return
             frame_no = self._seq[self._si % len(self._seq)]
             img = frames[frame_no % len(frames)]
             iw, ih = img.width(), img.height()
@@ -9015,6 +9114,11 @@ class BallWindow(QWidget):
                 self._rz_set_cursor(hit)
                 self.update()
         if ev.buttons() & Qt.LeftButton:
+            # update 2026-10-31 (第106轮, P1-⑥): `_drag` 缺失时就地补齐。
+            #   以前这里直接 `pos - self._drag`, 而 `_drag` 只在 mousePressEvent 里赋值 ——
+            #   任何"没经过本控件 press 却收到 move"的路径都会 AttributeError。
+            if self._drag is None:
+                self._drag = ev.globalPosition().toPoint() - self.frameGeometry().topLeft()
             moved_now = (ev.globalPosition().toPoint() - self._press_origin).manhattanLength() > 4
             # 第97轮后半13 修(浅猫: "关闭桌宠模式时, 悬浮球无法拖动"):
             #   `_moved` 的置位原来带了 `and self.pet` —— 关掉桌宠后它永远是 False,
@@ -9030,6 +9134,8 @@ class BallWindow(QWidget):
 
     def mouseReleaseEvent(self, ev):
         if ev.button() != Qt.LeftButton: return
+        # update 2026-10-31 (第106轮, P1-⑥): 一次手势结束就清掉位移基准, 避免跨手势残留。
+        self._drag = None
         if self._rz_mode and not self._rz_closing:
             if self._rz_press in ("ok", "cancel"):
                 ok = (self._rz_press == "ok")
@@ -9056,8 +9162,12 @@ class BallWindow(QWidget):
         self._save_ball_pos(save_size=save_size)
         if self.pet:
             self._idle_t = time.time()
-            dur_ms = (time.time() - self._press_time) * 1000
-            if not self._moved and dur_ms < 250:
+            # update 2026-10-31 (第106轮, P1-⑨): **去掉"必须在 250ms 内松手"的门槛**。
+            #   旧写法 `if not self._moved and dur_ms < 250:` —— 按住超过 250ms 再松手
+            #   就完全不响应(既不摸头也不互动), 观感是"点了她不理我"; 触控板、手慢、
+            #   犹豫型点击都很容易踩到。位移阈值(>4px 判拖动)已经足够区分意图,
+            #   时长不该再当判据。(`_press_time` 仍保留记录, 供以后做长按手势用。)
+            if not self._moved:
                 # 按点击高度分流: 顶部 1/3 = 摸摸头, 底部 2/3 = 点击互动
                 self._pet_click_region(ev.position().y())
             else:

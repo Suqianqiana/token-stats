@@ -1018,6 +1018,94 @@ check("绘制区最顶 → 摸摸头", w6._state == "pat", w6._state)
 w6._pet_draw_rect = None                             # 没有绘制区域时退回窗口高度
 w6._pet_click_region(1)
 check("无绘制区域时按窗口高度判断", w6._state == "pat", w6._state)
+
+# ---- 2026-10-31 (第106轮): 桌宠三视角审查「第一批修复」的回归锁 ----
+#   浅浅猫认可的范围: ①启动夹屏 ②paintEvent 空序列 ③屏幕变化监听
+#                   ⑥_drag 初始化 ⑦_sleep_until 声明 ⑨点击去掉时长门槛 ⑤赖床最多一次
+#   每条都对应一个曾经真实存在(或已复现)的缺陷, 别删。
+import inspect as _insp        # noqa: E402
+
+_TMP_BALL2 = tempfile.mkdtemp(prefix="tstats_ball2_")
+ca.scanner.PLUGIN_DATA_DIR = _TMP_BALL2
+try:
+    _scr = app.primaryScreen().availableGeometry()
+    # ① 存档越屏(拔过显示器/改过分辨率) → 启动就必须夹回屏幕内
+    with open(os.path.join(_TMP_BALL2, "ball_pos.json"), "w", encoding="utf-8") as _f:
+        json.dump({"x": _scr.right() + 4000, "y": _scr.bottom() + 4000,
+                   "w": 118, "h": 148}, _f)
+    _wb = ca.BallWindow(None)                     # 悬浮球形态(未开桌宠)
+    check("启动即把越屏坐标夹回屏幕内(旧 bug: 悬浮球永久消失)",
+          _scr.left() <= _wb.x() <= _scr.right() and _scr.top() <= _wb.y() <= _scr.bottom(),
+          f"{_wb.x()},{_wb.y()} 屏幕={_scr.left()},{_scr.top()}..{_scr.right()},{_scr.bottom()}")
+    # ① 附带: 存档字段缺失时不能再让整个应用起不来
+    with open(os.path.join(_TMP_BALL2, "ball_pos.json"), "w", encoding="utf-8") as _f:
+        json.dump({"w": 150, "h": 180}, _f)
+    _wb2 = ca.BallWindow(None)
+    check("ball_pos 缺 x/y 时不再 KeyError", isinstance(_wb2.x(), int))
+    check("缺 x/y 时尺寸仍按存档生效", _wb2._ball_wh == (150, 180), str(_wb2._ball_wh))
+
+    # ② 空帧序列 → paintEvent 不得除零(Qt 覆写里抛异常 = 进程 abort)
+    _wb2.set_pet(True)
+    _wb2._seq = []
+    check("空帧序列时 paintEvent 不再 ZeroDivisionError", _wb2.grab() is not None)
+
+    # ⑥⑦ 初始化齐全(不再靠 getattr 兜底)
+    check("_drag 已初始化", getattr(_wb2, "_drag", "缺失") is None)
+    check("_sleep_until 已初始化", isinstance(getattr(_wb2, "_sleep_until", None), float))
+    check("_pet_tick 不再用 getattr 兜底 _sleep_until",
+          'getattr(self, "_sleep_until"' not in _insp.getsource(ca.BallWindow._pet_tick))
+
+    # ③ 屏幕信号: 幂等 + 回调可用
+    _wb2._hook_screens()
+    _n0 = len(_wb2._hooked_screens)
+    _wb2._hook_screens()
+    _wb2._on_screen_changed()
+    check("屏幕信号只挂一次(重复调用不累加)", _n0 >= 1 and len(_wb2._hooked_screens) == _n0,
+          f"{_n0} -> {len(_wb2._hooked_screens)}")
+    check("屏幕变化回调可安全调用、窗口仍在屏内",
+          _scr.left() <= _wb2.x() <= _scr.right())
+
+    # ⑨ 点击不再有"必须 250ms 内松手"的门槛
+    _wb2.pet = True
+    _wb2._save_ball_pos = lambda *a, **k: None    # 别碰存档
+    _wb2._pet_state("idle")
+    _wb2._pet_draw_rect = QRectF(0, 0, 118, 148)
+    _wb2._moved = False
+    _wb2._press_time = time.time() - 3.0          # 按住 3 秒
+    _wb2._ball_release(_FakeEv(20, 130, 20, 130), save_size=False)
+    check("按住超过 250ms 松手也算点击(旧 bug: 毫无反应)",
+          _wb2._state in ("click", "pat"), _wb2._state)
+
+    # ⑤ 赖床最多连续一次
+    _wb2._pet_state("wake")
+    _wb2._seq, _wb2._si = [0], 0
+    _wb2._nap_chain = 1                            # 已经赖过一次
+    _wb2._pet_tick()                               # wake 播完 → 判定
+    check("已赖过一次时 wake 播完必回待机(不再链式赖床)", _wb2._state == "idle", _wb2._state)
+
+    _naps = 0
+    for _i in range(60):
+        _wb2._pet_state("wake")
+        _wb2._seq, _wb2._si = [0], 0
+        _wb2._nap_chain = 0
+        _wb2._pet_tick()
+        if _wb2._state == "sleep":
+            _naps += 1
+    check("赖床概率已从 0.4 降到 ~0.15 (60 次 wake 中 %d 次)" % _naps,
+          1 <= _naps <= 25, str(_naps))
+    check("_pet_state(idle) 会清零赖床链",
+          (_wb2._pet_state("idle") or _wb2._nap_chain) == 0, str(_wb2._nap_chain))
+    # 收尾: 停掉心跳定时器再关窗 —— 否则它会在数据目录被还原之后继续往**真实**
+    #   ball_status.json 里写测试进程的 pid, 让 pet_status.py 判错。
+    for _w in (_wb, _wb2):
+        try:
+            _w._stat_timer.stop()
+        except Exception:
+            pass
+        _w.close()
+finally:
+    ca.scanner.PLUGIN_DATA_DIR = _REAL_DATA_DIR
+
 w6._pet_click_region(w6.height() - 2)
 check("无绘制区域时底部 → 点击", w6._state == "click", w6._state)
 
