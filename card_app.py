@@ -243,6 +243,19 @@ theme_state = {
     # 2026-10-19 (第76轮): **静态背景** —— 毛玻璃模式下改用静态底纹(内置/自定义图)代替
     # DWM 实时 Acrylic。默认值 False = 默认走真·实时毛玻璃。
     "frost_static": False,
+    # update 2026-11-01 (第107轮, 浅浅猫): 桌宠「手绘便利贴」悬浮气泡。
+    #   · bubble       = 功能总开关(桌宠右键菜单)
+    #   · bubble_pin   = 常驻: 鼠标移开也不收起
+    #   · bubble_manual= 是否已手动拖过尺寸(拖过就不再跟随桌宠缩放)
+    #   · bubble_w/h   = 手动模式下的尺寸(0 = 还没手动调过)
+    #   · pet_tip_shown= 首次开启桌宠的引导气泡是否已经看过(只弹一次)
+    #   ⚠️ 这些键必须放在 theme_state 里才会随 save_settings() 落盘(第58轮的坑)。
+    "bubble": False, "bubble_pin": False, "bubble_manual": False,
+    "bubble_w": 0, "bubble_h": 0, "pet_tip_shown": False,
+    # update 2026-11-01: 气泡位置模式。bubble_follow=True 时用**相对她的偏移**(dx,dy)
+    #   跟随移动；跟到屏幕边界会关于她的中心镜像到另一侧。
+    # update 2026-11-01: 默认位置 = 浅浅猫亲手摆的那个 (相对她左上角 -150, -111 的左上侧)
+    "bubble_follow": True, "bubble_dx": -150, "bubble_dy": -111,
 }
 
 # 2026-10-19 (第76轮): 真毛玻璃(DWM Acrylic)是否已挂到窗口上。
@@ -7495,6 +7508,13 @@ class CardWindow(QWidget):
         # 供 load_initial() 判断能否直接复用(切页不再重扫)。
         self._src_ts[src] = time.time()
         self._stats_by_src[src] = s
+        # update 2026-11-01 (第107轮): 新数据一到就让桌宠气泡跟上(它读的是这份快照)
+        try:
+            _pb = PET_BALL.get("w")
+            if _pb is not None:
+                _pb._bubble_tick_data()
+        except Exception:
+            pass
         if src == self.source:
             self.stats = s
             if src == "sn": self._sn_cache = s
@@ -8074,6 +8094,22 @@ def load_settings():
         theme_state["pet_theme"] = _pt
         theme_state["window_size"] = d.get("window_size", "default")
         theme_state["glass_transparency"] = d.get("glass_transparency", "balanced")
+        # update 2026-11-01 (第107轮): 桌宠悬浮气泡的设置（浅浅猫 2026-11-01 定）
+        theme_state["bubble"] = bool(d.get("bubble"))
+        theme_state["bubble_pin"] = bool(d.get("bubble_pin"))
+        theme_state["bubble_manual"] = bool(d.get("bubble_manual"))
+        try:
+            theme_state["bubble_w"] = int(d.get("bubble_w", 0) or 0)
+            theme_state["bubble_h"] = int(d.get("bubble_h", 0) or 0)
+        except Exception:
+            theme_state["bubble_w"] = theme_state["bubble_h"] = 0
+        theme_state["pet_tip_shown"] = bool(d.get("pet_tip_shown"))
+        theme_state["bubble_follow"] = bool(d.get("bubble_follow"))
+        try:
+            theme_state["bubble_dx"] = int(d.get("bubble_dx", 0) or 0)
+            theme_state["bubble_dy"] = int(d.get("bubble_dy", 0) or 0)
+        except Exception:
+            theme_state["bubble_dx"] = theme_state["bubble_dy"] = 0
     except Exception:
         pass
 
@@ -8261,6 +8297,729 @@ def ball_status_path():
     return os.path.join(scanner.PLUGIN_DATA_DIR, "ball_status.json")
 
 
+# ============================================================ 桌宠悬浮气泡 (第107轮)
+# 浅浅猫 2026-11-01 定稿的设计:
+#   · 目的 = **不点开主面板也能看到基本信息**: 今日总用量 + WorkBuddy/DSH 各自单日前二模型
+#   · 手绘风: 蓝白纸底 + 主蓝缝线虚线 + 指向桌宠的尖角(方向跟着桌宠在左还是右自动换)
+#   · 尺寸: 默认**跟随桌宠缩放**; 手动拖右下角之后就锁定手动尺寸, 菜单可恢复跟随
+#   · 右上角常驻小圆钮: 亮 = 鼠标移开也不收起
+#   · 交互: 悬停 400ms 出现; 点桌宠一下收起; 鼠标移开 500ms 收起(常驻除外)
+#
+# ⭐ 主蓝不是拍脑袋定的 —— 扫 pet_v6 全部 173 帧、15 万个偏蓝像素统计出来的:
+#   出现最多 #546090 (6.9%)、深一档 #3C4878、最鲜艳的簇 #6078B4。
+BUBBLE_INK = QColor(84, 96, 144)          # #546090 —— 剪裁口描边
+BUBBLE_INK_DEEP = QColor(60, 72, 120)     # #3C4878 —— 数字/标题
+BUBBLE_INK_VIVID = QColor(96, 120, 180)   # #6078B4 —— 缝线虚线
+BUBBLE_PAPER = QColor(247, 250, 255)      # #F7FAFF —— 蓝白纸底
+# ⭐ 内容栅格: _layout() 用它把"纸面宽度"换算成字号倍率 k（与窗口默认尺寸解耦）
+BUBBLE_BASE_W = 226.0
+BUBBLE_BASE_H = 168.0
+# ⭐⭐ 默认窗口尺寸的参考点（浅浅猫 2026-11-01 定稿: "我现在设置的这个大小就是我满意的大小"）
+#   她机器上桌宠 140×174 时，气泡 196×144 是她亲自拖出来的满意尺寸 —— 直接取作基准，
+#   桌宠变大变小就按高度等比缩放（钳制 0.72~1.6，免得极端尺寸下字太小/太大）。
+BUBBLE_REF_PET_H = 174.0
+BUBBLE_REF_W = 196.0
+BUBBLE_REF_H = 144.0
+BUBBLE_SCALE_MIN, BUBBLE_SCALE_MAX = 0.72, 1.60
+BUBBLE_SIZE_MIN = (170, 118)              # 手动拖拽的下限(含尖角余量)
+BUBBLE_SIZE_MAX = (420, 440)
+BUBBLE_HOVER_DELAY = 400                  # 悬停多久出现(毫秒)
+BUBBLE_HIDE_DELAY = 500                   # 移开多久收起(毫秒) —— 要给鼠标留出"移到气泡上点常驻"的时间
+# update 2026-11-01 (浅浅猫: "尖角好像被截断了"): 尖角改成**画在窗口内部**——
+#   底板四周留 BUBBLE_PTR_LEN 的透明余量, 超出的部分不再被子控件裁掉。
+#   BUBBLE_PTR_HALF = 尖角底边半宽; slant 见 _bubble_path 的第三个参数。
+BUBBLE_PTR_LEN = 10.0
+BUBBLE_PTR_HALF = 8.0
+BUBBLE_CORNER_R = 14.0                    # 纸面圆角半径(尖角避让圆角段也要用)
+BUBBLE_GRIP = 15.0                        # 右下角拖拽热区
+BUBBLE_FADE_STEP = 0.13                   # 淡入每帧增量(16ms/帧 → ~125ms 到位; 淡出快 1.8 倍)
+
+
+def _bubble_path(rect, radius, pointer=None):
+    """便利贴底板路径 = 圆角矩形 + 指向桌宠的**任意角度尖角**。
+
+    `pointer` = (tip_x, tip_y, ax, ay, bx, by)：尖端 + 底边两个端点（窗口局部坐标）。
+
+    ⭐ 浅浅猫 2026-11-01 要求"尖角允许绕 360 度转"。
+    ⚠️⚠️ **底边必须沿着本体那条边走（贴边的一条线段），不能垂直于尾巴方向** ——
+       这是第二轮踩的坑：按"垂直尾巴"算底边时，斜角一大，底边就有一大半甩到本体外面，
+       只剩一小条贴边，视觉上就是"尖角和本体断开了"。像纸角折下来那样贴边才对。
+
+    ⚠️ 尖角必须画在窗口内：纸面四周留了 BUBBLE_PTR_LEN 的透明余量（见 _paper_rect）。
+       早先版本把三角画到 rect 外面，超出窗口的部分被子控件裁掉 —— 就是"尖角被截断"。
+    """
+    path = QPainterPath()
+    path.addRoundedRect(rect, radius, radius)
+    if not pointer:
+        return path
+    tipx, tipy, ax, ay, bx, by = pointer
+    tri = QPainterPath()
+    tri.moveTo(QPointF(ax, ay))
+    tri.lineTo(QPointF(tipx, tipy))
+    tri.lineTo(QPointF(bx, by))
+    tri.closeSubpath()
+    return path.united(tri)
+
+
+def paint_hand_card(p, rect, radius, pointer=None, alpha=1.0):
+    """手绘便利贴底板: ① 蓝白纸底 ② 沿边主蓝剪裁口 ③ 内缩 5px 的缝线虚线。
+
+    刻意**不描菲涅尔高光、不加阴影** —— 要的是"手账贴纸"而不是玻璃卡片。
+    """
+    path = _bubble_path(rect, radius, pointer)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(BUBBLE_PAPER.red(), BUBBLE_PAPER.green(), BUBBLE_PAPER.blue(),
+                      int(252 * alpha)))
+    p.drawPath(path)
+    p.setBrush(Qt.NoBrush)
+    p.setPen(QPen(QColor(BUBBLE_INK.red(), BUBBLE_INK.green(), BUBBLE_INK.blue(),
+                         int(205 * alpha)), 1.3))
+    p.drawPath(path)
+    inset = 5.0
+    ir = rect.adjusted(inset, inset, -inset, -inset)
+    if ir.width() > 6 and ir.height() > 6:
+        pen = QPen(QColor(BUBBLE_INK_VIVID.red(), BUBBLE_INK_VIVID.green(),
+                          BUBBLE_INK_VIVID.blue(), int(185 * alpha)),
+                   1.1, Qt.CustomDashLine, Qt.RoundCap, Qt.RoundJoin)
+        pen.setDashPattern([3.0, 3.2])
+        p.setPen(pen)
+        rr = max(3.0, radius - inset)
+        p.drawRoundedRect(ir, rr, rr)
+
+
+class PetBubble(QWidget):
+    """桌宠旁边的「手绘便利贴」—— 不打开主面板也能看到今日用量。
+
+    浅浅猫 2026-11-01 两轮反馈已并入:
+      · "今日总用量" 字号 12 -> 14.5
+      · 尖角画在窗口内(不再被裁) + **绕纸面 360 度任意方向**指向她，且永远指向她
+      · 默认尺寸 = **和她一样高**(纸面高 ≈ 桌宠高)
+      · 位置三态: 自动摆放(在她上方) / **跟随**(记住相对偏移, 她在哪它跟到哪) / 拖动改位置
+        跟随到屏幕边界会**关于她的中心镜像**到另一侧；右上角 🔗 钮可切换跟随
+    """
+
+    def __init__(self, ball):
+        super().__init__(None, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.ball = ball
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setMouseTracking(True)
+        self.setToolTip("")
+        self._fade = 0.0
+        self._fade_dir = 0
+        self._pointer = None
+        self._blocks = []
+        self._total = 0
+        self._grip = False            # 正在拖右下角
+        self._moving = False          # 正在拖动整个气泡
+        self._move0 = None            # (全局起点, 起始窗口位置)
+        self._hover = None            # "pin" / "follow" / "grip" / "body"
+        self._grip0 = None            # (全局起点, 起始 w, h)
+        self._geo = {}                # 布局缓存
+        self._tm = QTimer(self)
+        self._tm.timeout.connect(self._fade_tick)
+        self.hide()
+
+    # ---------------- 尺寸 ----------------
+    def _follow_scale(self):
+        """缩放倍率 = 桌宠高度 / 参考高度。
+
+        update 2026-11-01 (浅浅猫定稿): 默认尺寸直接取自她亲手拖出来的 196×144
+        （当时桌宠 140×174）→ 桌宠变大变小, 气泡按高度等比缩放。
+        """
+        try:
+            k = float(self.ball.height()) / BUBBLE_REF_PET_H
+        except Exception:
+            k = 1.0
+        return max(BUBBLE_SCALE_MIN, min(BUBBLE_SCALE_MAX, k))
+
+    def _auto_size(self):
+        k = self._follow_scale()
+        return int(round(BUBBLE_REF_W * k)), int(round(BUBBLE_REF_H * k))
+
+    def apply_size(self):
+        """按当前模式定尺寸: 手动模式用存档值, 否则跟随桌宠高度。"""
+        if theme_state.get("bubble_manual"):
+            try:
+                w = int(theme_state.get("bubble_w") or 0)
+                h = int(theme_state.get("bubble_h") or 0)
+            except Exception:
+                w = h = 0
+            if w >= BUBBLE_SIZE_MIN[0] and h >= BUBBLE_SIZE_MIN[1]:
+                w = max(BUBBLE_SIZE_MIN[0], min(BUBBLE_SIZE_MAX[0], w))
+                h = max(BUBBLE_SIZE_MIN[1], min(BUBBLE_SIZE_MAX[1], h))
+                self.resize(w, h)
+                return
+        self.resize(*self._auto_size())
+
+    def _ptr_now(self):
+        return max(6.0, float((self._geo or {}).get("ptr", BUBBLE_PTR_LEN)))
+
+    def _paper_rect(self):
+        """纸面矩形(窗口局部坐标) —— 四周扣掉尖角余量。"""
+        ptr = self._ptr_now()
+        w, h = self.width(), self.height()
+        return QRectF(ptr, ptr, max(20.0, w - 2 * ptr - 1.0), max(20.0, h - 2 * ptr - 1.0))
+
+    def reset_size(self):
+        theme_state["bubble_manual"] = False
+        theme_state["bubble_w"] = theme_state["bubble_h"] = 0
+        save_settings()
+        self.apply_size()
+        self.place_near(self.ball.frameGeometry())
+        self.update()
+
+    def reset_pos(self):
+        """回到自动摆放（关掉跟随 + 丢掉相对偏移）。"""
+        theme_state["bubble_follow"] = False
+        theme_state["bubble_dx"] = theme_state["bubble_dy"] = 0
+        save_settings()
+        self.place_near(self.ball.frameGeometry())
+        self.update()
+
+    # ---------------- 数据 ----------------
+    def refresh_data(self):
+        """从主窗口**已有的快照**里取数 —— 绝不触发扫描(切页复用那套)。"""
+        today = time.strftime("%Y-%m-%d")
+        card = getattr(self.ball, "card", None)
+        try:
+            snaps = dict(getattr(card, "_stats_by_src", {}) or {})
+        except Exception:
+            snaps = {}
+        blocks, total = [], 0
+        for key, label in (("wb", "WorkBuddy"), ("dsh", "DSH 本地")):
+            s = snaps.get(key)
+            if not s and card is not None and getattr(card, "source", "") == key:
+                s = getattr(card, "stats", None)
+            day = ((s or {}).get("daily") or {}).get(today)
+            rows, st = [], 0
+            if isinstance(day, dict):
+                for m, rec in day.items():
+                    try:
+                        t = int((rec or {}).get("total", 0) or 0)
+                    except Exception:
+                        t = 0
+                    if t > 0:
+                        rows.append((str(m), t))
+                    st += max(0, t)
+            elif isinstance(day, (int, float)):
+                st = int(day)
+            rows.sort(key=lambda x: -x[1])
+            blocks.append({"label": label, "rows": rows[:2], "total": st})
+            total += st
+        self._blocks = blocks
+        self._total = total
+
+    # ---------------- 布局 ----------------
+    def _layout(self):
+        w, h = self.width(), self.height()
+        # ⚠️ 余量必须**恒等于** BUBBLE_PTR_LEN —— 尖端正好伸出 PTR_LEN,
+        #   余量比它小就会被裁掉一点点(踩过: 按 k 缩放算出 8.57 < 10)。
+        ptr = BUBBLE_PTR_LEN
+        paper = QRectF(ptr, ptr, max(20.0, w - 2 * ptr - 1.0), max(20.0, h - 2 * ptr - 1.0))
+        pw, ph = paper.width(), paper.height()
+        k = max(0.72, min(1.9, pw / BUBBLE_BASE_W))
+        # update 2026-11-01 (浅浅猫: "小尺寸的文字排布建议恢复之前那样"):
+        #   上一版把尖角余量改成了四周各留 PTR_LEN, 纸面高度白少了 10px,
+        #   在 196×144 这档把行高压到 11.8px(之前是 13.4) → 看着挤。
+        #   这里收紧头部(内边距/标题行/分隔带)把高度还给正文行, 不靠改窗口尺寸。
+        pad = 11.5 * k
+        total_h = 26.0 * k
+        div_h = 7.0 * k
+        btn_d = max(13.0, 15.0 * k)
+        btn_gap = 5.0 * k
+        avail = ph - pad * 2.0 - total_h - div_h
+        line_h = max(11.0 * k, min(25.0 * k, avail / 6.0)) if avail > 0 else 12.0 * k
+        # 数值列宽度**实测** —— 早先写死 46*k 时 "deepseek-v4.1-flash" 和 "3.0M" 会叠字
+        fv = QFont("Microsoft YaHei UI")
+        fv.setPixelSize(max(9, int(round(12.5 * k))))
+        fmv = QFontMetrics(fv)
+        vals = [fmt_compact(self._total)]
+        for blk in self._blocks:
+            if blk["total"]:
+                vals.append(fmt_compact(blk["total"]))
+            vals += [fmt_compact(v) for _, v in blk["rows"]]
+        val_w = max([fmv.horizontalAdvance(t) for t in vals] or [40]) + 1.0
+        # 顶行: 「今日总用量」要与右侧大数字**共享一行** —— 小尺寸时若不量数字宽度,
+        #   标题会压到数字上(196×144 下实测叠字)。这里先把数字量出来, 标题只吃剩下的宽度。
+        fnum = QFont("Microsoft YaHei UI")
+        fnum.setPixelSize(max(12, int(round(21.0 * k))))
+        fnum.setWeight(QFont.DemiBold)
+        num_w = QFontMetrics(fnum).horizontalAdvance(fmt_compact(self._total)) + 1.0
+        # update 2026-11-01 (浅浅猫): 两颗按钮**纵向**排 —— 正好用掉原本按钮下面那块空
+        #   (内容右边界本来就避开了这一列, 所以竖排不会压到数字)
+        pin = QRectF(paper.right() - pad - btn_d, paper.top() + pad - 2.0 * k, btn_d, btn_d)
+        fol = QRectF(pin.left(), pin.bottom() + 3.0 * k, btn_d, btn_d)
+        geo = {
+            "k": k, "ptr": ptr, "paper": paper, "pad": pad,
+            "total_h": total_h, "div_h": div_h, "line_h": line_h,
+            "pin": pin, "follow": fol,
+            "grip": QRectF(paper.right() - BUBBLE_GRIP, paper.bottom() - BUBBLE_GRIP,
+                           BUBBLE_GRIP, BUBBLE_GRIP),
+            "value_right": fol.left() - 6.0 * k,
+            "left": paper.left() + pad + 6.0 * k,
+            "right": paper.right() - pad,
+            "val_w": val_w, "num_w": num_w,
+            "div_y": paper.top() + pad + total_h + div_h * 0.35,
+            "rows_top": paper.top() + pad + total_h + div_h,
+        }
+        self._geo = geo
+        return geo
+
+    # ---------------- 摆放 + 尖角 ----------------
+    def _pick_pointer(self, gx, gy, g):
+        """算尖角: **底边中点 = 纸中心朝她的射线与纸面的交点**, 尖端再往外 PTR_LEN。
+
+        于是尖角永远从纸面朝她那侧长出来 —— 她在下就是斜向下、在左就是朝左，
+        天然支持 360 度（不再按"左/右/下三条边"写死，早先那是"在她左边却朝左"的根因）。
+        """
+        geo = self._geo
+        paper = geo["paper"]
+        cx, cy = paper.center().x(), paper.center().y()
+        tx, ty = g.center().x() - gx, g.center().y() - gy      # 她在局部坐标的位置
+        dx, dy = tx - cx, ty - cy
+        if abs(dx) < 0.5 and abs(dy) < 0.5:
+            dx, dy = 0.0, 1.0
+        hw, hh = paper.width() / 2.0, paper.height() / 2.0
+        mx = abs(dx) / hw if hw > 0 else 0.0
+        my = abs(dy) / hh if hh > 0 else 0.0
+        m = max(mx, my, 1e-6)
+        bx, by = cx + dx / m, cy + dy / m                     # 边界上的底边中点
+        # ⚠️ update 2026-11-01 (浅浅猫截图: "尖角和对话框本体分开了"):
+        #   矩形边界 ≠ 圆角矩形的真实轮廓 —— 交点落在**圆角段**时, 三角底边在弧线外面,
+        #   于是和本体之间露出一条缝。两处修:
+        #     ① 把底边中点夹到"直边段"(离两端各让出一个圆角半径);
+        #     ② 底边中心再往纸面内推 2px, 让三角和本体**实心重叠**, union 后连抗锯齿缝都没有。
+        r = BUBBLE_CORNER_R + 1.0
+        if abs(bx - paper.left()) < 0.6:
+            edge = "left"
+        elif abs(bx - paper.right()) < 0.6:
+            edge = "right"
+        elif abs(by - paper.top()) < 0.6:
+            edge = "top"
+        else:
+            edge = "bottom"
+        half = BUBBLE_PTR_HALF
+        if edge in ("top", "bottom"):
+            # 底边中点先夹到"直边段 + 半个底边宽"以内, 保证两个端点都还落在直边上
+            lo, hi = paper.left() + r + half, paper.right() - r - half
+            bx = paper.center().x() if lo > hi else max(lo, min(hi, bx))
+            # 端点贴边、再往里 1px —— 与本体实心重叠, union 后无缝
+            ey = (paper.top() + 1.0) if edge == "top" else (paper.bottom() - 1.0)
+            by = paper.top() if edge == "top" else paper.bottom()
+            ax, ay = bx - half, ey
+            bx2, by2 = bx + half, ey
+        else:
+            lo, hi = paper.top() + r + half, paper.bottom() - r - half
+            by = paper.center().y() if lo > hi else max(lo, min(hi, by))
+            ex = (paper.left() + 1.0) if edge == "left" else (paper.right() - 1.0)
+            bx = paper.left() if edge == "left" else paper.right()
+            ax, ay = ex, by - half
+            bx2, by2 = ex, by + half
+        ddx, ddy = tx - bx, ty - by
+        d = (ddx * ddx + ddy * ddy) ** 0.5 or 1.0
+        tipx = bx + ddx / d * geo["ptr"]
+        tipy = by + ddy / d * geo["ptr"]
+        return (tipx, tipy, ax, ay, bx2, by2)
+
+    def place_near(self, g):
+        """摆放优先级（浅浅猫 2026-11-01 定）: **跟随** > 上方 > 左侧 > 右侧 > 兜底。
+
+        跟随 = 记住"相对她的偏移"，她走到哪气泡跟到哪；跟到屏幕边界就**关于她的中心镜像**
+        到另一侧（她的要求），镜像后仍出界才硬夹。
+        """
+        W, H = self.width(), self.height()
+        scr = (QGuiApplication.screenAt(g.center()) or QApplication.primaryScreen()).availableGeometry()
+        self._geo = self._layout()
+        try:
+            fdx = int(theme_state.get("bubble_dx") or 0)
+            fdy = int(theme_state.get("bubble_dy") or 0)
+        except Exception:
+            fdx = fdy = 0
+        follow = bool(theme_state.get("bubble_follow")) and not (fdx == 0 and fdy == 0)
+        if follow:
+            dx, dy = fdx, fdy
+            x, y = g.x() + dx, g.y() + dy
+            # 出界 → 关于她中心镜像（左右 / 上下各自判）
+            if x < scr.left() + 2 or x + W > scr.right() - 2:
+                x = 2 * g.center().x() - x - W
+            if y < scr.top() + 2 or y + H > scr.bottom() - 2:
+                y = 2 * g.center().y() - y - H
+        else:
+            gap = 6
+            if g.top() - H - gap >= scr.top():
+                y = g.top() - H - gap
+                x = g.center().x() - W // 2
+            elif g.left() - gap - W >= scr.left():
+                x, y = g.left() - gap - W, g.top() + 10
+            elif g.right() + gap + W <= scr.right():
+                x, y = g.right() + gap, g.top() + 10
+            else:
+                x, y = scr.right() - W - 4, g.top() - H - gap
+        x = max(scr.left() + 2, min(x, scr.right() - W - 2))
+        y = max(scr.top() + 2, min(y, scr.bottom() - H - 2))
+        self._pointer = self._pick_pointer(x, y, g)
+        self.move(int(x), int(y))
+
+    # ---------------- 显示/收起 ----------------
+    def show_bubble(self, rebuild=True):
+        if rebuild:
+            self.refresh_data()
+        self.apply_size()
+        self._layout()
+        self.place_near(self.ball.frameGeometry())
+        if not self.isVisible():
+            self._fade = 0.0
+        self.show()
+        self.raise_()
+        self._fade_dir = 1
+        self._tm.start(16)
+        self.update()
+
+    def hide_bubble(self, force=False):
+        if not force and theme_state.get("bubble_pin"):
+            return
+        if not self.isVisible():
+            return
+        self._fade_dir = -1
+        self._tm.start(16)
+
+    def _fade_tick(self):
+        step = BUBBLE_FADE_STEP * (1.0 if self._fade_dir > 0 else -1.8)
+        self._fade = max(0.0, min(1.0, self._fade + step))
+        if self._fade_dir < 0 and self._fade <= 0.0:
+            self._tm.stop()
+            self.hide()
+            return
+        if self._fade_dir > 0 and self._fade >= 1.0:
+            self._tm.stop()
+        self.update()
+
+    # ---------------- 绘制 ----------------
+    def paintEvent(self, ev):
+        a = self._fade
+        if a <= 0.01:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.TextAntialiasing)
+        geo = self._layout()
+        k = geo["k"]
+        paper = geo["paper"]
+        paint_hand_card(p, paper, BUBBLE_CORNER_R, self._pointer, a)
+
+        def ink(c, alpha):
+            return QColor(c.red(), c.green(), c.blue(), int(alpha * a))
+
+        ink_c, ink_d, ink_v = BUBBLE_INK, BUBBLE_INK_DEEP, BUBBLE_INK_VIVID
+        top = paper.top() + geo["pad"]
+        # ---- 顶部: 今日总用量 ----
+        f = QFont("Microsoft YaHei UI")
+        f.setPixelSize(max(11, int(round(14.5 * k))))
+        p.setFont(f)
+        p.setPen(ink(ink_c, 215))
+        lab_w = max(24.0, (geo["value_right"] - geo["num_w"]) - geo["left"] - 6.0 * k)
+        # 小尺寸下"今日总用量"放不下就依次退让成"今日用量"/"今日" —— 比硬省略成
+        #   "今日总用…"好读得多(196×144 实测宽度只剩 ~54px)。
+        _fm = QFontMetrics(f)
+        lab = "今日总用量"
+        for cand in ("今日总用量", "今日用量", "今日"):
+            if _fm.horizontalAdvance(cand) <= lab_w:
+                lab = cand
+                break
+        else:
+            lab = "今日"
+        p.drawText(QRectF(geo["left"], top - 2, lab_w, geo["total_h"]),
+                   Qt.AlignLeft | Qt.AlignVCenter, lab)
+        f2 = QFont("Microsoft YaHei UI")
+        f2.setPixelSize(max(12, int(round(21.0 * k))))
+        f2.setWeight(QFont.DemiBold)
+        p.setFont(f2)
+        p.setPen(ink(ink_d, 245))
+        p.drawText(QRectF(geo["left"], top - 3, geo["value_right"] - geo["left"],
+                          geo["total_h"]),
+                   Qt.AlignRight | Qt.AlignVCenter, fmt_compact(self._total))
+        # ---- 右上两颗圆钮: 🔗 跟随 / 📌 常驻 ----
+        self._paint_btn(p, geo["follow"], "follow", ink, a)
+        self._paint_btn(p, geo["pin"], "pin", ink, a)
+        # ---- 分隔虚线 ----
+        pen = QPen(ink(ink_v, 205), 1.1, Qt.CustomDashLine, Qt.RoundCap)
+        pen.setDashPattern([2.6, 2.6])
+        p.setPen(pen)
+        # update 2026-11-01: 分隔线在**按钮列左边**就止住 —— 两颗钮竖排后, 下面那颗
+        #   正好落在分隔线的高度上, 横穿过去看着很脏。
+        p.drawLine(QPointF(geo["left"], geo["div_y"]),
+                   QPointF(geo["pin"].left() - 5.0 * k, geo["div_y"]))
+        # ---- 两个来源 + 各自前二模型 ----
+        fs = QFont("Microsoft YaHei UI")
+        fs.setPixelSize(max(9, int(round(12.0 * k))))
+        fsb = QFont("Microsoft YaHei UI")
+        fsb.setPixelSize(max(9, int(round(12.0 * k))))
+        fsb.setWeight(QFont.DemiBold)
+        y = geo["rows_top"]
+        lh = geo["line_h"]
+        dot = 3.0 * k
+        for blk in self._blocks:
+            p.setPen(Qt.NoPen)
+            p.setBrush(ink(ink_v, 210))
+            p.drawEllipse(QRectF(geo["left"], y + lh / 2 - dot / 2, dot, dot))
+            p.setPen(ink(ink_d, 215))
+            p.setFont(fsb)
+            p.drawText(QRectF(geo["left"] + dot + 5.0 * k, y,
+                              geo["value_right"] - geo["left"], lh),
+                       Qt.AlignLeft | Qt.AlignVCenter, blk["label"])
+            p.setFont(fs)
+            if blk["total"]:
+                p.setPen(ink(ink_c, 170))
+                p.drawText(QRectF(geo["left"], y, geo["value_right"] - geo["left"], lh),
+                           Qt.AlignRight | Qt.AlignVCenter, fmt_compact(blk["total"]))
+            y += lh
+            rows = blk["rows"]
+            if not rows:
+                p.setFont(fs)
+                p.setPen(ink(ink_c, 140))
+                p.drawText(QRectF(geo["left"] + dot + 5.0 * k, y,
+                                  geo["value_right"] - geo["left"], lh),
+                           Qt.AlignLeft | Qt.AlignVCenter, "今日暂无数据")
+                y += lh
+                continue
+            for name, val in rows:
+                p.setFont(fs)
+                p.setPen(ink(ink_d, 200))
+                nx = geo["left"] + dot + 5.0 * k
+                # ⚠️ 必须按 value_right(数值列的右边界)算, 不是整幅右边界 ——
+                #   数值右对齐到 value_right, 拿整幅边界算会多出 (按钮 + 间距) 那 20 多像素,
+                #   名称就有机会压到数字上(踩过一次)。
+                name_w = max(20.0, (geo["value_right"] - geo["val_w"]) - nx - 8.0 * k)
+                nm = QFontMetrics(fs).elidedText(name, Qt.ElideMiddle, int(name_w))
+                p.drawText(QRectF(nx, y, name_w, lh), Qt.AlignLeft | Qt.AlignVCenter, nm)
+                p.setPen(ink(ink_c, 235))
+                p.drawText(QRectF(geo["left"], y, geo["value_right"] - geo["left"], lh),
+                           Qt.AlignRight | Qt.AlignVCenter, fmt_compact(val))
+                y += lh
+        # ---- 右下角拖拽提示(只在悬停/拖动时露面) ----
+        if self._hover == "grip" or self._grip:
+            p.setPen(Qt.NoPen)
+            p.setBrush(ink(ink_v, 165))
+            gr = geo["grip"]
+            for i in range(3):
+                o = 4.0 + i * 3.4
+                p.drawEllipse(QRectF(gr.right() - o, gr.bottom() - o, 2.0, 2.0))
+
+    def _paint_btn(self, p, r, kind, ink, a):
+        """右上角小圆钮。跟随钮画「⇄」双箭头, 常驻钮画「●/○」。"""
+        k = (self._geo or {}).get("k", 1.0)
+        on = bool(theme_state.get("bubble_follow" if kind == "follow" else "bubble_pin"))
+        hov = self._hover == kind
+        p.setPen(QPen(ink(BUBBLE_INK_VIVID, 255 if hov else 235), 1.6 if hov else 1.2))
+        p.setBrush(QColor(BUBBLE_INK_DEEP.red(), BUBBLE_INK_DEEP.green(),
+                          BUBBLE_INK_DEEP.blue(), int(235 * a)) if on else Qt.NoBrush)
+        p.drawEllipse(r.adjusted(1, 1, -1, -1))
+        c = r.center()
+        fg = QColor(255, 255, 255, int(240 * a)) if on else ink(BUBBLE_INK_VIVID, 220)
+        if kind == "pin":
+            if not on:
+                p.setPen(Qt.NoPen)
+                p.setBrush(ink(BUBBLE_INK_VIVID, 150))
+                p.drawEllipse(QRectF(c.x() - 2.2 * k, c.y() - 2.2 * k, 4.4 * k, 4.4 * k))
+            return
+        # ⇄ 双箭头
+        d = 2.6 * k
+        p.setPen(QPen(fg, 1.2 * k, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        p.drawLine(QPointF(c.x() - d, c.y() - 1.7 * k), QPointF(c.x() + d, c.y() - 1.7 * k))
+        p.drawLine(QPointF(c.x() - d, c.y() + 1.7 * k), QPointF(c.x() + d, c.y() + 1.7 * k))
+        p.setBrush(fg)
+        p.setPen(Qt.NoPen)
+        tri = QPainterPath()
+        tri.moveTo(QPointF(c.x() - d, c.y() - 1.7 * k))
+        tri.lineTo(QPointF(c.x() - d + 2.0 * k, c.y() - 3.3 * k))
+        tri.lineTo(QPointF(c.x() - d + 2.0 * k, c.y() - 0.1 * k))
+        tri.closeSubpath()
+        p.drawPath(tri)
+        tri2 = QPainterPath()
+        tri2.moveTo(QPointF(c.x() + d, c.y() + 1.7 * k))
+        tri2.lineTo(QPointF(c.x() + d - 2.0 * k, c.y() + 0.1 * k))
+        tri2.lineTo(QPointF(c.x() + d - 2.0 * k, c.y() + 3.3 * k))
+        tri2.closeSubpath()
+        p.drawPath(tri2)
+
+    # ---------------- 交互 ----------------
+    def _hit_btn(self, pos):
+        geo = self._layout()
+        if geo["pin"].contains(pos):
+            return "pin"
+        if geo["follow"].contains(pos):
+            return "follow"
+        return None
+
+    def enterEvent(self, ev):
+        self.ball._bubble_cancel_hide()
+        self.update()
+
+    def leaveEvent(self, ev):
+        if self._hover:
+            self._hover = None
+            self.setCursor(Qt.ArrowCursor)
+            self.update()
+        self.ball._bubble_start_hide()
+
+    def mousePressEvent(self, ev):
+        if ev.button() != Qt.LeftButton:
+            return
+        geo = self._layout()
+        pos = ev.position()
+        btn = self._hit_btn(pos)
+        if btn == "pin":
+            self.ball.set_bubble_pin(not theme_state.get("bubble_pin"))
+            self.update()
+            return
+        if btn == "follow":
+            self.ball.set_bubble_follow(not theme_state.get("bubble_follow"))
+            self.update()
+            return
+        if geo["grip"].contains(pos):
+            self._grip = True
+            self._grip0 = (ev.globalPosition().toPoint(), self.width(), self.height())
+            self.grabMouse()
+            self.update()
+            return
+        self._moving = True
+        self._move0 = (ev.globalPosition().toPoint(), self.pos())
+        self.grabMouse()
+
+    def mouseMoveEvent(self, ev):
+        if self._grip and self._grip0 is not None:
+            g0, w0, h0 = self._grip0
+            d = ev.globalPosition().toPoint() - g0
+            w = max(BUBBLE_SIZE_MIN[0], min(BUBBLE_SIZE_MAX[0], w0 + d.x()))
+            h = max(BUBBLE_SIZE_MIN[1], min(BUBBLE_SIZE_MAX[1], h0 + d.y()))
+            self.resize(w, h)
+            self.update()
+            return
+        if self._moving and self._move0 is not None:
+            p0, w0 = self._move0
+            d = ev.globalPosition().toPoint() - p0
+            scr = (QGuiApplication.screenAt(w0) or QApplication.primaryScreen()).availableGeometry()
+            x = max(scr.left() + 2, min(w0.x() + d.x(), scr.right() - self.width() - 2))
+            y = max(scr.top() + 2, min(w0.y() + d.y(), scr.bottom() - self.height() - 2))
+            self.move(x, y)
+            self._pointer = self._pick_pointer(x, y, self.ball.frameGeometry())
+            self.update()
+            return
+        geo = self._layout()
+        pos = ev.position()
+        btn = self._hit_btn(pos)
+        hov = btn or ("grip" if geo["grip"].contains(pos) else "body")
+        if hov != self._hover:
+            self._hover = hov
+            self.setCursor(Qt.PointingHandCursor if btn else (
+                Qt.SizeFDiagCursor if hov == "grip" else Qt.SizeAllCursor))
+            self.update()
+
+    def mouseReleaseEvent(self, ev):
+        if ev.button() != Qt.LeftButton:
+            return
+        if self._grip:
+            self.releaseMouse()
+            self._grip = False
+            self._grip0 = None
+            theme_state["bubble_manual"] = True
+            theme_state["bubble_w"] = int(self.width())
+            theme_state["bubble_h"] = int(self.height())
+            save_settings()
+            self.place_near(self.ball.frameGeometry())
+            self.update()
+            return
+        if self._moving:
+            self.releaseMouse()
+            self._moving = False
+            self._move0 = None
+            # ⭐ 拖完就自动进入「跟随」: 记住的是**相对她的偏移**, 之后她在哪它跟到哪
+            #   （浅浅猫 2026-11-01: "我拖动了对话框位置后如果也想跟随，现在就没办法实现"）
+            g = self.ball.frameGeometry()
+            theme_state["bubble_follow"] = True
+            theme_state["bubble_dx"] = int(self.x() - g.x())
+            theme_state["bubble_dy"] = int(self.y() - g.y())
+            save_settings()
+            self.update()
+
+
+class PetTip(QWidget):
+    """首次开启桌宠的一次性引导气泡（同一套手绘底板, 只放一句话）。"""
+
+    def __init__(self, ball, text):
+        super().__init__(None, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.ball = ball
+        self.text = text
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)   # 纯提示, 不拦鼠标
+        self._pointer = None
+        f = QFont("Microsoft YaHei UI")
+        f.setPixelSize(13)
+        fm = QFontMetrics(f)
+        pw = min(260, fm.horizontalAdvance(text) + 30)
+        # update 2026-11-01: 四周留出尖角余量(否则三角又被窗口裁掉)
+        self.resize(int(pw + 2 * BUBBLE_PTR_LEN), int(44 + BUBBLE_PTR_LEN))
+        self.hide()
+
+    def _paper(self):
+        w, h = self.width(), self.height()
+        return QRectF(BUBBLE_PTR_LEN, 0.5, w - 2 * BUBBLE_PTR_LEN - 1.0,
+                      h - BUBBLE_PTR_LEN - 1.0)
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.TextAntialiasing)
+        rect = self._paper()
+        paint_hand_card(p, rect, 11.0, self._pointer, 1.0)
+        f = QFont("Microsoft YaHei UI")
+        f.setPixelSize(13)
+        p.setFont(f)
+        p.setPen(QColor(BUBBLE_INK_DEEP.red(), BUBBLE_INK_DEEP.green(),
+                        BUBBLE_INK_DEEP.blue(), 240))
+        p.drawText(rect.adjusted(10, 0, -10, 0), Qt.AlignCenter, self.text)
+
+    def show_near(self, g):
+        W, H = self.width(), self.height()
+        scr = (QGuiApplication.screenAt(g.center()) or QApplication.primaryScreen()).availableGeometry()
+        gap = 6
+        if g.top() - H - gap >= scr.top():          # 优先放在她上方(与气泡一致)
+            y = g.top() - H - gap
+            x = g.center().x() - W // 2
+        elif g.left() - gap - W >= scr.left():
+            x, y = g.left() - gap - W, g.top() + 10
+        else:
+            x, y = g.right() + gap, g.top() + 10
+        x = max(scr.left() + 2, min(x, scr.right() - W - 2))
+        y = max(scr.top() + 2, min(y, scr.bottom() - H - 2))
+        # 尖角: 与气泡同一套"径向"算法 —— 底边中点落在纸面边界、尖端朝她(360 度通用)
+        paper = self._paper()
+        pcx, pcy = paper.center().x(), paper.center().y()
+        tx, ty = g.center().x() - x, g.center().y() - y
+        dx, dy = tx - pcx, ty - pcy
+        if abs(dx) < 0.5 and abs(dy) < 0.5:
+            dx, dy = 0.0, 1.0
+        hw, hh = paper.width() / 2.0, paper.height() / 2.0
+        m = max(abs(dx) / hw, abs(dy) / hh, 1e-6)
+        bx, by = pcx + dx / m, pcy + dy / m
+        half = BUBBLE_PTR_HALF
+        r = BUBBLE_CORNER_R + 1.0
+        if abs(bx - paper.left()) < 0.6 or abs(bx - paper.right()) < 0.6:
+            ex = paper.left() + 1.0 if abs(bx - paper.left()) < 0.6 else paper.right() - 1.0
+            ax, ay, bx2, by2 = ex, by - half, ex, by + half
+        else:
+            ey = paper.top() + 1.0 if abs(by - paper.top()) < 0.6 else paper.bottom() - 1.0
+            ax, ay, bx2, by2 = bx - half, ey, bx + half, ey
+        d = (dx * dx + dy * dy) ** 0.5 or 1.0
+        self._pointer = (bx + dx / d * BUBBLE_PTR_LEN, by + dy / d * BUBBLE_PTR_LEN,
+                         ax, ay, bx2, by2)
+        self.move(int(x), int(y))
+        self.show()
+        self.raise_()
+
+
 class BallWindow(QWidget):
     def __init__(self, card):
         super().__init__()
@@ -8306,6 +9065,25 @@ class BallWindow(QWidget):
         self._screens_hooked = False   # update 2026-10-31 (第106轮): 屏幕信号是否已订阅
         self._hooked_screens = []      # update 2026-10-31 (第106轮): 已挂信号的 QScreen
         self._rz_init_state()          # 第100轮: 调整大小模式(默认关闭)
+        # update 2026-11-01 (第107轮, 浅浅猫): 手绘便利贴悬浮气泡 + 悬停/收起定时器。
+        #   ⚠️ 必须建在 _pet_apply() 之前 —— 启动就是桌宠模式时 _pet_apply 里的
+        #   _bubble_sync() 会用到它。
+        self._bubble = PetBubble(self)
+        self._bubble_tip = None
+        self._bv_timer = QTimer(self)          # 悬停 400ms 才出现(防误触)
+        self._bv_timer.setSingleShot(True)
+        self._bv_timer.timeout.connect(self._bubble_show_now)
+        self._bh_timer = QTimer(self)          # 移开 500ms 收起(留出"移到气泡上点常驻"的时间)
+        self._bh_timer.setSingleShot(True)
+        self._bh_timer.timeout.connect(self._bubble_hide_now)
+        # ⚠️ update 2026-11-01 (浅浅猫: "改完后不显示用量了，都是今日无数据"):
+        #   根因**不是取数逻辑**, 而是**常驻气泡只在弹出时取一次数** —— 启动时
+        #   `_stats_by_src` 还是空的(扫描是异步的), 而 pin 常驻又永不重新弹,
+        #   于是"0 / 今日暂无数据"就定格了。这条定时器 + 扫描完成回调(见 _on_scan_done)
+        #   一起保证数据会自己追上。
+        self._bd_timer = QTimer(self)
+        self._bd_timer.timeout.connect(self._bubble_tick_data)
+        self._bd_timer.start(15000)
 
         pos = None
         try:
@@ -8341,10 +9119,17 @@ class BallWindow(QWidget):
             self.pet = True
             self._pet_apply(True)
         # 第101轮: 状态落盘 + 5s 心跳(给 pet_status.py 做确定性体检)
+        # update 2026-11-01 (第107轮, P2-⑮): 5s -> 20s。这个文件只是给诊断工具看的,
+        #   没必要 5 秒一次常驻写盘(267B × 每 5 秒 = 一天 4.6MB 的无效写入)。
         self._stat_timer = QTimer(self)
         self._stat_timer.timeout.connect(self._write_status)
-        self._stat_timer.start(5000)
+        self._stat_timer.start(20000)
         self._write_status()
+        # update 2026-11-01 (第107轮): 常驻气泡在启动时显示。
+        #   ⚠️ 延后 1.2s: 启动瞬间 `_stats_by_src` 还是空的(扫描是异步的),
+        #   立刻弹会先亮一下"0 / 今日暂无数据"再跳成真数字。
+        if self.pet and theme_state.get("bubble") and theme_state.get("bubble_pin"):
+            QTimer.singleShot(1200, self._bubble_show_now)
         # update 2026-10-31 (第106轮, P0-③): 订阅显示器增删/可用区域变化
         self._hook_screens()
 
@@ -8621,7 +9406,16 @@ class BallWindow(QWidget):
         else:
             self.resize(54, 54)
             self.setToolTip("Token 统计 — 单击打开面板 / 右键菜单")
+            # update 2026-11-01 (第107轮): 关掉桌宠 → 气泡没有依附对象, 一并收起
+            try:
+                self._bubble.hide_bubble(force=True)
+            except Exception:
+                pass
         self._clamp_pos()
+        # update 2026-11-01 (第107轮): 尺寸变了 → 气泡按新比例重排 + 重新贴边
+        self._bubble_sync()
+        if on:
+            QTimer.singleShot(700, self._maybe_show_pet_tip)
         self.update()
 
     def _clamp_pos(self):
@@ -8680,6 +9474,131 @@ class BallWindow(QWidget):
             self._hook_one_screen(s)
         self._clamp_pos()
         self.update()
+
+    # ============================================================ 悬浮气泡 (第107轮)
+    def _bubble_enabled(self):
+        return bool(theme_state.get("bubble"))
+
+    def _bubble_start_hover(self):
+        """鼠标停在桌宠上 → 400ms 后弹气泡（常驻时不用等，它本来就开着）。"""
+        if not self.pet or not self._bubble_enabled():
+            return
+        self._bh_timer.stop()
+        if theme_state.get("bubble_pin"):
+            return
+        if not self._bubble.isVisible():
+            self._bv_timer.start(BUBBLE_HOVER_DELAY)
+
+    def _bubble_cancel_hide(self):
+        self._bh_timer.stop()
+
+    def _bubble_start_hide(self):
+        self._bv_timer.stop()
+        if not self._bubble_enabled() or theme_state.get("bubble_pin"):
+            return
+        self._bh_timer.start(BUBBLE_HIDE_DELAY)
+
+    def _bubble_show_now(self):
+        self._bv_timer.stop()
+        self._bh_timer.stop()
+        if not self.pet or not self._bubble_enabled():
+            return
+        self._bubble.show_bubble()
+
+    def _bubble_tick_data(self):
+        """气泡可见时按需刷新数据(15s 一跳, 费用极低: 只读内存里的快照)。"""
+        try:
+            if self._bubble is not None and self._bubble.isVisible():
+                self._bubble.refresh_data()
+                self._bubble.update()
+        except Exception:
+            pass
+
+    def _bubble_hide_now(self):
+        self._bh_timer.stop()
+        self._bubble.hide_bubble()
+
+    def _bubble_sync(self):
+        """桌宠移动/缩放后让气泡跟上（只在它可见时才有意义）。"""
+        if self._bubble is None:
+            return
+        if not self._bubble.isVisible():
+            return
+        self._bubble.apply_size()
+        self._bubble.place_near(self.frameGeometry())
+
+    def set_bubble(self, on):
+        on = bool(on)
+        theme_state["bubble"] = on
+        save_settings()
+        if on:
+            if self.pet:
+                self._bubble_show_now()
+        else:
+            self._bubble.hide_bubble(force=True)
+        self._maybe_show_pet_tip()
+        self.update()
+
+    def set_bubble_pin(self, on):
+        """常驻开关。取消常驻时如果鼠标不在桌宠上就直接收起（可预测，不用猜鼠标位置）。"""
+        on = bool(on)
+        theme_state["bubble_pin"] = on
+        save_settings()
+        if on:
+            if self.pet and self._bubble_enabled():
+                self._bubble_show_now()
+        else:
+            self._bubble.hide_bubble(force=True)
+
+    def set_bubble_follow(self, on):
+        """跟随开关: 开 = 记住相对她的偏移跟着走(到边界镜像), 关 = 回到自动摆放。
+
+        update 2026-11-01 (浅浅猫): 以前拖过气泡就钉死绝对坐标, **想跟随没路可走** ——
+          现在"拖动即进入跟随", 并且可以用气泡右上角 🔗 钮 / 菜单项随时切换。
+        """
+        on = bool(on)
+        if on:
+            g = self.frameGeometry()
+            if self._bubble.isVisible():
+                dx = int(self._bubble.x() - g.x())
+                dy = int(self._bubble.y() - g.y())
+            else:                       # 还没显示: 默认给她正上方
+                dx = int((g.width() - self._bubble.width()) / 2)
+                dy = -self._bubble.height() - 6
+            theme_state["bubble_dx"] = dx
+            theme_state["bubble_dy"] = dy
+        else:
+            theme_state["bubble_dx"] = theme_state["bubble_dy"] = 0
+        theme_state["bubble_follow"] = on
+        save_settings()
+        if self._bubble.isVisible():
+            self._bubble.place_near(self.frameGeometry())
+            self._bubble.update()
+
+    def bubble_reset_size(self):
+        theme_state["bubble_manual"] = False
+        theme_state["bubble_w"] = theme_state["bubble_h"] = 0
+        save_settings()
+        self._bubble.apply_size()
+        self._bubble.place_near(self.frameGeometry())
+        self._bubble.update()
+
+    def _maybe_show_pet_tip(self):
+        """首次开启桌宠 → 一次性引导气泡（浅浅猫 2026-11-01 同意加）。
+
+        ⚠️ 只弹一次: `theme_state["pet_tip_shown"]` 记录并随设置落盘。
+        """
+        if not self.pet or theme_state.get("pet_tip_shown"):
+            return
+        try:
+            if self._bubble_tip is None:
+                self._bubble_tip = PetTip(self, "点头部 1/3 摸摸我 · 双击开面板")
+            self._bubble_tip.show_near(self.frameGeometry())
+            theme_state["pet_tip_shown"] = True
+            save_settings()
+            QTimer.singleShot(3600, self._bubble_tip.hide)
+        except Exception:
+            pass
 
     # ============================================================ 调整大小 (第100轮)
     # 浅浅猫 2026-10-25: 右键「📐 调整大小…」进入。桌宠四周出**内部透明**的虚线框,
@@ -8787,6 +9706,8 @@ class BallWindow(QWidget):
                 self.setGeometry(g)
                 self._clamp_pos()
         self._rz_geo0 = None
+        # update 2026-11-01 (第107轮): 尺寸/位置变了 → 气泡按新尺寸重排并重新贴边
+        self._bubble_sync()
         self.update()
 
     def _rz_cancel_now(self):
@@ -8810,6 +9731,8 @@ class BallWindow(QWidget):
         if g is not None:
             self.setGeometry(g)
             self._clamp_pos()
+        # update 2026-11-01 (第107轮): 取消调整后气泡也要跟着回到原位
+        self._bubble_sync()
         self.update()
 
     def _rz_fade_tick(self):
@@ -9063,10 +9986,14 @@ class BallWindow(QWidget):
 
     def enterEvent(self, ev):
         self.hover = True
+        # update 2026-11-01 (第107轮): 悬停 400ms 弹气泡
+        self._bubble_start_hover()
         self.update()
 
     def leaveEvent(self, ev):
         self.hover = False
+        # update 2026-11-01 (第107轮): 移开 500ms 收起（常驻时不收）
+        self._bubble_start_hide()
         # 第100轮: 调整大小模式下鼠标移出 → 清悬停高亮并还原光标
         #   (正在拖角时不清: 那时 grabMouse, 光标必须是缩放箭头)
         if self._rz_mode and not self._rz_closing and self._rz_corner is None \
@@ -9131,6 +10058,9 @@ class BallWindow(QWidget):
                     self._pet_state("drag")
             if self._moved:
                 self.move(ev.globalPosition().toPoint() - self._drag)
+                # update 2026-11-01 (第107轮): 拖着桌宠走 → 气泡跟着贴边
+                if self._bubble.isVisible():
+                    self._bubble.place_near(self.frameGeometry())
 
     def mouseReleaseEvent(self, ev):
         if ev.button() != Qt.LeftButton: return
@@ -9169,9 +10099,13 @@ class BallWindow(QWidget):
             #   时长不该再当判据。(`_press_time` 仍保留记录, 供以后做长按手势用。)
             if not self._moved:
                 # 按点击高度分流: 顶部 1/3 = 摸摸头, 底部 2/3 = 点击互动
+                # update 2026-11-01 (第107轮, 浅浅猫): 点一下桌宠 → 气泡收起
+                #   (常驻时不收, 用 hide_bubble() 的默认语义判断)
+                self._bubble.hide_bubble()
                 self._pet_click_region(ev.position().y())
             else:
                 self._pet_state("idle")
+                self._bubble_sync()
             return
 
         if not self._moved:
@@ -9241,6 +10175,7 @@ class BallWindow(QWidget):
         menu.addSeparator()
 
         a_pet = a_head = a_theme_menu = a_rz = None
+        a_bub = a_pin = a_fit = a_home = a_fol = None
         # 显示条件用「素材目录存在」而非「已加载」: 懒加载后未开启桌宠时
         # pet_frames 为 None, 若按旧条件判断会导致桌宠开关从菜单消失
         _pet_dir = (PET_THEMES.get(self.pet_theme) or {}).get("dir")
@@ -9258,6 +10193,24 @@ class BallWindow(QWidget):
                 a_head = menu.addAction("🤗  摸摸头")
                 # 2026-10-25 (第100轮, 浅浅猫): 桌宠自由缩放入口
                 a_rz = menu.addAction("📐  调整大小…")
+                # update 2026-11-01 (第107轮, 浅浅猫): 悬浮气泡开关 + 常驻 + 恢复默认大小
+                menu.addSeparator()
+                a_bub = menu.addAction("💬  悬浮气泡 (今日用量)")
+                a_bub.setCheckable(True)
+                a_bub.setChecked(bool(theme_state.get("bubble")))
+                if theme_state.get("bubble"):
+                    a_pin = menu.addAction("📌  气泡常驻 (移开也显示)")
+                    a_pin.setCheckable(True)
+                    a_pin.setChecked(bool(theme_state.get("bubble_pin")))
+                    if theme_state.get("bubble_manual"):
+                        a_fit = menu.addAction("↩️  气泡恢复跟随桌宠大小")
+                    a_fol = menu.addAction("🔗  气泡跟随桌宠")
+                    a_fol.setCheckable(True)
+                    a_fol.setChecked(bool(theme_state.get("bubble_follow")))
+                    if theme_state.get("bubble_follow"):
+                        a_home = menu.addAction("🎯  气泡恢复自动摆放")
+                    else:
+                        a_home = None
         menu.addSeparator()
         a_quit = menu.addAction("🚪  退出")
 
@@ -9311,6 +10264,16 @@ class BallWindow(QWidget):
             self._pet_pat()
         elif a_rz is not None and chosen == a_rz:
             self._enter_resize_mode()
+        elif a_bub is not None and chosen == a_bub:
+            self.set_bubble(not theme_state.get("bubble"))
+        elif a_pin is not None and chosen == a_pin:
+            self.set_bubble_pin(not theme_state.get("bubble_pin"))
+        elif a_fit is not None and chosen == a_fit:
+            self.bubble_reset_size()
+        elif a_fol is not None and chosen == a_fol:
+            self.set_bubble_follow(not theme_state.get("bubble_follow"))
+        elif a_home is not None and chosen == a_home:
+            self._bubble.reset_pos()
         elif chosen == a_restart:
             _restart_app()
         elif chosen == a_quit:
