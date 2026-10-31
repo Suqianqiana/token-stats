@@ -1,6 +1,24 @@
 # -*- coding: utf-8 -*-
 """
-Token 统计卡片 V9.5 - 刷新从 23~30s 降到 ~1s（真增量扫描 + 切页复用）
+Token 统计卡片 V9.6 - 桌宠手绘便利贴气泡（不打开面板也能看今日用量）
+
+V9.6 highlights (Sticky Bubble):
+  - A hand-drawn "sticky note" bubble beside the desktop pet, so today's usage is visible
+    WITHOUT opening the panel: today's total plus the top-2 models of each source
+    (WorkBuddy / DSH). It only reads in-memory snapshots - it never triggers a scan by itself.
+  - Paper-white base + 1.3px cut edge + inset 5px dashed stitching. The blue is not a guess:
+    it was sampled from all 173 pet_v6 frames / ~150k bluish pixels
+    (#546090 / #3C4878 / #6078B4).
+  - The tail can point at her from ANY direction (360 degrees): its base runs ALONG the
+    bubble's own edge, so a steep slant can no longer detach the triangle from the body
+    (that was a real bug found by screenshot twice).
+  - Placement has three states: auto (above her), follow (relative offset, mirrored about
+    her centre when it would leave the screen), and free drag (dragging switches to follow).
+  - Two stacked corner buttons (pin / follow), mirrored in the right-click menu; default
+    size 196x144, scaled by pet height, still resizable by dragging the corner.
+  - Keep-alive: while the bubble is visible, a snapshot older than 60s triggers ONE quiet
+    scan of the stalest source - it reuses the main scan lock, so it can never race
+    cache.json against a panel refresh.
 
 V9.5 highlights (Instant Refresh):
   - Real tail-only incremental scan. The old check was `sig == "{mtime_ns}:{size}"`; any
@@ -7275,7 +7293,13 @@ class CardWindow(QWidget):
         # 于是只要刷新过一次, 按钮就再也不会变回「刷新」(浅猫实测到的 bug)。
         self.btn_refresh.setText("⟳  同步中…" if busy else "刷新")
 
-    def refresh(self, force=False, proactive=False):
+    def refresh(self, force=False, proactive=False, only_source=None):
+        """刷新数据。`only_source` 供桌宠气泡用 —— 只刷指定来源(wb/dsh), 不动当前页。
+
+        update 2026-11-01 (浅浅猫报的 bug): 气泡显示 wb + dsh 两份数据, 但 refresh()
+        只会刷 `self.source`; 而 `_auto_refresh_tick()` 在窗口隐藏时又直接 return ——
+        于是"面板收起来只看桌宠"这个场景下, 两份快照永远是旧的。
+        """
         if self._scanning:
             # 合并重复请求: force 必须一起记下来, 否则用户在自动刷新期间点按钮,
             # 后续补刷新会退化成 force=False 而命中 TTL 缓存 → 数据看着"没更新"
@@ -7287,16 +7311,19 @@ class CardWindow(QWidget):
         gen = self._scan_gen
         self._scan_started = time.time()
         self._scan_watchdog.start(2000)   # 看门狗: 每 2s 检查一次, 超 60s 强制恢复
-        self._btn_busy(True)
-        src = self.source
-        if src == "dsh": self.subtitle.setText("正在读取 DSH 账本…")
-        elif src == "multi":
-            self.subtitle.setText("正在汇总多机数据…")
-        elif src == "sn":
-            # 进度反馈: 同步面板显示进度态, 避免更新按钮灰色像卡住
-            self.sn_page.sync_panel.set_syncing("正在自动获取凭证并同步…" if force else "正在同步积分数据…")
-            self.subtitle.setText("正在自动同步商汤积分 (获取凭证)…" if force else "正在同步商汤积分…")
-        else: self.subtitle.setText("正在扫描 WorkBuddy 会话数据…")
+        src = only_source or self.source
+        # ⚠️ 静默扫描(气泡保活)不能动面板 UI —— 否则副标题会一直挂着"正在读取 DSH 账本…"
+        #   而这次结果并不属于当前页(_on_scan_done 不会替它复位副标题)。
+        if only_source is None:
+            self._btn_busy(True)
+            if src == "dsh": self.subtitle.setText("正在读取 DSH 账本…")
+            elif src == "multi":
+                self.subtitle.setText("正在汇总多机数据…")
+            elif src == "sn":
+                # 进度反馈: 同步面板显示进度态, 避免更新按钮灰色像卡住
+                self.sn_page.sync_panel.set_syncing("正在自动获取凭证并同步…" if force else "正在同步积分数据…")
+                self.subtitle.setText("正在自动同步商汤积分 (获取凭证)…" if force else "正在同步商汤积分…")
+            else: self.subtitle.setText("正在扫描 WorkBuddy 会话数据…")
 
         def work():
             try:
@@ -7309,6 +7336,28 @@ class CardWindow(QWidget):
             self.bridge.done.emit(src, s, gen)
 
         threading.Thread(target=work, daemon=True).start()
+
+    def refresh_bubble_data(self, max_age=60):
+        """桌宠气泡在场时给 wb/dsh 快照保活。
+
+        设计上的两个取舍:
+          · **一次只补最旧的一个来源** —— refresh() 是单飞锁(`_scanning`), 同时请求两个
+            也只会执行第一个; 分给后面几拍(气泡 15s 一跳)自然就都补上了。
+          · **复用 refresh() 的扫描锁与线程**, 不另起一套 —— 两个线程同时读写
+            `cache.json` 会互相踩(第105轮增量缓存那套状态)。
+        """
+        try:
+            if self._scanning:
+                return False
+            now = time.time()
+            cands = [(now - self._src_ts.get(k, 0.0), k) for k in ("wb", "dsh")]
+            age, src = max(cands)
+            if age <= max_age:
+                return False
+            self.refresh(only_source=src)
+            return True
+        except Exception:
+            return False
 
     # ---------------- 多机数据源 (2026-09-19 第50轮) ----------------
     def _build_source_stats(self, src_key):
@@ -7496,7 +7545,8 @@ class CardWindow(QWidget):
             return
         self._scan_watchdog.stop()
         self._scanning = False
-        self._btn_busy(False)
+        if src == self.source:
+            self._btn_busy(False)
         if isinstance(s, dict) and "error" in s:
             if src == self.source:
                 self.subtitle.setText(f"加载失败: {s['error'][:50]}")
@@ -8172,9 +8222,11 @@ PET_MS = {"idle": 240, "sleep": 1500, "wake": 700, "drag": 140,
 # 2026-09-17 浅浅猫的想法: 桌宠"顶部 1/3"点= 摸摸头, 其余(底部 2/3)= 普通点击互动;
 # 任意位置双击 = 打开面板。判据用**实际绘制区域**的高度比例, 不是窗口高度(见 _pet_click_region)。
 PET_PAT_TOP_RATIO = 1.0 / 3.0
-APP_BUILD = "v9.5-instant"        # update 2026-10-31 (第105轮): 真增量扫描+切页复用, 刷新 23~30s->~1s; 上: v9.4-frost(第87轮)
-                                 # 代号 frost = 真·实时高斯模糊毛玻璃材质为主线特性;
-                                 # 历史: v9.2-multi(第59轮) 多机同步 / v8.8-auto-sync 商汤真自动
+APP_BUILD = "v9.6-bubble"         # update 2026-11-01 (第107/108轮): 桌宠手绘便利贴气泡 + 数据保活
+                                 # 代号 bubble = 桌宠旁的「手绘便利贴」悬浮气泡为主线特性;
+                                 # 历史: v9.5-instant(第105轮 刷新 23~30s->~1s) /
+                                 #       v9.4-frost(第87轮 毛玻璃) / v9.2-multi(第59轮 多机同步) /
+                                 #       v8.8-auto-sync 商汤真自动
 
 
 def _pet_idle_seq(n):
@@ -8323,6 +8375,7 @@ BUBBLE_REF_H = 144.0
 BUBBLE_SCALE_MIN, BUBBLE_SCALE_MAX = 0.72, 1.60
 BUBBLE_SIZE_MIN = (170, 118)              # 手动拖拽的下限(含尖角余量)
 BUBBLE_SIZE_MAX = (420, 440)
+BUBBLE_DATA_TTL = 60                      # 气泡数据超过这个秒数就触发一次保活扫描
 BUBBLE_HOVER_DELAY = 400                  # 悬停多久出现(毫秒)
 BUBBLE_HIDE_DELAY = 500                   # 移开多久收起(毫秒) —— 要给鼠标留出"移到气泡上点常驻"的时间
 # update 2026-11-01 (浅浅猫: "尖角好像被截断了"): 尖角改成**画在窗口内部**——
@@ -9504,13 +9557,30 @@ class BallWindow(QWidget):
         if not self.pet or not self._bubble_enabled():
             return
         self._bubble.show_bubble()
+        # update 2026-11-01: 弹出时若数据已过期, 立刻触发一次保活扫描;
+        #   扫描回来会经 _on_scan_done -> _bubble_tick_data 自动补上新值。
+        try:
+            card = getattr(self, "card", None)
+            if card is not None:
+                card.refresh_bubble_data(BUBBLE_DATA_TTL)
+        except Exception:
+            pass
 
     def _bubble_tick_data(self):
-        """气泡可见时按需刷新数据(15s 一跳, 费用极低: 只读内存里的快照)。"""
+        """气泡可见时刷新数据(15s 一跳)。
+
+        update 2026-11-01 (浅浅猫报的 bug): 光从快照重读**不够** —— 面板隐藏时
+        `_auto_refresh_tick()` 直接 return, 快照本身不动, 于是"重读"等于"读同一份旧数据"。
+        现在这里顺带驱动一次保活扫描(数据超过 BUBBLE_DATA_TTL 才真扫, 且复用主扫描锁)。
+        """
         try:
-            if self._bubble is not None and self._bubble.isVisible():
-                self._bubble.refresh_data()
-                self._bubble.update()
+            if self._bubble is None or not self._bubble.isVisible():
+                return
+            self._bubble.refresh_data()
+            self._bubble.update()
+            card = getattr(self, "card", None)
+            if card is not None:
+                card.refresh_bubble_data(BUBBLE_DATA_TTL)
         except Exception:
             pass
 

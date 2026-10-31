@@ -1095,6 +1095,36 @@ try:
           1 <= _naps <= 25, str(_naps))
     check("_pet_state(idle) 会清零赖床链",
           (_wb2._pet_state("idle") or _wb2._nap_chain) == 0, str(_wb2._nap_chain))
+    # ---- 2026-11-01 (第107轮): 桌宠气泡「数据保活」逻辑 ----
+    #   她报的 bug: 面板收起时 _auto_refresh_tick 直接 return, 快照本身不更新,
+    #   气泡"重读快照"等于读同一份旧数据 → 看起来不刷新。
+    #   这里用轻量桩锁住"挑最旧来源 + 单飞锁 + 新鲜则不动"三条选择逻辑。
+    import types as _types2
+    _calls = []
+    _stub = _types2.SimpleNamespace(
+        _scanning=False,
+        _src_ts={"wb": time.time() - 3600, "dsh": time.time() - 10},
+        refresh=lambda **kw: _calls.append(kw))
+    _stub.refresh_bubble_data = lambda max_age=60: ca.CardWindow.refresh_bubble_data(_stub, max_age)
+    _ok = _stub.refresh_bubble_data(60)
+    check("气泡保活: 有过期来源时触发扫描, 且只补最旧的那个",
+          _ok is True and _calls and _calls[-1].get("only_source") == "wb", str(_calls))
+    _calls.clear()
+    _stub._src_ts = {"wb": time.time() - 5, "dsh": time.time() - 8}
+    check("气泡保活: 数据都新鲜时什么都不做",
+          _stub.refresh_bubble_data(60) is False and not _calls, str(_calls))
+    _stub._src_ts = {"wb": time.time() - 3600, "dsh": time.time() - 3600}
+    _stub._scanning = True
+    check("气泡保活: 主扫描在跑时不另起线程(避免抢 cache.json)",
+          _stub.refresh_bubble_data(60) is False and not _calls, str(_calls))
+    _stub._scanning = False
+    _stub.refresh_bubble_data(60)
+    check("气泡保活: 两个都过期时这拍先补 wb(下一个 15s 拍再补 dsh)",
+          _calls and _calls[-1].get("only_source") == "wb", str(_calls))
+    check("refresh() 接受 only_source 参数(静默刷指定来源)",
+          "only_source" in _insp.signature(ca.CardWindow.refresh).parameters)
+    check("气泡数据 TTL 常量存在且合理", 10 <= ca.BUBBLE_DATA_TTL <= 300, str(ca.BUBBLE_DATA_TTL))
+
     # 收尾: 停掉心跳定时器再关窗 —— 否则它会在数据目录被还原之后继续往**真实**
     #   ball_status.json 里写测试进程的 pid, 让 pet_status.py 判错。
     for _w in (_wb, _wb2):
@@ -2393,7 +2423,7 @@ check("布局: 材质按钮有独立样式(选中实心/未选描边)",
       "mat_style" in _src62 and "material_btn_qss" in _src62)   # 第64轮: 样式改为按材质分档生成
 
 # 17.4 版本号
-check("版本号升级到 v9.5-instant", ca.APP_BUILD == "v9.5-instant", ca.APP_BUILD)
+check("版本号升级到 v9.6-bubble", ca.APP_BUILD == "v9.6-bubble", ca.APP_BUILD)
 
 # ========== 17.5 三菜单统一 + emoji + DSH 模型归一 (2026-10-21 第87轮) ==========
 print("== 17.5 菜单同步 / emoji / DSH 归一 ==")
