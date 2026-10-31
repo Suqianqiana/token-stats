@@ -19,6 +19,18 @@ from PySide6.QtWidgets import QApplication
 
 ca.SN_USE_PLAYWRIGHT = False   # 回归测试关闭 Playwright 真自动, 走 cURL mock 路径
 
+
+def _cache_entry_has_mid_ts(entry, expect_mid):
+    """缓存条目里是否存下了 mid / ts。
+
+    @2026-10-31 第105轮: 条目格式从 dict 改成紧凑 list
+    [d, m, i, o, t, c, r, s, mid, ts] —— 两种格式都要认, 否则格式升级一次测试就假红。
+    """
+    if isinstance(entry, dict):
+        return entry.get("mid") == expect_mid and bool(entry.get("ts"))
+    return (bool(entry) and len(entry) >= 10
+            and entry[8] == expect_mid and bool(entry[9]))
+
 # ---- 数据目录隔离: 商汤凭据文件全部改到临时目录, 绝不碰真实配置 ----
 # 历史事故: 测试曾把 mock 配置(api.example.com)写进真实数据目录且还原条件失效,
 # 之后每次真自动失败都会回退到那个不存在的域名, 于是"时不时获取失败"。
@@ -2116,7 +2128,7 @@ try:
             if _kk.endswith("guard-cache-field.jsonl"):
                 _ent = _vv.get("entries") or []
         check("防丢失: 缓存条目存下了 mid/ts(读缓存也能算键)",
-              bool(_ent) and _ent[0].get("mid") == "guard-msg-1" and bool(_ent[0].get("ts")),
+              bool(_ent) and _cache_entry_has_mid_ts(_ent[0], "guard-msg-1"),
               str(_ent[0] if _ent else None))
         _s70 = ca.scanner.scan_full(force=True)
         _req70 = sum(a.get("requests", 0) for a in _s70["models"].values())
@@ -2293,7 +2305,7 @@ check("布局: 材质按钮有独立样式(选中实心/未选描边)",
       "mat_style" in _src62 and "material_btn_qss" in _src62)   # 第64轮: 样式改为按材质分档生成
 
 # 17.4 版本号
-check("版本号升级到 v9.4-frost", ca.APP_BUILD == "v9.4-frost", ca.APP_BUILD)
+check("版本号升级到 v9.5-instant", ca.APP_BUILD == "v9.5-instant", ca.APP_BUILD)
 
 # ========== 17.5 三菜单统一 + emoji + DSH 模型归一 (2026-10-21 第87轮) ==========
 print("== 17.5 菜单同步 / emoji / DSH 归一 ==")
@@ -2848,4 +2860,58 @@ _saved = json.load(open(ca.SETTINGS_FILE, encoding="utf-8"))
 check("测试未污染真实 settings.json (source/dark/pet 保持)",
       _saved.get("source") is not None and "pet" in _saved,
       f"source={_saved.get('source')} dark={_saved.get('dark')} pet={_saved.get('pet')}")
+
+# ================= 第105轮: 刷新提速 (切页复用 / 隐藏不扫) =================
+# 注意: 上面的窗口实例为了省内存已被 del(第100轮), 这里另起一个最小窗口专测调度策略。
+_w105 = ca.CardWindow()
+_called = {"n": 0}
+
+
+def _count_refresh(*a, **kw):
+    """只计数、不真的扫描 —— 否则会去读真实会话数据。"""
+    _called["n"] += 1
+
+
+_w105.refresh = _count_refresh
+_fake = {"source": "wb", "daily": {}, "models": {}, "dailySessions": {},
+         "firstDay": "", "lastDay": "", "today": {}, "sessionsTotal": 0}
+try:
+    # ①② 数据结构就位
+    check("刷新提速: 存在各源时间戳/快照容器",
+          isinstance(getattr(_w105, "_src_ts", None), dict)
+          and isinstance(getattr(_w105, "_stats_by_src", None), dict))
+
+    # ③ 数据新鲜时切页**不再触发扫描**（原来 load_initial 结束无条件排队 refresh）
+    _w105.source = "wb"
+    _w105._stats_by_src["wb"] = _fake
+    _w105._src_ts["wb"] = time.time()
+    _called["n"] = 0
+    _w105.load_initial()
+    app.processEvents()
+    time.sleep(0.25)
+    app.processEvents()
+    check("刷新提速: 数据新鲜(<60s)时切页不再触发刷新", _called["n"] == 0,
+          f"refresh 调用 {_called['n']} 次")
+    check("刷新提速: 切页复用了已有快照", _w105.stats is _fake)
+
+    # ④ 数据过期 → 仍会排队刷新（不能因为优化把"该刷"也吞掉）
+    _w105._src_ts["wb"] = time.time() - 999
+    _called["n"] = 0
+    _w105.load_initial()
+    app.processEvents()
+    time.sleep(0.25)
+    app.processEvents()
+    check("刷新提速: 数据过期后切页仍会刷新", _called["n"] >= 1,
+          f"refresh 调用 {_called['n']} 次")
+finally:
+    _w105.close()
+    del _w105
+
+# ⑤ 自动刷新在窗口不可见/最小化时跳过（源码判据，避免真的等 5 分钟）
+_auto_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "card_app.py"),
+                 encoding="utf-8").read()
+_i = _auto_src.find("def _auto_refresh_tick")
+check("刷新提速: 自动刷新在窗口隐藏/最小化时跳过",
+      _i > 0 and "isMinimized()" in _auto_src[_i:_i + 900])
+
 print(f"\nALL {PASS} CHECKS PASSED")

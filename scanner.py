@@ -161,15 +161,19 @@ def _dedupe_by_content(files):
     return keep, dropped
 
 
-def _head_sig(path):
-    """文件首部指纹(前 SID_SIG_BYTES 字节的 md5)。
+def _head_sig(path, n=SID_SIG_BYTES):
+    """文件首部指纹(前 n 字节的 md5)。
 
     会话文件是**追加**写的, 首部一旦写完就基本不变 —— 所以这个指纹既稳定(不会因续写而
     频繁失效), 又能识别"首部被重写/恢复/替换"的情况。
+
+    ⚠️ n 必须与"记录指纹时实际读了多少字节"一致: 短文件(不足 8KB)一旦追加,
+       再按 8KB 重算就会读到新内容 → 指纹永远不匹配 → 尾部增量永不命中。
+       所以缓存里连 hl(哈希长度)一起存, 校验时用同一个长度(见 scan_full)。
     """
     try:
         with open(path, "rb") as f:
-            return hashlib.md5(f.read(SID_SIG_BYTES)).hexdigest()
+            return hashlib.md5(f.read(n)).hexdigest()
     except OSError:
         return ""
 
@@ -297,19 +301,65 @@ def _dedupe_same_size(keep, sid_map=None):
     return new_keep, extra_dropped
 
 
+# ---------------------------------------------------------------- 缓存格式 v2
+# @2026-10-31 第105轮(刷新提速): 缓存条目由 dict 改成**定长 list**
+#   [d, m, i, o, t, c, r, s, mid, ts]
+# 原因(实测): 68573 条 dict 条目序列化出来 13.85MB, 每次刷新写盘 3.46s;
+#   紧凑后体积约降一半, 重放时也免去 10 次 key 查找/条。
+# 旧格式(dict 条目)在 _load_cache 里**就地升级**, 不需要手动清缓存。
+CACHE_VER = 2
+
+
+def _entry_to_list(e):
+    """旧 dict 条目 → 紧凑 list(新格式)。已是 list/tuple 就原样返回。"""
+    if isinstance(e, (list, tuple)):
+        return e
+    return [e.get("d", ""), e.get("m", ""), e.get("i", 0), e.get("o", 0),
+            e.get("t", 0), e.get("c", 0), e.get("r", 0), e.get("s", ""),
+            e.get("mid", ""), e.get("ts", "")]
+
+
 def _load_cache():
     try:
         with open(CACHE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
     except Exception:
         return {}
+    if not isinstance(data, dict):
+        return {}
+    migrated = False
+    for k, v in data.items():
+        if k.startswith("__") or not isinstance(v, dict):
+            continue
+        ents = v.get("entries")
+        if isinstance(ents, list) and ents and isinstance(ents[0], dict):
+            v["entries"] = [_entry_to_list(e) for e in ents]
+            migrated = True
+    data["__ver__"] = CACHE_VER
+    data["__migrated__"] = migrated      # 本次是否从旧格式升级(需要落盘一次)
+    return data
 
 
 def _save_cache(cache):
     tmp = CACHE_FILE + ".tmp"
+    # 用 json.dumps(C 编码器) 再 write, **不要** json.dump(f, ...) ——
+    # 后者走 iterencode 是 Python 层逐块产出, 实测 9.6MB 要 0.83s, 换成 dumps 只要 0.13s。
+    blob = json.dumps(cache, separators=(",", ":"))
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(cache, f)
+        f.write(blob)
     os.replace(tmp, CACHE_FILE)
+
+
+def _dup_signature_from_heads(heads):
+    """副本去重结论的签名 —— 由 (路径, 前 8KB 首部指纹) 汇总而来。
+
+    去重结论只可能因为"新增/删除文件"或"文件首部被重写"而改变; 会话文件是**追加**写的,
+    首部稳定 → 活跃会话不断变长也**不会**让签名失效(这一点很关键, 否则等于没缓存)。
+    """
+    h = hashlib.md5()
+    for p in sorted(heads):
+        h.update(("%s|%s\n" % (p, heads[p])).encode("utf-8", "replace"))
+    return h.hexdigest()
 
 
 def _safe_int(v):
@@ -547,10 +597,15 @@ def scan_full(force=False):
     #    (实测: 今日 hy4-preview 只显示 1998 万, 真实应为 8049 万)。
     # 正确口径: **每个文件都扫**, 但同一条消息(唯一键)只计一次 —— 既不吃重复, 也不丢真实用量。
     all_files = list(_iter_jsonl_files())
+
+    # ---- 副本去重: 结论缓存化 (@2026-10-31 第105轮) ----
+    # ⚠️ 关键事实: 这里算出的 keep/dropped **只喂给观测字段 dupFilesDropped**(UI 从未显示);
+    #    真正参与统计的是 all_files 全扫 + 消息级去重(见下一段)。
+    #    于是结论可以安全缓存: 只要"文件集合 + 各自首部指纹"没变, 就完全不必重算。
+    #    旧实现每次刷新都重读 687 个文件的前 120 行抽消息 id —— 实测 8.0 秒, 纯白花。
+    #    现在常态 0 秒; 只有"新会话文件出现/首部被重写"时才重算一次。
     _sid_cache = cache.get("__sids__") or {}
-    keep_files, dropped_files, _sid_cache = _dedupe_files(all_files, _sid_cache)
-    # 口径变更: 疑似副本的文件仍然全部扫描(下面按消息去重), 所以真正参与统计的是 all_files。
-    # keep_files / dropped_files 仅用于观测与会话数统计。
+    dropped_files = None      # 循环后用新的首部指纹判定, 命中缓存就直接复用
 
     models = {}   # model -> agg
     daily = {}    # date -> model -> agg
@@ -565,12 +620,48 @@ def scan_full(force=False):
         t = e.get("total", e.get("t", i + o))
         c = e.get("cached", e.get("c", 0))
         r = e.get("reasoning", e.get("r", 0))
+        _agg_vals(bucket, i, o, t, c, r)
+
+    def _agg_vals(bucket, i, o, t, c, r):
+        """按已拆好的 5 个计数聚合 —— 缓存重放走这条, 免去每条的 dict.get 开销。"""
         bucket["requests"] = bucket.get("requests", 0) + 1
         bucket["input"] = bucket.get("input", 0) + i
         bucket["output"] = bucket.get("output", 0) + o
         bucket["total"] = bucket.get("total", 0) + t
         bucket["cached"] = bucket.get("cached", 0) + c
         bucket["reasoning"] = bucket.get("reasoning", 0) + r
+
+    def _replay(entries):
+        """把缓存里的条目重放一遍(消息级去重 + 聚合), 返回真正计入的条数。
+
+        条目是紧凑 list: [d, m, i, o, t, c, r, s, mid, ts]。
+        ⚠️ 重放**也必须**走消息级去重 —— 两个账号轮换时, 重复历史散落在不同文件里。
+        ⚠️ 没有 mid 的旧条目要退回 "sid|ts|total|model" 键(与 _msg_key 完全一致),
+           否则重放与解析两条路的去重口径会不一致。
+        """
+        n = 0
+        for e in entries:
+            if isinstance(e, dict):        # 极少数混合格式兜底
+                e = _entry_to_list(e)
+            if not e or len(e) < 10:
+                continue
+            d, m, sid, mid, ts = e[0], e[1], e[7], e[8], e[9]
+            if mid:
+                if mid in _seen_msgs:
+                    continue
+                _seen_msgs.add(mid)
+            elif sid and ts:
+                k2 = "%s|%s|%s|%s" % (sid, str(ts), str(e[4]), m)
+                if k2 in _seen_msgs:
+                    continue
+                _seen_msgs.add(k2)
+            _agg_vals(daily.setdefault(d, {}).setdefault(m, {}), e[2], e[3], e[4], e[5], e[6])
+            _agg_vals(models.setdefault(m, {}), e[2], e[3], e[4], e[5], e[6])
+            if sid:
+                sids.add(sid)
+                daily_sids.setdefault(d, set()).add(sid)
+            n += 1
+        return n
 
     new_cache = {}
     # 第70轮: 消息级去重 —— 扫全部文件, 但同一条消息只计一次(见上方口径说明)
@@ -598,39 +689,83 @@ def scan_full(force=False):
             return "%s|%s|%s|%s" % (sid, str(ts), str(e.get("total", 0)), e.get("model", ""))
         return None      # ← 无法判定 → 调用方不去重
 
+    # ================= 第105轮: 真正的"尾部增量" =================
+    # 旧判据是 sig == "mtime_ns:size" 精确相等, **文件动一下就整个文件重读**。
+    # 实测: 正在聊的会话文件已 101MB, 加另一个 57.6MB → 每次刷新要重读 175MB(13~15s),
+    #       而且会话越大越慢("越用越慢"的根因)。
+    # 现在每个文件额外记 off(已消费到的**字节**偏移) + hd(前 8KB 首部指纹):
+    #   · 未变化                → 直接重放缓存条目
+    #   · 变大 且 首部指纹没变   → 从 off seek, **只解析新增尾部**
+    #   · 变小 / 首部被重写      → 全量重读(保证正确性优先)
+    dirty = False          # 本轮缓存有任何变化 → 才需要落盘(空闲时省掉 3.5s 写盘)
+    files_appended = 0     # 走"只读尾部"的文件数(诊断用)
     for path in all_files:
         try:
             st = os.stat(path)
-            sig_key = f"{st.st_mtime_ns}:{st.st_size}"
-            prev = cache.get(path)
-            entries_total += 0  # noop for clarity
-            if prev and prev.get("sig") == sig_key:
-                # 未变化: 直接沿用历史聚合(仍要走消息级去重, 与其它文件的新消息比对)
-                for e in prev.get("entries", []):
-                    _k = _msg_key(e)
-                    if _k is not None:
-                        if _k in _seen_msgs:
-                            continue
-                        _seen_msgs.add(_k)
-                    date = e["d"]
-                    daily.setdefault(date, {})
-                    _agg(daily[date].setdefault(e["m"], {}), e)
-                    _agg(models.setdefault(e["m"], {}), e)
-                    if e.get("s"):
-                        sids.add(e["s"])
-                        daily_sids.setdefault(date, set()).add(e["s"])
-                    entries_total += 1
-                new_cache[path] = prev
-                continue
+        except OSError:
+            continue
+        sig_key = "%d:%d" % (st.st_mtime_ns, st.st_size)
+        prev = cache.get(path)
+        if prev and prev.get("sig") == sig_key:
+            # 未变化: 直接沿用历史聚合(仍要走消息级去重, 与其它文件的新消息比对)
+            entries_total += _replay(prev.get("entries") or [])
+            if not prev.get("hd"):
+                # 旧缓存缺首部指纹 → 补一次(仅迁移那轮发生), 之后去重签名可以零 IO 算出
+                hl0 = min(SID_SIG_BYTES, st.st_size)
+                prev["hd"] = _head_sig(path, hl0)
+                prev["hl"] = hl0
+                dirty = True
+            new_cache[path] = prev
+            continue
 
-            # 需要解析: 若文件被追加(prev 存在且 size 变大且 mtime 变化),
-            # 简单起见仍全量重读该文件 —— 单文件通常 < 几 MB, 成本可接受
+        # ---- 变化的文件: 优先只读新增的那一段 ----
+        start = 0        # 0 = 全量重读
+        base = []
+        hd = ""
+        hl = 0
+        if prev:
+            off = prev.get("off")
+            psize = prev.get("size") or 0
+            # off 必须落在文件内, 且文件是"变长"(截断/重写一律回退全量)
+            if isinstance(off, int) and off > 0 and 0 < psize <= st.st_size and off <= st.st_size:
+                phl = prev.get("hl") or SID_SIG_BYTES
+                if prev.get("hd") and _head_sig(path, phl) == prev["hd"]:
+                    start = off
+                    base = prev.get("entries") or []
+                    hd = prev["hd"]
+                    hl = phl
+        if not hd:
+            # 记录指纹时用"实际存在的前 N 字节", 短文件才不会因为变长而指纹失效
+            hl = min(SID_SIG_BYTES, st.st_size)
+            hd = _head_sig(path, hl)
+
+        if base:
+            entries_total += _replay(base)      # 旧部分照旧计入(去重口径不变)
+            file_entries = list(base)
+            files_appended += 1
+        else:
             file_entries = []
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    if len(line) > _MAX_LINE:
+
+        committed = start
+        try:
+            # 二进制读: 文本模式的 tell() 是"不透明 cookie", 只有字节偏移才能安全 seek 续读
+            with open(path, "rb") as f:
+                if start:
+                    f.seek(start)
+                first = True
+                for raw in f:
+                    if not raw.endswith(b"\n"):
+                        break       # 半行(写一半) → 不解析, committed 停在最后一个完整行末尾
+                    if first and start and raw.lstrip()[:1] != b"{":
+                        # 上次正好停在半行起点: 这一行是"残留半行 + 新内容"拼出来的, 丢弃
+                        committed += len(raw)
+                        first = False
                         continue
-                    for e in _extract_usage_from_line(line):
+                    first = False
+                    if len(raw) > _MAX_LINE:
+                        committed += len(raw)
+                        continue
+                    for e in _extract_usage_from_line(raw.decode("utf-8", "replace")):
                         # 第70轮: 同一条消息只计一次(两个账号轮换时共享的历史不重复计)
                         # 拿不到消息 id 时 _msg_key 返回 None → 不去重(宁多勿漏)
                         _k = _msg_key(e)
@@ -640,27 +775,54 @@ def scan_full(force=False):
                             _seen_msgs.add(_k)
                         date = _norm_date(e["ts"])
                         sid = e.get("sid", "")
-                        file_entries.append({"d": date, "m": e["model"],
-                                             "i": e["input"], "o": e["output"],
-                                             "t": e["total"], "c": e["cached"],
-                                             "r": e["reasoning"], "s": sid,
-                                             # 第70轮: 消息级去重必须能在"读缓存"时也拿到键,
-                                             # 所以这里要把 mid / ts 一并存下来(否则键退化为空串 →
-                                             # 全部条目撞车, 统计只剩 1 条)。
-                                             "mid": e.get("mid", ""), "ts": e.get("ts", "")})
-                        _agg(daily.setdefault(date, {}).setdefault(e["model"], {}), e)
-                        _agg(models.setdefault(e["model"], {}), e)
+                        i = e.get("input", e.get("i", 0))
+                        o = e.get("output", e.get("o", 0))
+                        tot = e.get("total", e.get("t", i + o))
+                        cch = e.get("cached", e.get("c", 0))
+                        rea = e.get("reasoning", e.get("r", 0))
+                        # 紧凑 list: [d, m, i, o, t, c, r, s, mid, ts]
+                        # mid / ts 必须存 —— 否则"读缓存重放"时键退化为空串,
+                        # 全部条目撞车, 统计只剩 1 条(第70轮的血案)。
+                        file_entries.append([date, e["model"], i, o, tot, cch, rea, sid,
+                                             e.get("mid", ""), e.get("ts", "")])
+                        _agg_vals(daily.setdefault(date, {}).setdefault(e["model"], {}),
+                                  i, o, tot, cch, rea)
+                        _agg_vals(models.setdefault(e["model"], {}), i, o, tot, cch, rea)
                         if sid:
                             sids.add(sid)
                             daily_sids.setdefault(date, set()).add(sid)
                         entries_total += 1
-            new_cache[path] = {"sig": sig_key, "entries": file_entries}
-            files_scanned += 1
+                    committed += len(raw)
         except OSError:
             continue
 
+        new_cache[path] = {"sig": sig_key, "size": st.st_size, "off": committed,
+                           "hd": hd, "hl": hl, "entries": file_entries}
+        files_scanned += 1
+        dirty = True
+
+    # ---- 副本去重结论: 命中缓存则完全不重算 ----
+    _heads = {}
+    for p in all_files:
+        ent = new_cache.get(p)
+        if isinstance(ent, dict):
+            _heads[p] = ent.get("hd") or ""
+    _dup_sig = _dup_signature_from_heads(_heads)
+    _dup_prev = cache.get("__dup__")
+    if (isinstance(_dup_prev, dict) and _dup_prev.get("sig") == _dup_sig
+            and isinstance(_dup_prev.get("dropped"), list)):
+        dropped_files = _dup_prev["dropped"]
+        new_cache["__dup__"] = _dup_prev
+    else:
+        # 结论失效(首次运行 / 出现新会话文件 / 首部被重写) → 只此一次付 8s
+        _keep2, dropped_files, _sid_cache = _dedupe_files(all_files, _sid_cache)
+        new_cache["__dup__"] = {"sig": _dup_sig, "dropped": dropped_files}
+        dirty = True
+
     new_cache["__sids__"] = _sid_cache
-    _save_cache(new_cache)
+    new_cache["__ver__"] = CACHE_VER
+    if dirty or cache.pop("__migrated__", False):
+        _save_cache(new_cache)
 
     days = sorted(d for d in daily if d != "unknown")
     today = time.strftime("%Y-%m-%d")
@@ -675,8 +837,10 @@ def scan_full(force=False):
     result = {
         "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "scanSeconds": round(time.time() - t0, 2),
-        "filesTracked": len(new_cache),
+        "filesTracked": len([k for k in new_cache if not k.startswith("__")]),
         "filesRescanned": files_scanned,
+        # @2026-10-31 第105轮: 走"只读尾部"的文件数 —— 用来确认增量真的生效
+        "filesAppended": files_appended,
         "entriesTotal": entries_total,
         "models": models,
         "daily": daily,
@@ -695,8 +859,10 @@ def scan_full(force=False):
 
 def _write_stats(result):
     tmp = STATS_FILE + ".tmp"
+    # 同 _save_cache: dumps(C 编码) 比 dump(iterencode) 快一个量级
+    blob = json.dumps(result, ensure_ascii=False)
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(result, f, ensure_ascii=False)
+        f.write(blob)
     os.replace(tmp, STATS_FILE)
 
 

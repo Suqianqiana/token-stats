@@ -1,6 +1,24 @@
 # -*- coding: utf-8 -*-
 """
-Token 统计卡片 V9.4 - 三套右键菜单统一 + 毛玻璃/静态材质 + 精致双尺寸仪表盘
+Token 统计卡片 V9.5 - 刷新从 23~30s 降到 ~1s（真增量扫描 + 切页复用）
+
+V9.5 highlights (Instant Refresh):
+  - Real tail-only incremental scan. The old check was `sig == "{mtime_ns}:{size}"`; any
+    touch meant re-reading the WHOLE file, and the active session file is already ~100 MB,
+    so every refresh re-read ~175 MB (13~15 s) - and got slower as chats grew. Now each
+    entry keeps a byte offset plus a head fingerprint: unchanged files are replayed from
+    cache, appended files are read from the offset only, and truncated / rewritten files
+    fall back to a full read (correctness first). 23~30 s -> ~1.0 s on this machine.
+  - Cache format v2: entries are fixed-length lists instead of dicts (13.85 -> 9.6 MB),
+    written with the C encoder (`json.dumps` + write; `json.dump` goes through iterencode
+    and is 6x slower), and skipped entirely when nothing changed.
+  - Duplicate-session detection is cached: its result only feeds `dupFilesDropped`, which
+    the UI never showed, so re-reading every file's head 687 times per refresh (8 s) was
+    pure waste. Signature covers path + head fingerprint (deliberately NOT size, otherwise
+    an active conversation invalidates it constantly).
+  - Switching pages no longer triggers a scan: `load_initial()` reuses a snapshot younger
+    than 60 s (manual refresh still scans), and the 5-minute auto refresh skips when the
+    window is hidden or minimised.
 
 V9.4 highlights (Unified Menus & DSH Model Merge):
   - All three right-click menus (panel, floating ball / pet, tray) now share the same
@@ -6213,6 +6231,12 @@ class CardWindow(QWidget):
         self._pending_force = False
         self._scan_gen = 0
         self._sn_cache = None
+        # @2026-10-31 第105轮(刷新提速): 各数据源"上次刷新时间 + 数据快照"。
+        # 切页时命中新鲜度就直接复用, 不再触发一次全量扫描 ——
+        # 原来 load_initial() 结尾无条件 QTimer.singleShot(100, refresh),
+        # 于是来回切一次页就要重新扫一遍(实测 20~30s)。
+        self._src_ts = {}
+        self._stats_by_src = {}
         self.source = theme_state["source"]
         self.range = "today"
         self.stats = None
@@ -6243,6 +6267,10 @@ class CardWindow(QWidget):
         这样用户手动点刷新时基本永远是 0.2s 的快路径。
         """
         if self._scanning:
+            return
+        # @2026-10-31 第105轮(刷新提速): 窗口最小化/收进托盘时不扫 ——
+        # 对着看不见的窗口读几百 MB 会话文件纯属白费, 手动点刷新时该扫照扫。
+        if not self.isVisible() or self.isMinimized():
             return
         pro = False
         if self.source == "sn":
@@ -7463,34 +7491,46 @@ class CardWindow(QWidget):
                     self.sn_page.sync_panel.set_failed(f"加载失败: {s['error'][:40]}")
             self._kick_pending()
             return
+        # @2026-10-31 第105轮(刷新提速): 记下"这个源什么时候刷过 + 刷出来是什么",
+        # 供 load_initial() 判断能否直接复用(切页不再重扫)。
+        self._src_ts[src] = time.time()
+        self._stats_by_src[src] = s
         if src == self.source:
             self.stats = s
             if src == "sn": self._sn_cache = s
             self.render()
-            if src == "dsh":
-                # @2026-09-19 第55轮: 别机 DSH 数据已并入本页, 副标题标出构成, 数字才不"来路不明"
-                # @2026-10-17 第72轮: **删除「累计花费 ¥」** —— 浅猫反馈计费口径不准确, 暂不展示计费。
-                _np = int(s.get("mergedPeers", 0) or 0)
-                _src_txt = f" · 含 {_np} 台别机" if _np else ""
-                self.subtitle.setText(
-                    f"DSH · {s.get('firstDay','—')} ~ {s.get('lastDay','—')}{_src_txt}"
-                    f" · 已更新 {time.strftime('%H:%M:%S')}")
-            elif src == "multi":
-                n_peer = len(s.get("peers") or [])
-                self.subtitle.setText(
-                    f"多机合并 · 本机 + {n_peer} 台别机 · "
-                    f"{s.get('firstDay','—')} ~ {s.get('lastDay','—')} · 已更新 {time.strftime('%H:%M:%S')}")
-            elif src == "sn":
-                ws = time.strftime("%H:%M", time.localtime(s.get("window_start", 0)))
-                we = time.strftime("%H:%M", time.localtime(s.get("window_end", 0)))
-                self.subtitle.setText(f"商汤 · 积分额度 · 窗口 {ws}–{we} · 已更新 {time.strftime('%H:%M:%S')}")
-            else:
-                _np = int(s.get("mergedPeers", 0) or 0)
-                _src_txt = f" · 含 {_np} 台别机" if _np else ""
-                self.subtitle.setText(f"WorkBuddy · {s.get('firstDay','—')} ~ {s.get('lastDay','—')} · 真实 usage{_src_txt} · 已更新 {time.strftime('%H:%M:%S')}")
+            self._set_source_subtitle(src, s)
         elif src == "sn":
             self._sn_cache = s
         self._kick_pending()
+
+    def _set_source_subtitle(self, src, s):
+        """按数据源写副标题。
+
+        @2026-10-31 第105轮: 从 _on_scan_done 里抽出来 —— 因为切页复用了缓存快照后,
+        这条路径也必须能把副标题修正过来, 否则会停留在上一个源的文案上。
+        """
+        if src == "dsh":
+            # @2026-09-19 第55轮: 别机 DSH 数据已并入本页, 副标题标出构成, 数字才不"来路不明"
+            # @2026-10-17 第72轮: **删除「累计花费 ¥」** —— 浅猫反馈计费口径不准确, 暂不展示计费。
+            _np = int(s.get("mergedPeers", 0) or 0)
+            _src_txt = f" · 含 {_np} 台别机" if _np else ""
+            self.subtitle.setText(
+                f"DSH · {s.get('firstDay','—')} ~ {s.get('lastDay','—')}{_src_txt}"
+                f" · 已更新 {time.strftime('%H:%M:%S')}")
+        elif src == "multi":
+            n_peer = len(s.get("peers") or [])
+            self.subtitle.setText(
+                f"多机合并 · 本机 + {n_peer} 台别机 · "
+                f"{s.get('firstDay','—')} ~ {s.get('lastDay','—')} · 已更新 {time.strftime('%H:%M:%S')}")
+        elif src == "sn":
+            ws = time.strftime("%H:%M", time.localtime(s.get("window_start", 0)))
+            we = time.strftime("%H:%M", time.localtime(s.get("window_end", 0)))
+            self.subtitle.setText(f"商汤 · 积分额度 · 窗口 {ws}–{we} · 已更新 {time.strftime('%H:%M:%S')}")
+        else:
+            _np = int(s.get("mergedPeers", 0) or 0)
+            _src_txt = f" · 含 {_np} 台别机" if _np else ""
+            self.subtitle.setText(f"WorkBuddy · {s.get('firstDay','—')} ~ {s.get('lastDay','—')} · 真实 usage{_src_txt} · 已更新 {time.strftime('%H:%M:%S')}")
 
     def _kick_pending(self):
         if self._pending_refresh and not self._scanning:
@@ -7521,6 +7561,17 @@ class CardWindow(QWidget):
 
     def load_initial(self):
         self._apply_page()
+        # @2026-10-31 第105轮(刷新提速): 数据还新鲜(60s 内)就直接复用快照, **不再触发扫描**。
+        # 以前这里无条件排队 refresh(), 结果"切页"= 一次全量扫描, 来回切几次就要等好几分钟。
+        # 手动点「刷新」走的是 refresh() 本身, 该扫还是照扫, 只有切页才走这条捷径。
+        if (time.time() - self._src_ts.get(self.source, 0.0) < 60
+                and self._stats_by_src.get(self.source) is not None):
+            self.stats = self._stats_by_src[self.source]
+            if self.source == "sn":
+                self._sn_cache = self.stats
+            self.render()
+            self._set_source_subtitle(self.source, self.stats)
+            return
         if self.source == "sn":
             self.stats = self._sn_cache or {"source": "sn", "pools": []}
         elif self.source == "dsh":
@@ -8080,7 +8131,7 @@ PET_MS = {"idle": 240, "sleep": 1500, "wake": 700, "drag": 140,
 # 2026-09-17 浅浅猫的想法: 桌宠"顶部 1/3"点= 摸摸头, 其余(底部 2/3)= 普通点击互动;
 # 任意位置双击 = 打开面板。判据用**实际绘制区域**的高度比例, 不是窗口高度(见 _pet_click_region)。
 PET_PAT_TOP_RATIO = 1.0 / 3.0
-APP_BUILD = "v9.4-frost"         # update 2026-10-21 (第87轮): 三菜单统一+emoji+v9.4; 上: v9.3-frost(第62轮)
+APP_BUILD = "v9.5-instant"        # update 2026-10-31 (第105轮): 真增量扫描+切页复用, 刷新 23~30s->~1s; 上: v9.4-frost(第87轮)
                                  # 代号 frost = 真·实时高斯模糊毛玻璃材质为主线特性;
                                  # 历史: v9.2-multi(第59轮) 多机同步 / v8.8-auto-sync 商汤真自动
 
