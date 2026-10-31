@@ -1,0 +1,41 @@
+{
+ "dir": "C:\\Users\\a3564\\Downloads",
+ "total": 4,
+ "unique": 4,
+ "exact_dups": [],
+ "perceptual_dups": [],
+ "keep": [
+  {
+   "path": "C:/Users/a3564/Downloads/pajama_pet_cat_interaction_8frames_4k.png",
+   "name": "pajama_pet_cat_interaction_8frames_4k.png",
+   "size": [
+    4096,
+    2731
+   ]
+  },
+  {
+   "path": "C:/Users/a3564/Downloads/蓝发少女与猫咪的八式萌趣贴纸集.png",
+   "name": "蓝发少女与猫咪的八式萌趣贴纸集.png",
+   "size": [
+    1536,
+    1024
+   ]
+  },
+  {
+   "path": "C:/Users/a3564/Downloads/蓝色春日少女贴纸图鉴.png",
+   "name": "蓝色春日少女贴纸图鉴.png",
+   "size": [
+    1536,
+    1024
+   ]
+  },
+  {
+   "path": "C:/Users/a3564/Downloads/蓝色系萌趣女孩八格贴纸合集.png",
+   "name": "蓝色系萌趣女孩八格贴纸合集.png",
+   "size": [
+    1536,
+    1024
+   ]
+  }
+ ]
+}

@@ -33,8 +33,9 @@ SCENES = [
     ("pat",   "摸摸头",   "点头部 1/3 时的反馈"),
 ]
 
-# 现有各主题库帧数 (供参考; 2026-10-26 第101轮后)
+# 现有各主题库帧数 (供参考; 2026-10-31 第104轮后)
 CURRENT_LIB = {
+    "pet_v6":  {"idle": 5, "sleep": 7, "wake": 13, "drag": 6, "click": 34, "sidle": 82, "pat": 26},
     "pet_v5":  {"idle": 15, "sleep": 22, "wake": 15, "drag": 6, "click": 33, "sidle": 48, "pat": 10},
     "pet_v3r": {"idle": 10, "sleep": 8, "wake": 7, "drag": 6, "click": 23, "sidle": 55, "pat": 19},
     "pet_v4":  {"idle": 3, "sleep": 1, "wake": 1, "drag": 1, "click": 5, "sidle": 1, "pat": 0},
@@ -210,7 +211,8 @@ footer{margin-top:34px;color:var(--txt3);font-size:12.5px;line-height:1.8;border
   </div>
   <div class="hdr-right">
     <select id="libSel">
-      <option value="pet_v5" selected>并入 V5 库 pet_v5（鲸鱼少女）</option>
+      <option value="pet_v6" selected>并入 V6 库 pet_v6（睡衣日常）</option>
+      <option value="pet_v5">并入 V5 库 pet_v5（鲸鱼少女）</option>
       <option value="pet_v3r">并入 V3 库 pet_v3r</option>
       <option value="pet_v4">并入 V4 库 pet_v4</option>
     </select>
