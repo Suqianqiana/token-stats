@@ -9,7 +9,7 @@ import subprocess
 
 sys.dont_write_bytecode = True
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PY = r"C:\Users\a3564\.workbuddy\binaries\python\envs\pyside6\Scripts\python.exe"
+PY = r"C:\Users\a3564\.workbuddy\binaries\python\versions\3.13.12\python.exe"
 LOG = os.path.join(ROOT, "docs", "_launch.log")
 
 

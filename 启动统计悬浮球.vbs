@@ -4,6 +4,6 @@ Set oWSH = CreateObject("WScript.Shell")
 Set oFSO = CreateObject("Scripting.FileSystemObject")
 home = oWSH.ExpandEnvironmentStrings("%USERPROFILE%")
 dir  = oFSO.GetParentFolderName(WScript.ScriptFullName)
-py   = home & "\.workbuddy\binaries\python\envs\pyside6\Scripts\pythonw.exe"
+py   = home & "\.workbuddy\binaries\python\versions\3.13.12\pythonw.exe"
 card = oFSO.BuildPath(dir, "card_app.py")
 oWSH.Run """" & py & """ """ & card & """", 0, False
