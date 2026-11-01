@@ -95,9 +95,10 @@ class _FakeBall(QWidget):
 
 
 # ---------------- 渲染 ----------------
-def render_bubble(pet_w, pet_h, pinned=False, hover=None, sn=None):
+def render_bubble(pet_w, pet_h, pinned=False, hover=None, sn=None, dark=False):
     ca.theme_state["bubble_manual"] = False
     ca.theme_state["bubble_pin"] = pinned
+    ca.theme_state["bubble_dark"] = dark
     # 用她的真实默认: 跟随 + 相对偏移(-150, -111) —— 这样预览里的尖角就是她看到的角度
     ca.theme_state["bubble_follow"] = True
     ca.theme_state["bubble_dx"] = -150
@@ -133,7 +134,7 @@ CARD_BG = QColor(26, 29, 35)
 frm = os.path.join(_ROOT, "assets", "pet_v6", "idle", "idle_01.png")
 
 CANVAS_W, ROW_H, PAD = 860, 430, 26
-canvas = QImage(CANVAS_W, ROW_H * 3 + 60, QImage.Format_ARGB32)
+canvas = QImage(CANVAS_W, ROW_H * 4 + 60, QImage.Format_ARGB32)
 canvas.fill(BG)
 cp = QPainter(canvas)
 cp.setRenderHint(QPainter.Antialiasing)
@@ -146,7 +147,7 @@ f.setPixelSize(13)
 cp.setFont(f)
 cp.setPen(QColor(150, 158, 172))
 cp.drawText(QRect(PAD, 6, CANVAS_W - PAD * 2, 24), Qt.AlignLeft | Qt.AlignVCenter,
-            "桌宠悬浮气泡 · 预览（数据取自今天的真实 stats.json，非示意数字）")
+            "桌宠悬浮气泡 · 浅色 / 暗色 预览（数据取自今天的真实 stats.json，非示意数字）")
 
 # 第三行换成 10-30 的 DSH 数据, 只为展示「两个来源都满」时的完整布局
 _snaps_full = {"wb": WB, "dsh": DSH}
@@ -158,13 +159,16 @@ if "2026-10-30" in _dd:
     _snaps_full["dsh"] = _d
 
 rows = [
-    ("① 默认尺寸 · 跟随桌宠缩放 1.00（桌宠 118×148）· DSH 今天没有数据，显示空态",
-     118, 148, False, None, snaps),
-    ("② 你当前尺寸 · 跟随缩放 1.15（桌宠 140×174）", 140, 174, False, None, snaps),
-    ("③ 常驻 + 右下角拖拽手柄 · 此行 DSH 借用 10-30 数据，只为展示两源都满的完整布局",
-     140, 174, True, "grip", _snaps_full),
+    ("① 浅色 · 默认尺寸（桌宠 118×148）· DSH 今天没有数据，显示空态",
+     118, 148, False, None, snaps, False),
+    ("② 浅色 · 你当前尺寸（桌宠 140×174）· DSH 借用 10-30 数据，展示两源都满",
+     140, 174, False, None, _snaps_full, False),
+    ("③ 暗色 · 同尺寸同数据（纸底 #24293D，色相沿用素材主蓝 228°）",
+     140, 174, False, None, _snaps_full, True),
+    ("④ 暗色 · 常驻态（三颗钮竖排：常驻 / 跟随 / 暗色，实心 = 已开启）",
+     140, 174, True, "grip", _snaps_full, True),
 ]
-for i, (label, pw, ph, pinned, hv, _sn) in enumerate(rows):
+for i, (label, pw, ph, pinned, hv, _sn, _dk) in enumerate(rows):
     top = 40 + i * ROW_H
     cp.setPen(QColor(120, 128, 142))
     f2 = QFont("Microsoft YaHei UI")
@@ -172,7 +176,7 @@ for i, (label, pw, ph, pinned, hv, _sn) in enumerate(rows):
     cp.setFont(f2)
     cp.drawText(QRect(PAD, top, CANVAS_W - PAD * 2, 20), Qt.AlignLeft | Qt.AlignVCenter, label)
 
-    bub, bw, bh, bpos = render_bubble(pw, ph, pinned, hv, _sn)
+    bub, bw, bh, bpos = render_bubble(pw, ph, pinned, hv, _sn, _dk)
     # 桌宠放在画布右下方; 气泡位置用 place_near 真实算出来的相对关系还原
     pet_right = CANVAS_W - PAD - 30
     pet_x = pet_right - pw

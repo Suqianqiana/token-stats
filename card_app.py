@@ -274,6 +274,9 @@ theme_state = {
     #   跟随移动；跟到屏幕边界会关于她的中心镜像到另一侧。
     # update 2026-11-01: 默认位置 = 浅浅猫亲手摆的那个 (相对她左上角 -150, -111 的左上侧)
     "bubble_follow": True, "bubble_dx": -150, "bubble_dy": -111,
+    # update 2026-11-01: 气泡暗色模式（右上角月牙钮 / 右键菜单可切）。
+    #   首次加载时若设置里没有这个键，就**跟随应用当前的深/浅色**，之后独立记忆。
+    "bubble_dark": False,
 }
 
 # 2026-10-19 (第76轮): 真毛玻璃(DWM Acrylic)是否已挂到窗口上。
@@ -8155,6 +8158,11 @@ def load_settings():
             theme_state["bubble_w"] = theme_state["bubble_h"] = 0
         theme_state["pet_tip_shown"] = bool(d.get("pet_tip_shown"))
         theme_state["bubble_follow"] = bool(d.get("bubble_follow"))
+        # 气泡暗色：设置里没有这个键 → 跟随应用深色模式；有则独立记忆
+        if "bubble_dark" in d:
+            theme_state["bubble_dark"] = bool(d.get("bubble_dark"))
+        else:
+            theme_state["bubble_dark"] = bool(d.get("dark"))
         try:
             theme_state["bubble_dx"] = int(d.get("bubble_dx", 0) or 0)
             theme_state["bubble_dy"] = int(d.get("bubble_dy", 0) or 0)
@@ -8363,6 +8371,21 @@ BUBBLE_INK = QColor(84, 96, 144)          # #546090 —— 剪裁口描边
 BUBBLE_INK_DEEP = QColor(60, 72, 120)     # #3C4878 —— 数字/标题
 BUBBLE_INK_VIVID = QColor(96, 120, 180)   # #6078B4 —— 缝线虚线
 BUBBLE_PAPER = QColor(247, 250, 255)      # #F7FAFF —— 蓝白纸底
+# ⭐ 暗色纸（浅浅猫 2026-11-01: "暗色的配色也好好选定，看着舒服、和素材搭"）
+#   取法：沿用素材主蓝 #546090 的**色相 228°**，只把明度压到暗侧，于是和睡衣素材同血统。
+#   实测对比度：主数字 #E8ECF8 = 12.2 / 来源名 #C3CDEA = 9.1 / 缝线 #8E9FD8 = 5.6 /
+#   剪裁口与次数值 #9FB0DC ≈ 6.8（全部远高于 AA 4.5）；纸底对面板底色 #121418 = 1.28，
+#   刚好"浮"得起来又不刺眼。
+BUBBLE_DARK_PAPER = QColor(36, 41, 61)       # #24293D
+BUBBLE_DARK_INK = QColor(159, 176, 220)      # #9FB0DC —— 剪裁口 / 次数值 / 小标题
+BUBBLE_DARK_DEEP = QColor(232, 236, 248)     # #E8ECF8 —— 标题 + 主数字
+BUBBLE_DARK_VIVID = QColor(142, 159, 216)    # #8E9FD8 —— 缝线 / 圆点 / 按钮描边
+BUBBLE_DARK_ON = QColor(195, 205, 234)       # #C3CDEA —— 按钮点亮时的实心底
+
+
+def bubble_dark():
+    """当前气泡是否暗色（按钮 / 菜单可切，默认跟随应用深色模式）。"""
+    return bool(theme_state.get("bubble_dark"))
 # ⭐ 内容栅格: _layout() 用它把"纸面宽度"换算成字号倍率 k（与窗口默认尺寸解耦）
 BUBBLE_BASE_W = 226.0
 BUBBLE_BASE_H = 168.0
@@ -8414,25 +8437,29 @@ def _bubble_path(rect, radius, pointer=None):
     return path.united(tri)
 
 
-def paint_hand_card(p, rect, radius, pointer=None, alpha=1.0):
-    """手绘便利贴底板: ① 蓝白纸底 ② 沿边主蓝剪裁口 ③ 内缩 5px 的缝线虚线。
+def paint_hand_card(p, rect, radius, pointer=None, alpha=1.0, dark=None):
+    """手绘便利贴底板: ① 纸底 ② 沿边剪裁口 ③ 内缩 5px 的缝线虚线。
 
     刻意**不描菲涅尔高光、不加阴影** —— 要的是"手账贴纸"而不是玻璃卡片。
+    `dark=None` 时跟随 theme_state（暗色纸底 / 暗色线由 BUBBLE_DARK_* 提供）。
     """
+    if dark is None:
+        dark = bubble_dark()
+    paper = BUBBLE_DARK_PAPER if dark else BUBBLE_PAPER
+    ink = BUBBLE_DARK_INK if dark else BUBBLE_INK
+    vivid = BUBBLE_DARK_VIVID if dark else BUBBLE_INK_VIVID
     path = _bubble_path(rect, radius, pointer)
     p.setPen(Qt.NoPen)
-    p.setBrush(QColor(BUBBLE_PAPER.red(), BUBBLE_PAPER.green(), BUBBLE_PAPER.blue(),
-                      int(252 * alpha)))
+    p.setBrush(QColor(paper.red(), paper.green(), paper.blue(), int(252 * alpha)))
     p.drawPath(path)
     p.setBrush(Qt.NoBrush)
-    p.setPen(QPen(QColor(BUBBLE_INK.red(), BUBBLE_INK.green(), BUBBLE_INK.blue(),
-                         int(205 * alpha)), 1.3))
+    p.setPen(QPen(QColor(ink.red(), ink.green(), ink.blue(), int(205 * alpha)), 1.3))
     p.drawPath(path)
     inset = 5.0
     ir = rect.adjusted(inset, inset, -inset, -inset)
     if ir.width() > 6 and ir.height() > 6:
-        pen = QPen(QColor(BUBBLE_INK_VIVID.red(), BUBBLE_INK_VIVID.green(),
-                          BUBBLE_INK_VIVID.blue(), int(185 * alpha)),
+        pen = QPen(QColor(vivid.red(), vivid.green(),
+                          vivid.blue(), int(185 * alpha)),
                    1.1, Qt.CustomDashLine, Qt.RoundCap, Qt.RoundJoin)
         pen.setDashPattern([3.0, 3.2])
         p.setPen(pen)
@@ -8601,12 +8628,16 @@ class PetBubble(QWidget):
         num_w = QFontMetrics(fnum).horizontalAdvance(fmt_compact(self._total)) + 1.0
         # update 2026-11-01 (浅浅猫): 两颗按钮**纵向**排 —— 正好用掉原本按钮下面那块空
         #   (内容右边界本来就避开了这一列, 所以竖排不会压到数字)
+        # 三颗钮竖排（上到下）: 📌 常驻 / 🔗 跟随 / 🌙 暗色
+        # ⚠️ 浅浅猫 2026-11-01: 位置和间距就按上一版（两颗钮时）的来, **不要挪、不要收紧** ——
+        #   新那颗用同样的间距接在下面即可。
         pin = QRectF(paper.right() - pad - btn_d, paper.top() + pad - 2.0 * k, btn_d, btn_d)
         fol = QRectF(pin.left(), pin.bottom() + 3.0 * k, btn_d, btn_d)
+        drk = QRectF(pin.left(), fol.bottom() + 3.0 * k, btn_d, btn_d)
         geo = {
             "k": k, "ptr": ptr, "paper": paper, "pad": pad,
             "total_h": total_h, "div_h": div_h, "line_h": line_h,
-            "pin": pin, "follow": fol,
+            "pin": pin, "follow": fol, "dark": drk,
             "grip": QRectF(paper.right() - BUBBLE_GRIP, paper.bottom() - BUBBLE_GRIP,
                            BUBBLE_GRIP, BUBBLE_GRIP),
             "value_right": fol.left() - 6.0 * k,
@@ -8764,7 +8795,10 @@ class PetBubble(QWidget):
         def ink(c, alpha):
             return QColor(c.red(), c.green(), c.blue(), int(alpha * a))
 
-        ink_c, ink_d, ink_v = BUBBLE_INK, BUBBLE_INK_DEEP, BUBBLE_INK_VIVID
+        dk = bubble_dark()
+        ink_c = BUBBLE_DARK_INK if dk else BUBBLE_INK
+        ink_d = BUBBLE_DARK_DEEP if dk else BUBBLE_INK_DEEP
+        ink_v = BUBBLE_DARK_VIVID if dk else BUBBLE_INK_VIVID
         top = paper.top() + geo["pad"]
         # ---- 顶部: 今日总用量 ----
         f = QFont("Microsoft YaHei UI")
@@ -8795,6 +8829,7 @@ class PetBubble(QWidget):
         # ---- 右上两颗圆钮: 🔗 跟随 / 📌 常驻 ----
         self._paint_btn(p, geo["follow"], "follow", ink, a)
         self._paint_btn(p, geo["pin"], "pin", ink, a)
+        self._paint_btn(p, geo["dark"], "dark", ink, a)
         # ---- 分隔虚线 ----
         pen = QPen(ink(ink_v, 205), 1.1, Qt.CustomDashLine, Qt.RoundCap)
         pen.setDashPattern([2.6, 2.6])
@@ -8860,21 +8895,42 @@ class PetBubble(QWidget):
                 p.drawEllipse(QRectF(gr.right() - o, gr.bottom() - o, 2.0, 2.0))
 
     def _paint_btn(self, p, r, kind, ink, a):
-        """右上角小圆钮。跟随钮画「⇄」双箭头, 常驻钮画「●/○」。"""
+        """右上角小圆钮。跟随画「⇄」、常驻画圆点、暗色画月牙；实心 = 已开启。"""
         k = (self._geo or {}).get("k", 1.0)
-        on = bool(theme_state.get("bubble_follow" if kind == "follow" else "bubble_pin"))
+        key = {"follow": "bubble_follow", "pin": "bubble_pin", "dark": "bubble_dark"}[kind]
+        on = bool(theme_state.get(key))
+        dk = bubble_dark()
         hov = self._hover == kind
-        p.setPen(QPen(ink(BUBBLE_INK_VIVID, 255 if hov else 235), 1.6 if hov else 1.2))
-        p.setBrush(QColor(BUBBLE_INK_DEEP.red(), BUBBLE_INK_DEEP.green(),
-                          BUBBLE_INK_DEEP.blue(), int(235 * a)) if on else Qt.NoBrush)
+        p.setPen(QPen(ink(BUBBLE_DARK_VIVID if dk else BUBBLE_INK_VIVID, 255 if hov else 235),
+                      1.6 if hov else 1.2))
+        # 点亮时的实心：浅色模式用深蓝底+白图，暗色模式反相（亮底+深图），保证一眼看出"开着"
+        on_fill = BUBBLE_DARK_ON if dk else BUBBLE_INK_DEEP
+        p.setBrush(QColor(on_fill.red(), on_fill.green(), on_fill.blue(),
+                          int(235 * a)) if on else Qt.NoBrush)
         p.drawEllipse(r.adjusted(1, 1, -1, -1))
         c = r.center()
-        fg = QColor(255, 255, 255, int(240 * a)) if on else ink(BUBBLE_INK_VIVID, 220)
+        if on:
+            fg = QColor(BUBBLE_DARK_PAPER) if dk else QColor(255, 255, 255)
+            fg.setAlpha(int(245 * a))
+        else:
+            fg = ink(BUBBLE_DARK_VIVID if dk else BUBBLE_INK_VIVID, 225)
         if kind == "pin":
             if not on:
                 p.setPen(Qt.NoPen)
-                p.setBrush(ink(BUBBLE_INK_VIVID, 150))
+                p.setBrush(ink(BUBBLE_DARK_VIVID if dk else BUBBLE_INK_VIVID, 150))
                 p.drawEllipse(QRectF(c.x() - 2.2 * k, c.y() - 2.2 * k, 4.4 * k, 4.4 * k))
+            return
+        if kind == "dark":
+            # 月牙 = 大圆减去一个偏移小圆
+            rr = 3.5 * k
+            outer = QPainterPath()
+            outer.addEllipse(QRectF(c.x() - rr, c.y() - rr, 2 * rr, 2 * rr))
+            inner = QPainterPath()
+            inner.addEllipse(QRectF(c.x() - rr * 0.30, c.y() - rr * 1.12,
+                                    2 * rr, 2 * rr))
+            p.setPen(Qt.NoPen)
+            p.setBrush(fg)
+            p.drawPath(outer.subtracted(inner))
             return
         # ⇄ 双箭头
         d = 2.6 * k
@@ -8899,10 +8955,9 @@ class PetBubble(QWidget):
     # ---------------- 交互 ----------------
     def _hit_btn(self, pos):
         geo = self._layout()
-        if geo["pin"].contains(pos):
-            return "pin"
-        if geo["follow"].contains(pos):
-            return "follow"
+        for kind in ("pin", "follow", "dark"):
+            if geo[kind].contains(pos):
+                return kind
         return None
 
     def enterEvent(self, ev):
@@ -8928,6 +8983,10 @@ class PetBubble(QWidget):
             return
         if btn == "follow":
             self.ball.set_bubble_follow(not theme_state.get("bubble_follow"))
+            self.update()
+            return
+        if btn == "dark":
+            self.ball.set_bubble_dark(not bubble_dark())
             self.update()
             return
         if geo["grip"].contains(pos):
@@ -9210,6 +9269,12 @@ class BallWindow(QWidget):
                 "window": [self.x(), self.y(), self.width(), self.height()],
                 "rz_mode": bool(getattr(self, "_rz_mode", False)),
                 "state": getattr(self, "_state", "-"),
+                # update 2026-11-01 (第109轮): 气泡状态也落盘 —— 光看"有没有开"不够,
+                #   还得能确证"暗色/常驻/跟随到底生效了没"(免得又靠猜)。
+                "bubble": bool(theme_state.get("bubble")),
+                "bubble_dark": bool(theme_state.get("bubble_dark")),
+                "bubble_pin": bool(theme_state.get("bubble_pin")),
+                "bubble_follow": bool(theme_state.get("bubble_follow")),
             }
             tmp = ball_status_path() + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
@@ -9644,6 +9709,18 @@ class BallWindow(QWidget):
         if self._bubble.isVisible():
             self._bubble.place_near(self.frameGeometry())
             self._bubble.update()
+
+    def set_bubble_dark(self, on):
+        """气泡暗色开关（右上角月牙钮 / 右键菜单）。只重绘，不动数据、不动尺寸。"""
+        theme_state["bubble_dark"] = bool(on)
+        save_settings()
+        try:
+            if self._bubble is not None:
+                self._bubble.update()
+            if self._bubble_tip is not None:
+                self._bubble_tip.update()
+        except Exception:
+            pass
 
     def bubble_reset_size(self):
         theme_state["bubble_manual"] = False
@@ -10245,7 +10322,7 @@ class BallWindow(QWidget):
         menu.addSeparator()
 
         a_pet = a_head = a_theme_menu = a_rz = None
-        a_bub = a_pin = a_fit = a_home = a_fol = None
+        a_bub = a_pin = a_fit = a_home = a_fol = a_drk = None
         # 显示条件用「素材目录存在」而非「已加载」: 懒加载后未开启桌宠时
         # pet_frames 为 None, 若按旧条件判断会导致桌宠开关从菜单消失
         _pet_dir = (PET_THEMES.get(self.pet_theme) or {}).get("dir")
@@ -10269,18 +10346,34 @@ class BallWindow(QWidget):
                 a_bub.setCheckable(True)
                 a_bub.setChecked(bool(theme_state.get("bubble")))
                 if theme_state.get("bubble"):
-                    a_pin = menu.addAction("📌  气泡常驻 (移开也显示)")
+                    # update 2026-11-01 (第110轮, 浅浅猫: "其它气泡设置收纳到二级菜单"):
+                    #   气泡一开就在主菜单往下铺 5 行, 把「退出」挤到很下面。现在主菜单只留
+                    #   总开关, 其余全进「⚙️ 气泡设置」子菜单 → 主菜单少 4 行。
+                    #   子菜单内部的顺序 = 常用开关在上, 「恢复…」这类低频动作放分隔线下面。
+                    bub_menu = menu.addMenu("⚙️  气泡设置")
+                    a_pin = bub_menu.addAction("📌  常驻 (移开也显示)")
                     a_pin.setCheckable(True)
                     a_pin.setChecked(bool(theme_state.get("bubble_pin")))
-                    if theme_state.get("bubble_manual"):
-                        a_fit = menu.addAction("↩️  气泡恢复跟随桌宠大小")
-                    a_fol = menu.addAction("🔗  气泡跟随桌宠")
+                    a_drk = bub_menu.addAction("🌙  暗色模式")
+                    a_drk.setCheckable(True)
+                    a_drk.setChecked(bubble_dark())
+                    a_fol = bub_menu.addAction("🔗  跟随桌宠移动")
                     a_fol.setCheckable(True)
                     a_fol.setChecked(bool(theme_state.get("bubble_follow")))
+                    # 「恢复…」只在真的偏离了自动状态时才出现, 且统一放分隔线下面
+                    _bub_reset = []
                     if theme_state.get("bubble_follow"):
-                        a_home = menu.addAction("🎯  气泡恢复自动摆放")
-                    else:
-                        a_home = None
+                        _bub_reset.append(("🎯  恢复自动摆放", "home"))
+                    if theme_state.get("bubble_manual"):
+                        _bub_reset.append(("↩️  恢复跟随桌宠大小", "fit"))
+                    if _bub_reset:
+                        bub_menu.addSeparator()
+                    for _txt, _key in _bub_reset:
+                        _act = bub_menu.addAction(_txt)
+                        if _key == "home":
+                            a_home = _act
+                        else:
+                            a_fit = _act
         menu.addSeparator()
         a_quit = menu.addAction("🚪  退出")
 
@@ -10340,6 +10433,8 @@ class BallWindow(QWidget):
             self.set_bubble_pin(not theme_state.get("bubble_pin"))
         elif a_fit is not None and chosen == a_fit:
             self.bubble_reset_size()
+        elif a_drk is not None and chosen == a_drk:
+            self.set_bubble_dark(not bubble_dark())
         elif a_fol is not None and chosen == a_fol:
             self.set_bubble_follow(not theme_state.get("bubble_follow"))
         elif a_home is not None and chosen == a_home:

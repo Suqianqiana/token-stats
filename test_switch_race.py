@@ -1126,6 +1126,29 @@ try:
           "only_source" in _insp.signature(ca.CardWindow.refresh).parameters)
     check("气泡数据 TTL 常量存在且合理", 10 <= ca.BUBBLE_DATA_TTL <= 300, str(ca.BUBBLE_DATA_TTL))
 
+    # ---- 2026-11-01 (第109轮): 气泡暗色模式 ----
+    _dk0 = ca.theme_state.get("bubble_dark")
+    ca.theme_state["bubble_dark"] = True
+    check("气泡暗色开关生效", ca.bubble_dark() is True)
+    _g3 = _wb2._bubble._layout()
+    check("气泡右上角有三颗钮(常驻/跟随/暗色)",
+          all(kk in _g3 for kk in ("pin", "follow", "dark")))
+    _r = [_g3["pin"], _g3["follow"], _g3["dark"]]
+    check("三颗钮纵向不重叠且都在纸面内",
+          all(not _r[i].intersects(_r[i + 1]) for i in range(2))
+          and all(_g3["paper"].contains(x) for x in _r))
+    check("三颗钮都能被命中的到",
+          all(_wb2._bubble._hit_btn(x.center()) == kk
+              for kk, x in zip(("pin", "follow", "dark"), _r)))
+    check("暗色纸底与浅色纸底不同",
+          ca.BUBBLE_DARK_PAPER.rgb() != ca.BUBBLE_PAPER.rgb())
+    _lp, _dp = ca.BUBBLE_PAPER, ca.BUBBLE_DARK_PAPER
+    check("暗色纸底比浅色暗(明度更低)", _dp.lightness() < _lp.lightness() // 2,
+          "%d vs %d" % (_dp.lightness(), _lp.lightness()))
+    check("paint_hand_card 支持 dark 参数",
+          "dark" in _insp.signature(ca.paint_hand_card).parameters)
+    ca.theme_state["bubble_dark"] = _dk0
+
     # 收尾: 停掉心跳定时器再关窗 —— 否则它会在数据目录被还原之后继续往**真实**
     #   ball_status.json 里写测试进程的 pid, 让 pet_status.py 判错。
     for _w in (_wb, _wb2):
