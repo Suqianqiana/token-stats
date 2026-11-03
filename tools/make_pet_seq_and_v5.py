@@ -18,7 +18,8 @@ import json
 import numpy as np
 from PIL import Image
 
-ROOT = r"C:\Users\a3564\WorkBuddy\2026-08-25-04-20-35\token-stats"
+# [2026-11-04 迁移] 项目实体已迁至 D:\Deepseek-Harness-EAC\token-stats，根目录同步更新
+ROOT = r"D:\Deepseek-Harness-EAC\token-stats"
 SEQ_SRC = (r"C:\Users\a3564\Downloads\%E6%A1%8C%E5%AE%A0%E7%9D%A1%E8%A7%89%E5%8A%A8%E4%BD%9C"
            r"%E5%B8%A7_%E4%B8%A4%E5%A5%978%E5%B8%A7_2K%E9%80%8F%E6%98%8EPNG")
 SEQ_GROUP = "A_枕头与鲸鱼花纹被子"

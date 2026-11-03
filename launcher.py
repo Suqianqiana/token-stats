@@ -20,8 +20,14 @@ import time
 # 全部基于当前用户目录动态推导, 不再写死用户名, 跨机器可直接复用
 HOME = os.path.expanduser("~")
 # 兜底项目目录候选（优先 exe 同目录, 见 find_project）；以下按顺序回退
+# [2026-11-04 迁移] 项目实体已从 WorkBuddy 会话快照
+#   `%USERPROFILE%\WorkBuddy\2026-08-25-04-20-35\token-stats` 迁至 D 盘,
+#   并把真实位置提到首位 —— 否则 exe 被单独拷出去(如放桌面)时, 兜底会全部落空。
+#   第二条保留旧快照路径, 因为原目录仍留有 Junction 指向 D 盘, 双保险。
 FALLBACK_CANDIDATES = [
-    os.path.join("F:\\杂事", "token-stats"),            # 本机工作区常见位置
+    os.path.join("D:\\Deepseek-Harness-EAC", "token-stats"),                  # 当前真实位置
+    os.path.join(HOME, "WorkBuddy", "2026-08-25-04-20-35", "token-stats"),    # 旧快照路径(Junction)
+    os.path.join("F:\\杂事", "token-stats"),            # 早期工作区位置
     os.path.join(HOME, "WorkBuddy", "token-stats"),    # 另一台电脑的标准位置
     os.path.join(HOME, "token-stats"),
 ]
@@ -54,7 +60,9 @@ def find_project():
     for cand in FALLBACK_CANDIDATES:
         if os.path.exists(os.path.join(cand, APP_SCRIPT)):
             return cand
-    return FALLBACK_CANDIDATES[-1]
+    # [2026-11-04 迁移] 候选全部落空时返回首位(当前真实位置), 让 fatal 的报错信息
+    #   指向正确目录; 原先返回 [-1] 会把用户引到早已不存在的旧路径上。
+    return FALLBACK_CANDIDATES[0]
 
 
 def find_pythonw():

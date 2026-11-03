@@ -11,7 +11,8 @@ from PIL import Image, ImageDraw
 from scipy import ndimage
 
 SRC = r"C:\Users\a3564\Downloads\蓝色鲸鱼少女表情贴纸包.png"
-OUT_DIR = r"C:\Users\a3564\WorkBuddy\2026-08-25-04-20-35\token-stats\docs"
+# [2026-11-04 迁移] 项目实体已迁至 D:\Deepseek-Harness-EAC\token-stats，输出目录同步更新
+OUT_DIR = r"D:\Deepseek-Harness-EAC\token-stats\docs"
 PREVIEW = os.path.join(OUT_DIR, "_v5_pack_preview.png")
 
 

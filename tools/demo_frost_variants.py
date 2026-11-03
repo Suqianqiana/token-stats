@@ -10,7 +10,8 @@
 """
 import os, sys, tempfile
 sys.dont_write_bytecode = True
-sys.path.insert(0, r"C:/Users/a3564/WorkBuddy/2026-08-25-04-20-35/token-stats")
+# [2026-11-04 迁移] 项目实体已迁至 D:\Deepseek-Harness-EAC\token-stats，sys.path 同步更新
+sys.path.insert(0, r"D:/Deepseek-Harness-EAC/token-stats")
 from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QVBoxLayout,
                                QHBoxLayout, QMessageBox)
 from PySide6.QtCore import Qt

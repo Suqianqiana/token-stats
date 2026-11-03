@@ -5,7 +5,8 @@ import numpy as np, json
 from PIL import Image
 import os
 
-OUT = r"C:\Users\a3564\WorkBuddy\2026-08-25-04-20-35\token-stats\assets\pet_v2"
+# [2026-11-04 迁移] 项目实体已迁至 D:\Deepseek-Harness-EAC\token-stats，输出目录同步更新
+OUT = r"D:\Deepseek-Harness-EAC\token-stats\assets\pet_v2"
 
 
 def metrics(fn):
