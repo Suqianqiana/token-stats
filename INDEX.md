@@ -83,7 +83,7 @@ token-stats/
 | `pet_v6/` | 主题 v6「睡衣日常 V6」（**当前默认主待机**） | ❌ 不能 |
 | `pet_alt/` | 退役帧仓库（`apply_retire.py` 写入 + 回归测试读取） | ❌ 不能 |
 | `pet_v3_add/` | V3 补充帧 + `installed_map.json`（回归测试读取） | ❌ 不能 |
-| `pet_new_20261023/` `...1026/` `...1028/` `...1030/` `...1031/` `...1101/` `pet_new_v6sel/` | **素材批次仓库**：每批原始帧 + `manifest.json` + `thumbs/` | ⚠️ 工具链按 `pet_new_<批次>` 固定命名读取，改路径会导致 `apply_pet_selection.py` / `gen_pet_picker_html.py` 失效 |
+| `pet_new_20261023/` `...1026/` `...1028/` `...1030/` `...1031/` `...1101/` `...1105/` `pet_new_v6sel/` | **素材批次仓库**：每批原始帧 + `manifest.json` + `thumbs/`（**不进 git**，`.gitignore` 已排除，共约 360M；可从 `Downloads` 源图重切再生） | ⚠️ 工具链按 `pet_new_<批次>` 固定命名读取，改路径会导致 `apply_pet_selection.py` / `gen_pet_picker_html.py` 失效 |
 
 `assets/` 根下的文件：`app_icon.ico` / `app_icon.png`（程序图标）、`frost_bg.png` / `frost_bg_user.png`（毛玻璃底纹）、若干 `pet_v*_qc.json`（质检记录）。
 
