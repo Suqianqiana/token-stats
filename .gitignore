@@ -93,3 +93,6 @@ htmlcov/
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# --- 素材批次仓库：每批几十 MB 的切分中间产物 + 缩略图，可再生，不进版本库 ---
+/assets/pet_new_*/
