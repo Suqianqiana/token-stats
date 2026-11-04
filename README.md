@@ -574,7 +574,7 @@ QT_QPA_PLATFORM=offscreen \
 ### 11.1 提交与版本
 
 - 提交信息格式：`第N轮：<一句话说明>`；**定点 `git add`**，不要 `add -A`。
-- 每轮先更新根目录 [`协作进度.md`](协作进度.md)（演进历程 + 协作者备注），提交紧随其后。
+- 每轮先更新 [`docs/协作进度.md`](docs/协作进度.md)（演进历程 + 协作者备注），提交紧随其后。
 - 版本标识：`card_app.py` 内 `APP_BUILD`（当前 `v9.6-bubble`）。
 
 ### 11.2 按钮：统一工厂 + 材质分档
@@ -621,14 +621,20 @@ token-stats/
 ├── card_app.py            # 主程序（全部 UI + 主题 + 调度）
 ├── scanner.py             # WorkBuddy 用量扫描引擎（纯标准库）
 ├── peer_store.py          # 多机快照导出 / 导入 / 合并
+├── win_backdrop.py        # DWM 真毛玻璃（Acrylic）
 ├── sn_login.py            # 商汤登录与凭证管理
 ├── sn_autologin_fetch.py  # 商汤控制台抓取
-├── launcher.py            # 轻量启动器
-├── test_switch_race.py    # offscreen 回归（524 项断言）
-├── tools/                 # 语法检查 / 打包 / 截图 / 专项回归
-├── assets/                # 桌宠素材、图标、毛玻璃底纹
-├── docs/                  # 设计稿、协作进度、界面预览图
-└── 协作进度.md             # 逐轮演进记录
+├── launcher.py            # 轻量启动器（代码编译进 TokenStats.exe）
+├── TokenStats.exe         # 带图标的启动器（开机自启/桌面快捷方式指向它）
+├── test_switch_race.py    # offscreen 回归（552 项断言）
+├── *.bat / *.vbs          # 启动与维护入口（靠 %~dp0 定位，不可移动）
+├── README.md              # 本文件
+├── INDEX.md               # 文件地图：什么在哪、哪些不能动、改东西从哪进
+├── tools/                 # 素材处理 / 诊断 / 打包 / 截图工具（71 个脚本）
+├── assets/                # 桌宠帧库（6 个主题）、图标、毛玻璃底纹
+├── docs/                  # 全部文档 + 素材批次数据 + 界面预览图
+├── _archive/              # 归档区（只移动不删除，git 忽略）
+└── _tmp/                  # 临时实验区（可随时清空，程序不读取）
 ```
 
 ---
@@ -647,4 +653,4 @@ token-stats/
 
 ---
 
-<sub>构建 `v9.6-bubble` · 回归 552 项全绿 · 详见 [`协作进度.md`](协作进度.md)</sub>
+<sub>构建 `v9.6-bubble` · 回归 552 项全绿 · 详见 [`docs/协作进度.md`](docs/协作进度.md) · 文件导航见 [`INDEX.md`](INDEX.md)</sub>
